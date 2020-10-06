@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use rasch::fieldset::*;
 use rasch::mdb;
 use rasch::zobrist;
@@ -22,5 +24,48 @@ fn main() {
         "Can a white pawn go from E2 to G7? {}",
         mdb::canWhitePawn(Field::E2, Field::G7)
     );
-    println!("Here is where a white pawn can go from F2: {}", "notyet");
+    println!(
+        "Here is where a white pawn can go from F2: {}",
+        mdb::whitePawnTargets(Field::F2)
+    );
+    for f in (Field::E3 as u8)..=(Field::H5 as u8) {
+        print!("{}", Field::from(f));
+    }
+    println!("");
+    for from in (!BitSet::empty()).into_iter() {
+        for to in (!BitSet::empty()).into_iter() {
+            let blackPawn = mdb::blackPawnTargets(from).member(to);
+            let whitePawn = mdb::whitePawnTargets(from).member(to);
+            let knight = mdb::knightTargets(from).member(to);
+            let bishop = mdb::bishopTargets(from).member(to);
+            let rook = mdb::rookTargets(from).member(to);
+            let queen = rook || bishop;
+            let king = mdb::kingTargets(from).member(to);
+            if blackPawn || whitePawn || king || bishop || knight || rook {
+                print!("From {} to {}:", from, to);
+                if blackPawn {
+                    print!(" black pawn");
+                }
+                if whitePawn {
+                    print!(" white pawn");
+                }
+                if knight {
+                    print!("  knight");
+                }
+                if bishop {
+                    print!("  bishop");
+                }
+                if rook {
+                    print!("  rook");
+                }
+                if queen {
+                    print!("  queen");
+                }
+                if king {
+                    print!("  king");
+                }
+                println!("");
+            }
+        }
+    }
 }

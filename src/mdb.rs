@@ -166,10 +166,15 @@ pub fn setToIndex(singleton: u64) -> usize {
 }
 
 /// Initialize the static mutable arrays.
-/// *Must* run before anything else, preferably from main()
+/// **Must** run before anything else, preferably from `main()`
+/// and it must only run **once**
 pub fn initStatic() {
     unsafe {
         genPawn();
+        genBishop();
+        genRook();
+        genKnight();
+        genKing();
     }
 }
 
@@ -228,6 +233,194 @@ unsafe fn genPawn() {
     }
 }
 
+unsafe fn genBishop() {
+    let directions = [NE, SE, SW, NW];
+
+    let mut from = 1u64;
+
+    while from != 0 {
+        // for all fields
+        for dp in directions.iter() {
+            // for all directions
+            let mut to = from;
+            let mut mask = LEGAL;
+            let d = *dp;
+            while canGo(to, d) {
+                to = goTowards(to, d);
+                bishopTo[setToIndex(from)] |= to; // can go there
+                bishopFromTo[(setToIndex(from) << 6) + setToIndex(to)] = mask;
+                mask |= to; // accumulate all fields traversed so far
+            }
+        }
+        from <<= 1;
+    }
+}
+
+unsafe fn genRook() {
+    let directions = [NORTH, SOUTH, WEST, EAST];
+
+    let mut from = 1u64;
+
+    while from != 0 {
+        // for all fields
+        for dp in directions.iter() {
+            // for all directions
+            let mut to = from;
+            let mut mask = LEGAL;
+            let d = *dp;
+            while canGo(to, d) {
+                to = goTowards(to, d);
+                rookTo[setToIndex(from)] |= to; // can go there
+                rookFromTo[(setToIndex(from) << 6) + setToIndex(to)] = mask;
+                mask |= to; // accumulate all fields traversed so far
+            }
+        }
+        from <<= 1;
+    }
+}
+
+unsafe fn genKnight() {
+    let directions = [NORTH, SOUTH, EAST, WEST];
+    let schraeg1 = [NE, SE, NE, NW];
+    let schraeg2 = [NW, SW, SE, SW];
+    let mut from = 1u64;
+
+    while from != 0 {
+        for i in 0..4 {
+            let d1 = directions[i];
+            if canGo(from, d1) {
+                let to1 = goTowards(from, d1);
+                let d2 = schraeg1[i];
+                let d3 = schraeg2[i];
+                if canGo(to1, d2) {
+                    let to2 = goTowards(to1, d2);
+                    knightTo[setToIndex(from)] |= to2;
+                }
+                if canGo(to1, d3) {
+                    let to2 = goTowards(to1, d3);
+                    knightTo[setToIndex(from)] |= to2;
+                }
+            }
+        }
+        from <<= 1;
+    }
+}
+
+unsafe fn genKing() {
+    let directions = [NORTH, NE, EAST, SE, SOUTH, SW, WEST, NW];
+    let mut from = 1u64;
+    while from != 0 {
+        for dp in directions.iter() {
+            let d = *dp;
+            if canGo(from, d) {
+                let to = goTowards(from, d);
+                kingTo[setToIndex(from)] |= to;
+            }
+        }
+        from <<= 1;
+    }
+}
+
+/**
+ * Given a `from` and a `to` field, compute the set of fields that must be empty on the board
+ * for the move to be possible with a white pawn.
+ *
+ * Note that legal capturing moves will always return the `BitSet::empty()` set, indicating the
+ * move can be legal, for example when the target field is occupied by the opponent.
+ *
+ * Forward moves, on the other hand, will return a set with the target field as member, as they
+ * are non attacking moves, that is, the move is impossible if the target field is occupied.
+ */
 pub fn canWhitePawn(from: Field, to: Field) -> BitSet {
     unsafe { BitSet::from(whitePawnFromTo[((from as usize) << 6) + (to as usize)]) }
+}
+
+/**
+ * Given a `from` and a `to` field, compute the set of fields that must be empty on the board
+ * for the move to be possible with a black pawn.
+ *
+ * Note that legal capturing moves will always return the `BitSet::empty()` set, indicating the
+ * move can be legal, for example when the target field is occupied by the opponent.
+ *
+ * Forward moves, on the other hand, will return a set with the target field as member, as they
+ * are non attacking moves, that is, the move is impossible if the target field is occupied.
+ */
+pub fn canBlackPawn(from: Field, to: Field) -> BitSet {
+    unsafe { BitSet::from(blackPawnFromTo[((from as usize) << 6) + (to as usize)]) }
+}
+
+/**
+ * Given a `from` and a `to` field, compute the set of fields that must be empty on the board
+ * for the move to be possible with a bishop.
+ *
+ * Note that for legal moves, the target field will not be a member of the result set.
+ * This is because capturing moves are legal when the target field is occupied by the opponent.
+ *
+ * A result of `BitSet::empty()` indicates there are no intermediate fields that must be empty
+ * and the move is legal.
+ *
+ * An illegal move will be indicated with a return value `!BitSet::empty()`, requiring all fields
+ * of the board to be empty to be leagl. Of course, in all regular chess matches, this condition
+ * can never be satisfied.
+ */
+pub fn canBishop(from: Field, to: Field) -> BitSet {
+    unsafe { BitSet::from(bishopFromTo[((from as usize) << 6) + (to as usize)]) }
+}
+
+/**
+  Given a `from` and a `to` field, compute the set of fields that must be empty on the board
+  for the move to be possible with a rook.
+
+  Note that for legal moves, the target field will not be a member of the result set.
+  This is because capturing moves are legal when the target field is occupied by the opponent.
+
+  A result of `BitSet::empty()` indicates there are no intermediate fields that must be empty
+  and the move is legal.
+
+  An illegal move will be indicated with a return value `!BitSet::empty()`, requiring all fields
+  of the board to be empty to be leagl. Of course, in all regular chess matches, this condition
+  can never be satisfied.
+*/
+pub fn canRook(from: Field, to: Field) -> BitSet {
+    unsafe { BitSet::from(rookFromTo[((from as usize) << 6) + (to as usize)]) }
+}
+
+/// The set of fields that can be reached with a white pawn standing on `from`.
+pub fn whitePawnTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(whitePawnTo[from as usize]) }
+}
+
+/// The set of fields that can be reached with a black pawn standing on `from`.
+pub fn blackPawnTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(blackPawnTo[from as usize]) }
+}
+
+/// The set of fields that can be reached with a bishop standing on `from`.
+pub fn bishopTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(bishopTo[from as usize]) }
+}
+
+/// The set of fields that can be reached with a rook standing on `from`.
+pub fn rookTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(rookTo[from as usize]) }
+}
+
+/// The set of fields that can be reached with a king standing on `from`.
+pub fn kingTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(kingTo[from as usize]) }
+}
+
+/// The set of fields that can be reached with a knight standing on `from`.
+pub fn knightTargets(from: Field) -> BitSet {
+    unsafe { BitSet::from(knightTo[from as usize]) }
+}
+
+/// The set of fields from where a white pawn can attack the field given in `to`.
+pub fn targetOfWhitePawns(to: Field) -> BitSet {
+    unsafe { BitSet::from(whitePawnFrom[to as usize]) }
+}
+
+/// The set of fields from where a black pawn can attack the field given in `to`.
+pub fn targetOfBlackPawns(to: Field) -> BitSet {
+    unsafe { BitSet::from(blackPawnFrom[to as usize]) }
 }
