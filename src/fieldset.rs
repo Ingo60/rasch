@@ -69,30 +69,39 @@ pub struct BitSet {
 }
 
 impl BitSet {
+    /// The empty BitSet
     pub const fn empty() -> BitSet {
         BitSet { bits: 0 }
     }
+    /// A BitSet that contains all fields
+    pub const fn all() -> BitSet {
+        BitSet { bits: !0 }
+    }
     #[inline]
+    /// A BitSet that contains just the given field
     pub const fn singleton(m: Field) -> BitSet {
         BitSet { bits: 1 << m as u8 }
     }
     #[inline]
+    /// tue if and only if the given field is a member of this BitSet
     pub const fn member(self, m: Field) -> bool {
         self.bits & BitSet::singleton(m).bits != 0
     }
     #[inline]
+    /// The set of fields that are members of this set or members of the other set
     pub const fn union(self, other: BitSet) -> BitSet {
         BitSet {
             bits: self.bits | other.bits,
         }
     }
     #[inline]
-    /// the set of elements that are members of both sets
+    /// The set of fields that are members of both sets
     pub const fn intersection(self, other: BitSet) -> BitSet {
         BitSet {
             bits: self.bits & other.bits,
         }
     }
+    /// The set of fields that are mebers of this set and non-members of the other set
     #[inline]
     pub const fn difference(self, other: BitSet) -> BitSet {
         BitSet {
@@ -103,6 +112,17 @@ impl BitSet {
     /// the number of elements in this set
     pub const fn card(self) -> u32 {
         self.bits.count_ones()
+    }
+    /// the smallest field that is member of this set
+    /// will panic when given the empty set
+    /// This is, in some sense, the inverse of singleton, becaue it is the case that
+    /// `singleton(x).bitIndex() == x
+    pub fn bitIndex(self) -> Field {
+        if self.bits == 0 {
+            panic!("bitIndex called on empty set");
+        } else {
+            Field::from(self.bits.trailing_zeros() as u8)
+        }
     }
 }
 
@@ -234,5 +254,20 @@ mod tests {
             .into_iter()
             .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(f));
         assert_eq!(set1, set2);
+    }
+
+    #[test]
+    fn test_bitIndex() {
+        let all = BitSet::all();
+        assert_eq!(64, all.card());
+        for f in all.into_iter() {
+            assert_eq!(f, BitSet::singleton(f).bitIndex());
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_empty_bitIndex() {
+        assert!(BitSet::empty().bitIndex() == Field::A7);
     }
 }

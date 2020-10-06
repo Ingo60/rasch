@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use rasch::computing as C;
 use rasch::fieldset::*;
 use rasch::mdb;
 use rasch::zobrist;
@@ -68,4 +69,9 @@ fn main() {
             }
         }
     }
+    C::beginThinking();
+    println!("stop thinking is {}", C::thinkingFinished());
+    C::finishThinking();
+    println!("stop thinking is now {}", C::thinkingFinished());
+    // println!("imposssible {}", BitSet::empty().bitIndex());
 }
