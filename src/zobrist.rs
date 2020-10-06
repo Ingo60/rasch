@@ -1,16 +1,18 @@
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
-/// # Software and constants to compute the zobrist hash
+//! # Software and constants to compute the zobrist hash
 
 ///
 /// The index in the zrandoms table is like `pxxxffffff`
 ///  
-///   Computes the zobrist constant for a certain piece (1..6) of a certain player on a certain square.
-///   To encode flag bits use BLACK, EMPTY and index of a flags bit.
+/// Computes the zobrist constant for a certain piece (1..6) of a certain player on a certain square.
+/// Arguments are not checked.
+///
+/// To encode flag bits use `ppfZobrist()`.
 ///  
-///  @param player BLACK or WHITE
-///  @param piece  PAWN … KING
-///  @param index  A1 … H8
-///  @return
+///  * player 0 or 1 for BLACK or WHITE
+///  * piece  1 to 6 for PAWN to KING
+///  * index  0 to 255 for A1 to H8
+///  
 ///  
 pub fn ppfZobrist(player: u32, piece: u32, index: u32) -> u64 {
 	ZRANDOMS[(((player * 6 + piece) << 6) + index) as usize]
