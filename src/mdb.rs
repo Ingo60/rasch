@@ -165,7 +165,15 @@ pub fn setToIndex(singleton: u64) -> usize {
     singleton.trailing_zeros() as usize
 }
 
-pub unsafe fn genPawn() {
+/// Initialize the static mutable arrays.
+/// *Must* run before anything else, preferably from main()
+pub fn initStatic() {
+    unsafe {
+        genPawn();
+    }
+}
+
+unsafe fn genPawn() {
     let mut from = 0x100u64; // no pawns on base row
     while from < 0x0100_0000_0000_0000u64 {
         if canGo(from, NORTH) {

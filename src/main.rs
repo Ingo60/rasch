@@ -5,7 +5,7 @@ use rasch::zobrist;
 fn main() {
     println!("ppfZobrist(1,6,0) {:#}", zobrist::ppfZobrist(1, 6, 0));
     println!("value {:x}  !value {:x}", 0xaau8, !0xaau8);
-    unsafe { mdb::genPawn() };
+    mdb::initStatic();
     println!(
         "Can a white pawn go from E2 to E4? {}",
         mdb::canWhitePawn(Field::E2, Field::E4)
