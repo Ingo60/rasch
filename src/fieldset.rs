@@ -3,6 +3,12 @@
 /*!
    Implement sets of fields using 64-bit integers
 */
+
+use std::ops::Add;
+use std::ops::Mul;
+use std::ops::Not;
+use std::ops::Sub;
+
 #[rustfmt::skip]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +41,18 @@ impl From<u8> for Field {
     }
 }
 
+impl Into<u8> for Field {
+    fn into(self) -> u8 {
+        self as u8
+    }
+}
+
+impl Into<usize> for Field {
+    fn into(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct BitSet {
@@ -60,6 +78,7 @@ impl BitSet {
         }
     }
     #[inline]
+    /// the set of elements that are members of both sets
     pub const fn intersection(self, other: BitSet) -> BitSet {
         BitSet {
             bits: self.bits & other.bits,
@@ -70,6 +89,40 @@ impl BitSet {
         BitSet {
             bits: self.bits & !other.bits,
         }
+    }
+}
+
+impl Add for BitSet {
+    type Output = Self;
+    fn add(self, other: Self) -> Self::Output {
+        self.union(other)
+    }
+}
+
+impl Sub for BitSet {
+    type Output = Self;
+    fn sub(self, other: Self) -> Self::Output {
+        self.difference(other)
+    }
+}
+
+impl Mul for BitSet {
+    type Output = Self;
+    fn mul(self, other: Self) -> Self::Output {
+        self.intersection(other)
+    }
+}
+
+impl Not for BitSet {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        BitSet { bits: !self.bits }
+    }
+}
+
+impl From<u64> for BitSet {
+    fn from(bits: u64) -> BitSet {
+        BitSet { bits }
     }
 }
 
@@ -92,5 +145,16 @@ mod tests {
         for f in ALLFIELDS.iter() {
             assert_eq!(*f, Field::from(*f as u8));
         }
+    }
+
+    #[test]
+    fn test_ops_empty() {
+        let b = BitSet {
+            bits: 0x1234_5678_9ABC_DEF0,
+        };
+        let e = BitSet::empty();
+        assert_eq!(b, b.union(e));
+        assert_eq!(e, b.intersection(e));
+        assert_eq!(b, b.difference(e));
     }
 }
