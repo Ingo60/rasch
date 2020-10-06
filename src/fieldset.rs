@@ -4,6 +4,8 @@
    Implement sets of fields using 64-bit integers
 */
 
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::ops::Add;
 use std::ops::Mul;
 use std::ops::Not;
@@ -34,6 +36,13 @@ static ALLFIELDS: [Field; 64] = [
     , Field::A7 , Field::B7 , Field::C7 , Field::D7 , Field::E7 , Field::F7 , Field::G7 , Field::H7
     , Field::A8 , Field::B8 , Field::C8 , Field::D8 , Field::E8 , Field::F8 , Field::G8 , Field::H8
 ];
+
+impl Display for Field {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        // let s = std::format!("{:?}", self);
+        write!(f, "{:?}", self)
+    }
+}
 
 impl From<u8> for Field {
     fn from(u: u8) -> Field {
@@ -90,6 +99,11 @@ impl BitSet {
             bits: self.bits & !other.bits,
         }
     }
+    #[inline]
+    /// the number of elements in this set
+    pub const fn card(self) -> u32 {
+        self.bits.count_ones()
+    }
 }
 
 impl Add for BitSet {
@@ -126,9 +140,46 @@ impl From<u64> for BitSet {
     }
 }
 
+pub struct BitSetIterator {
+    set: u64,
+}
+
+impl Iterator for BitSetIterator {
+    type Item = Field;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.set == 0 {
+            None
+        } else {
+            let u = self.set.trailing_zeros();
+            self.set = self.set ^ (1u64 << u);
+            Some(Field::from(u as u8))
+        }
+    }
+}
+
+impl IntoIterator for BitSet {
+    type Item = Field;
+    type IntoIter = BitSetIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        BitSetIterator { set: self.bits }
+    }
+}
+
+impl Display for BitSet {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "[ ")?;
+        for fld in self.into_iter() {
+            write!(f, "{:?} ", fld)?;
+        }
+        write!(f, "]")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
     #[test]
     fn a1_is_0() {
         assert_eq!(Field::A1 as u8, 0);
@@ -156,5 +207,32 @@ mod tests {
         assert_eq!(b, b.union(e));
         assert_eq!(e, b.intersection(e));
         assert_eq!(b, b.difference(e));
+    }
+
+    #[test]
+    fn test_iter() {
+        assert_eq!(
+            "[]",
+            format!("{:?}", BitSet::empty().into_iter().collect::<Vec<_>>())
+        );
+        assert_eq!(
+            "[A1, B1, C1]",
+            format!(
+                "{:?}",
+                (!BitSet::empty()).into_iter().take(3).collect::<Vec<_>>()
+            )
+        );
+    }
+
+    #[test]
+    fn test_fold() {
+        let mut rng = rand::thread_rng();
+        let long: u64 = rng.gen();
+        let set1 = BitSet::from(long);
+        eprintln!("set1 = {}", set1);
+        let set2 = set1
+            .into_iter()
+            .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(f));
+        assert_eq!(set1, set2);
     }
 }
