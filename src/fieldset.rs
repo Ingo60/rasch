@@ -6,6 +6,7 @@
 
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::iter::FromIterator;
 use std::ops::Add;
 use std::ops::Mul;
 use std::ops::Not;
@@ -225,6 +226,20 @@ impl Iterator for BitSet {
     }
 }
 
+impl FromIterator<Field> for BitSet {
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = Field>,
+    {
+        let mut acc = BitSet::empty();
+        for f in iter {
+            // eprintln!("collect {}", f);
+            acc = acc + BitSet::singleton(f);
+        }
+        acc
+    }
+}
+
 impl Display for BitSet {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let v: Vec<String> = self.into_iter().map(|f| f.to_string()).collect();
@@ -377,5 +392,25 @@ mod tests {
             a5b6c7e8,
             BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8])
         );
+    }
+
+    #[test]
+    fn expenisve_bitset_copy() {
+        let a5b6c7e8 = BitSet::singleton(Field::A5)
+            + BitSet::singleton(Field::B6)
+            + BitSet::singleton(Field::C7)
+            + BitSet::singleton(Field::E8);
+        assert_eq!(a5b6c7e8, a5b6c7e8.into_iter().collect());
+    }
+
+    // const e5: Field = Field::E5;
+    use super::Field::E5 as e5;
+    use super::Field::*;
+
+    #[test]
+    fn from_array() {
+        let bs: BitSet = [e5].iter().map(|r| *r).collect();
+        //                                  ^^^^^^^^^^^  this is ugly
+        assert_eq!(bs, BitSet::singleton(E5));
     }
 }
