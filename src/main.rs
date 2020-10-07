@@ -32,7 +32,7 @@ fn main() {
     for f in (Field::E3 as u8)..=(Field::H5 as u8) {
         print!("{}", Field::from(f));
     }
-    println!("");
+    println!();
     /*
     for from in (!BitSet::empty()).into_iter() {
         for to in (!BitSet::empty()).into_iter() {

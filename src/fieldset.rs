@@ -43,7 +43,7 @@ impl Field {
         1 + (self as u8 >> 3)
     }
     pub fn file(self) -> char {
-        (('a' as u8) + (self as u8 & 7)) as char
+        (b'a' + (self as u8 & 7)) as char
     }
 }
 
@@ -212,7 +212,7 @@ impl Iterator for BitSetIterator {
             None
         } else {
             let u = self.set.trailing_zeros();
-            self.set = self.set ^ (1u64 << u);
+            self.set ^= 1u64 << u;
             Some(Field::from(u as u8))
         }
     }
