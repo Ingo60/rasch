@@ -28,6 +28,26 @@ pub fn fld(b: BitSet) -> Field {
     b.bitIndex()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[repr(u32)]
+pub enum Player {
+    BLACK,
+    WHITE,
+}
+
+impl Player {
+    ///
+    pub fn opponent(self) -> Player {
+        match self {
+            Player::BLACK => Player::WHITE,
+            Player::WHITE => Player::BLACK,
+        }
+    }
+}
+
+pub const BLACK: Player = Player::BLACK;
+pub const WHITE: Player = Player::WHITE;
+
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
 //  hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
@@ -73,7 +93,7 @@ pub struct Position {
     /// 'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the following
     /// convention:
     ///
-    /// ```
+    /// ```ignore
     /// Set       P      B     R
     /// PAWN      x      -     -
     /// KNIGHT    x      x     -
@@ -94,7 +114,7 @@ pub struct Position {
     ///
     /// The following is guaranteed:
     ///
-    /// ```
+    /// ```ignore
     /// x.zobrist != y.zobrist → x != y
     /// x == y                 → x.zobrist == y.zobrist
     /// ```
