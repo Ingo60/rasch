@@ -62,7 +62,7 @@ impl FromStr for Field {
             if c >= 'a' && c <= 'h' {
                 let file = c as u32 - 'a' as u32;
                 if let Some(c) = iter.next() {
-                    if c >= '1' && c <= '9' {
+                    if c >= '1' && c <= '8' {
                         let rank = c as u32 - '1' as u32;
                         match iter.next() {
                             Some(_) => {
@@ -165,6 +165,16 @@ impl BitSet {
             Field::from(self.bits.trailing_zeros() as u8)
         }
     }
+
+    /// make a BitSet from a slice of Field
+    /// usage: BitSet::new(&[Field::E3, Field::H7])
+    /// or: BitSet::new(&v[..]) where v is a Vec<Field>
+    /// (but use BitSet::empty() instead of BitSet::new(&[]) and BitSet::singleton(f) instead of
+    /// BitSet::new(&[Field::D5])
+    pub fn new(flds: &[Field]) -> BitSet {
+        flds.iter()
+            .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f))
+    }
 }
 
 impl Add for BitSet {
@@ -195,35 +205,23 @@ impl Not for BitSet {
     }
 }
 
+/// usage: BitSet.from(0xFF00)
 impl From<u64> for BitSet {
     fn from(bits: u64) -> BitSet {
         BitSet { bits }
     }
 }
 
-pub struct BitSetIterator {
-    set: u64,
-}
-
-impl Iterator for BitSetIterator {
+impl Iterator for BitSet {
     type Item = Field;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.set == 0 {
+        if self.bits == 0 {
             None
         } else {
-            let u = self.set.trailing_zeros();
-            self.set ^= 1u64 << u;
-            Some(Field::from(u as u8))
+            let u = self.bitIndex();
+            self.bits ^= BitSet::singleton(u).bits;
+            Some(u)
         }
-    }
-}
-
-impl IntoIterator for BitSet {
-    type Item = Field;
-    type IntoIter = BitSetIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        BitSetIterator { set: self.bits }
     }
 }
 
@@ -340,5 +338,44 @@ mod tests {
     #[should_panic]
     fn test_empty_bitIndex() {
         assert!(BitSet::empty().bitIndex() == Field::A7);
+    }
+
+    #[test]
+    fn test_parse_field() {
+        let result1 = "".parse::<Field>();
+        let result2 = "X".parse::<Field>();
+        let result3 = "d€".parse::<Field>();
+        let result4 = "d9".parse::<Field>();
+        let result5 = "d".parse::<Field>();
+        let result6 = "a8 doesn't work".parse::<Field>();
+        let result7 = "d6".parse::<Field>();
+        eprintln!("{:?}", result1);
+        assert!(result1.is_err());
+        eprintln!("{:?}", result2);
+        assert!(result2.is_err());
+        eprintln!("{:?}", result3);
+        assert!(result3.is_err());
+        eprintln!("{:?}", result4);
+        assert!(result4.is_err());
+        eprintln!("{:?}", result5);
+        assert!(result5.is_err());
+        eprintln!("{:?}", result6);
+        assert!(result6.is_err());
+        assert_eq!(result7, Ok(Field::D6));
+    }
+
+    #[test]
+    fn test_new_bitset() {
+        assert_eq!(BitSet::empty(), BitSet::new(&[]));
+        let all: Vec<Field> = BitSet::all().into_iter().collect();
+        assert_eq!(BitSet::all(), BitSet::new(&all[..]));
+        let a5b6c7e8 = BitSet::singleton(Field::A5)
+            + BitSet::singleton(Field::B6)
+            + BitSet::singleton(Field::C7)
+            + BitSet::singleton(Field::E8);
+        assert_eq!(
+            a5b6c7e8,
+            BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8])
+        );
     }
 }
