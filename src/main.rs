@@ -33,6 +33,7 @@ fn main() {
         print!("{}", Field::from(f));
     }
     println!("");
+    /*
     for from in (!BitSet::empty()).into_iter() {
         for to in (!BitSet::empty()).into_iter() {
             let blackPawn = mdb::blackPawnTargets(from).member(to);
@@ -69,6 +70,7 @@ fn main() {
             }
         }
     }
+    */
     C::beginThinking();
     println!("stop thinking is {}", C::thinkingFinished());
     C::finishThinking();

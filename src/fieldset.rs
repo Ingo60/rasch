@@ -10,6 +10,7 @@ use std::ops::Add;
 use std::ops::Mul;
 use std::ops::Not;
 use std::ops::Sub;
+use std::str::FromStr;
 
 #[rustfmt::skip]
 #[repr(u8)]
@@ -37,10 +38,50 @@ static ALLFIELDS: [Field; 64] = [
     , Field::A8 , Field::B8 , Field::C8 , Field::D8 , Field::E8 , Field::F8 , Field::G8 , Field::H8
 ];
 
+impl Field {
+    pub fn rank(self) -> u8 {
+        1 + (self as u8 >> 3)
+    }
+    pub fn file(self) -> char {
+        (('a' as u8) + (self as u8 & 7)) as char
+    }
+}
+
 impl Display for Field {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        // let s = std::format!("{:?}", self);
-        write!(f, "{:?}", self)
+        write!(f, "{}{}", self.file(), self.rank())
+    }
+}
+
+impl FromStr for Field {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lower = s.to_lowercase();
+        let mut iter = lower.chars();
+        if let Some(c) = iter.next() {
+            if c >= 'a' && c <= 'h' {
+                let file = c as u32 - 'a' as u32;
+                if let Some(c) = iter.next() {
+                    if c >= '1' && c <= '9' {
+                        let rank = c as u32 - '1' as u32;
+                        match iter.next() {
+                            Some(_) => {
+                                Err(String::from("cannot parse field from more than 2 chars"))
+                            }
+                            None => Ok(Field::from((rank << 3) as u8 + file as u8)),
+                        }
+                    } else {
+                        Err(String::from("cannot parse field, rank is not 1..8"))
+                    }
+                } else {
+                    Err(String::from("cannot parse field, rank number is missing"))
+                }
+            } else {
+                Err(String::from("cannot parse field, must start with a..h"))
+            }
+        } else {
+            Err(String::from("cannot parse field from empty string"))
+        }
     }
 }
 
@@ -188,11 +229,8 @@ impl IntoIterator for BitSet {
 
 impl Display for BitSet {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "[ ")?;
-        for fld in self.into_iter() {
-            write!(f, "{:?} ", fld)?;
-        }
-        write!(f, "]")
+        let v: Vec<String> = self.into_iter().map(|f| f.to_string()).collect();
+        write!(f, "[{}]", &v[..].join(", "))
     }
 }
 
@@ -254,6 +292,39 @@ mod tests {
             .into_iter()
             .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(f));
         assert_eq!(set1, set2);
+    }
+
+    #[test]
+    fn test_union() {
+        let mut rng = rand::thread_rng();
+        let long1: u64 = rng.gen();
+        let long2: u64 = rng.gen();
+        let set1 = BitSet::from(long1);
+        let set2 = BitSet::from(long2);
+        let union = set1 + set2;
+        assert!(union.into_iter().all(|f| set1.member(f) || set2.member(f)));
+    }
+
+    #[test]
+    fn test_intersection() {
+        let mut rng = rand::thread_rng();
+        let long1: u64 = rng.gen();
+        let long2: u64 = rng.gen();
+        let set1 = BitSet::from(long1);
+        let set2 = BitSet::from(long2);
+        let it = set1 * set2;
+        assert!(it.into_iter().all(|f| set1.member(f) && set2.member(f)));
+    }
+
+    #[test]
+    fn test_diff() {
+        let mut rng = rand::thread_rng();
+        let long1: u64 = rng.gen();
+        let long2: u64 = rng.gen();
+        let set1 = BitSet::from(long1);
+        let set2 = BitSet::from(long2);
+        let diff = set1 - set2;
+        assert!(diff.into_iter().all(|f| set1.member(f) && !set2.member(f)));
     }
 
     #[test]
