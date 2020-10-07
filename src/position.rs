@@ -11,6 +11,9 @@
 //! * whether and where a pawn can capture en-passant
 //! * the number of half moves since the last pawn move or capture
 
+use std::hash::Hash;
+use std::hash::Hasher;
+
 use super::fieldset::BitSet;
 use super::fieldset::Field;
 use super::fieldset::Field::*;
@@ -41,8 +44,8 @@ pub fn fld(b: BitSet) -> Field {
 ///
 
 #[derive(Clone, Copy, Debug)]
-struct Position {
-    /// Encodes castling, en passant position and who's turn it is.
+pub struct Position {
+    /// The flags bitset informs about castling rights, en passant position and who's turn it is.
     /// In addition, whether the kings actually did castle, the 50-moves-rule ply counter
     /// and the distance to root ply counter.
     ///
@@ -95,7 +98,7 @@ struct Position {
     /// x.zobrist != y.zobrist → x != y
     /// x == y                 → x.zobrist == y.zobrist
     /// ```
-    zobrist: BitSet,
+    zobrist: u64,
 }
 
 /// Bitmask for selection of the ply (half-move) counter, which is used to support the 50 moves rule.
@@ -105,7 +108,83 @@ struct Position {
 /// Also, the protocol handler will claim a draw when the move played results in a position
 /// with ply counter 100 or more.
 #[rustfmt::skip]
-static plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4;
+pub const plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
 
 /// how many bits to shift right to get the ply counter
-const plyCounterShift: u32 = 24;
+pub const plyCounterShift: u32 = 24;
+
+/// Bitmask for selection of the distance to root ply counter
+/// This counter is reset to 0 before a seach starts and incremented with every move
+#[rustfmt::skip]
+pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
+
+/// number of bits to shift right to get the ply counter
+pub const rootCounterShift: u32 = 32;
+
+/// A bitmask used to turn all the counter bits off
+pub const counterBits: BitSet = plyCounterBits.union(rootCounterBits);
+
+#[rustfmt::skip]
+/// Bitmask for selection of the bits that indicate the rights to castle
+pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, C1, G8, C8
+
+#[rustfmt::skip]
+/// Bitmask for selection of the bits that indicate the fields that were skipped when the king castled
+pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // F1, D1, F8, D8
+
+#[rustfmt::skip]
+/// Bitmask for selection of the bits that tell us whether the white king has castled and whereto.
+pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; // F1, D1
+
+#[rustfmt::skip]
+/// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
+pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
+
+impl Position {
+    /// the set of fields that are occupied by PAWNS
+    pub fn pawns(self) -> BitSet {
+        (self.pawnSet - self.bishopSet) - self.rookSet
+    }
+
+    /// the set of fields that are occupied by KNIGHTS
+    pub fn knights(self) -> BitSet {
+        (self.pawnSet * self.bishopSet) - self.rookSet
+    }
+
+    /// the set of fields that are occupied by BISHOPS
+    pub fn bishops(self) -> BitSet {
+        (self.bishopSet - self.pawnSet) - self.rookSet
+    }
+
+    /// the set of fields that are occupied by ROOKS
+    pub fn rooks(self) -> BitSet {
+        (self.rookSet - self.bishopSet) - self.pawnSet
+    }
+
+    /// the set of fields that are occupied by QUEENS
+    pub fn queens(self) -> BitSet {
+        (self.rookSet * self.bishopSet) - self.pawnSet
+    }
+
+    /// the set of fields that are occupied by KINGS
+    pub fn kings(self) -> BitSet {
+        (self.pawnSet * self.rookSet) - self.bishopSet
+    }
+}
+
+impl PartialEq for Position {
+    fn eq(&self, other: &Position) -> bool {
+        self.flags - counterBits == other.flags - counterBits
+            && self.whites == other.whites
+            && self.pawnSet == other.pawnSet
+            && self.bishopSet == other.bishopSet
+            && self.rookSet == other.rookSet
+    }
+}
+impl Eq for Position {}
+
+impl Hash for Position {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.zobrist.hash(state);
+    }
+}
