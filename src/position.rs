@@ -33,6 +33,17 @@ pub enum Player {
     WHITE,
 }
 
+impl From<bool> for Player {
+    /// if true then it's WHITE, otherwise FALSE
+    fn from(b: bool) -> Player {
+        if b {
+            WHITE
+        } else {
+            BLACK
+        }
+    }
+}
+
 impl Player {
     /// the color of the opponent
     pub fn opponent(self) -> Player {
@@ -46,8 +57,9 @@ impl Player {
     pub fn factor(self) -> i32 { 2 * (self as i32) - 1 }
 }
 
-pub const BLACK: Player = Player::BLACK;
-pub const WHITE: Player = Player::WHITE;
+// pub const BLACK: Player = Player::BLACK;
+// pub const WHITE: Player = Player::WHITE;
+use Player::*;
 
 /// Enumeration of the chess pieces
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -64,6 +76,29 @@ pub enum Piece {
 
 impl Display for Piece {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.show()) }
+}
+
+impl From<u32> for Piece {
+    /// The inverse of `piece as u32`.
+    /// Will panic! if not in range 0..6
+    ///
+    /// ```
+    /// use crate::rasch::position::Piece;
+    ///
+    /// assert!((0..6).all(|u| Piece::from(u) as u32 == u));
+    /// ```
+    fn from(u: u32) -> Piece {
+        match u {
+            0 => EMPTY,
+            1 => PAWN,
+            2 => KNIGHT,
+            3 => BISHOP,
+            4 => ROOK,
+            5 => QUEEN,
+            6 => KING,
+            _ => panic!(format!("can't cast {} to Piece", u)),
+        }
+    }
 }
 
 impl Piece {
@@ -96,13 +131,14 @@ impl Piece {
     }
 }
 
-pub const EMPTY: Piece = Piece::EMPTY;
-pub const PAWN: Piece = Piece::PAWN;
-pub const BISHOP: Piece = Piece::BISHOP;
-pub const KNIGHT: Piece = Piece::KNIGHT;
-pub const ROOK: Piece = Piece::ROOK;
-pub const QUEEN: Piece = Piece::QUEEN;
-pub const KING: Piece = Piece::KING;
+// pub const EMPTY: Piece = Piece::EMPTY;
+// pub const PAWN: Piece = Piece::PAWN;
+// pub const BISHOP: Piece = Piece::BISHOP;
+// pub const KNIGHT: Piece = Piece::KNIGHT;
+// pub const ROOK: Piece = Piece::ROOK;
+// pub const QUEEN: Piece = Piece::QUEEN;
+// pub const KING: Piece = Piece::KING;
+use Piece::*;
 
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
@@ -153,7 +189,7 @@ pub struct Position {
     /// 'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the
     /// following convention:
     ///
-    /// ```ignore
+    /// ```text
     /// Set       P      B     R
     /// PAWN      x      -     -
     /// KNIGHT    x      x     -
@@ -175,11 +211,11 @@ pub struct Position {
     ///
     /// The following is guaranteed:
     ///
-    /// ```ignore
-    /// x.zobrist != y.zobrist → x != y
-    /// x == y                 → x.zobrist == y.zobrist
+    /// ```text
+    /// x.hash != y.hash → x != y
+    /// x == y           → x.hash == y.hash
     /// ```
-    zobrist: u64,
+    hash: u64,
 }
 
 /// Bitmask for selection of the ply (half-move) counter, which is used to support the 50 moves rule.
@@ -201,11 +237,9 @@ pub const plyCounterShift: u32 = 24;
 pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
 
 /// number of bits to shift right to get the ply counter
-
 pub const rootCounterShift: u32 = 32;
 
 /// A bitmask used to turn all the counter bits off
-
 pub const counterBits: BitSet = plyCounterBits.union(rootCounterBits);
 
 #[rustfmt::skip]
@@ -361,6 +395,26 @@ impl Position {
         let r = if (s * self.rookSet).null() { 0 } else { 1 };
         Piece::encodePBR(p + b + r)
     }
+
+    /// compute the hash
+    pub fn computeZobrist(&self) -> u64 {
+        let flagz = ((self.flags - counterBits) - castlingDoneBits)
+            .into_iter()
+            .fold(0u64, |acc, f| acc ^ super::zobrist::flagZobrist(f as u32));
+        self.occupied().into_iter().fold(flagz, |acc, f| {
+            let player = Player::from(self.whites.member(f));
+            let piece = self.onField(f);
+            acc ^ super::zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
+        })
+    }
+
+    /// rehash the Position, will be done once with each move
+    pub fn rehash(&self) -> Position {
+        Position {
+            hash: self.computeZobrist(),
+            ..*self
+        }
+    }
 }
 
 impl PartialEq for Position {
@@ -376,5 +430,108 @@ impl PartialEq for Position {
 impl Eq for Position {}
 
 impl Hash for Position {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.zobrist.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.hash.hash(state); }
+}
+
+/// Representation of a move
+///    
+/// Normally, the promote bits are EMPTY, e.g. 0b000.
+/// If moving piece is KING, promote may be QUEEN or KING to indicate queenside
+/// or kingside castling. If it's a promoting PAWN move, promote may be KNIGHT,
+/// BISHOP, ROOK or QUEEN. If it's an en passant capturing, promote will be
+/// PAWN.
+///
+/// We need 20 bits:
+///
+/// ```text
+/// KPfffpppttttttssssss
+/// ```
+///
+/// - [K] This bit indicates whether this move caused a cut and is thus a so
+/// called killer move.
+/// - [P] 1 bit for player where 0 means BLACK, 1 means WHITE
+/// - [fff] 3 bit encoding for moving Piece
+/// - [ppp] 3 bit for promotion piece
+/// - [tttttt] 6 bit target index
+/// - [ssssss] 6 bit source index
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[repr(transparent)]
+pub struct Move {
+    mv: u32,
+}
+
+impl Move {
+    /// Tell if this is a killer move
+    pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
+
+    /// Which player is moving?
+    pub fn player(self) -> Player { Player::from(self.mv & 0b01_000_000_000000_000000u32 != 0) }
+
+    /// What piece is moving?
+    pub fn piece(self) -> Piece { Piece::from((self.mv & 0b00_111_000_000000_000000u32) >> 15) }
+
+    /// What is it promoting into, if any?
+    pub fn promote(self) -> Piece { Piece::from((self.mv & 0b00_000_111_000000_000000u32) >> 12) }
+
+    /// Whereto are we moving?
+    pub fn to(self) -> Field { Field::from(((self.mv & 0b00_000_000_111111_000000u32) >> 6) as u8) }
+
+    /// From whence are we moving?
+    pub fn from(self) -> Field { Field::from((self.mv & 0b111111u32) as u8) }
+
+    /// construct a move from player, piece to move, piece to promote, from
+    /// field and to field
+    pub fn new(pl: Player, pc: Piece, pr: Piece, from: Field, to: Field) -> Move {
+        Move {
+            mv: ((pl as u32) << 18)
+                | ((pc as u32) << 15)
+                | ((pr as u32) << 12)
+                | ((to as u32) << 6)
+                | (from as u32),
+        }
+    }
+
+    /// Show this Move in algebraic notation
+    ///
+    /// ```
+    /// use rasch::position::Move;
+    /// use rasch::position::Piece::*;
+    /// use rasch::position::Player::*;
+    /// use rasch::fieldset::Field::*;
+    ///
+    /// assert_eq!(Move::new(WHITE, PAWN, QUEEN, B7, C8).algebraic(), "b7c8q");
+    /// ```
+    pub fn algebraic(self) -> String {
+        let p = if self.promote() >= KNIGHT && self.piece() == PAWN {
+            self.promote().show().to_lowercase()
+        } else {
+            String::from("")
+        };
+        self.from().show() + &self.to().show() + &p
+    }
+
+    /// Find a move in a list that corresponds to a given string or post an Err.
+    /// This will be used when accepting a move to make from the user.
+    ///
+    /// This is so that we'll use the moves generated by our move generator
+    /// only. Assuming the move generator generates all possible moves for
+    /// any position, the move entered **must be** in the list, or else it is
+    /// illegal.
+    pub fn unAlgebraic(vec: &Vec<Move>, src: &str) -> Result<Move, String> {
+        for mv in vec.iter() {
+            if mv.algebraic() == src {
+                return Ok(*mv);
+            }
+        }
+        let vs: Vec<_> = vec.iter().map(|x| x.algebraic()).collect();
+        Err(format!(
+            "Move {} does not appear in [{}]",
+            src,
+            &vs[..].join(", ")
+        ))
+    }
+}
+
+impl Display for Move {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
 }
