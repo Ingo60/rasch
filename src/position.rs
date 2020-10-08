@@ -276,13 +276,40 @@ impl Position {
     }
 
     /// `true` if and only if the given `Field` is not occupied by some piece
-    pub fn empty(&self, f: Field) -> bool {
+    pub fn isEmpty(&self, f: Field) -> bool {
         !self.occupied().member(f)
     }
 
     /// `true` if and only if no member of the given set is an occupied field
-    pub fn allEmpty(&self, fs: BitSet) -> bool {
+    pub fn areEmpty(&self, fs: BitSet) -> bool {
         (self.occupied() * fs).null()
+    }
+
+    /// tell who's turn it is
+    pub fn turn(&self) -> Player {
+        if self.flags.member(A1) {
+            WHITE
+        } else {
+            BLACK
+        }
+    }
+
+    /// fields occupied by WHITE
+    pub fn occupiedByWhite(&self) -> BitSet {
+        self.occupied() * self.whites
+    }
+
+    /// fields occupied by BLACK
+    pub fn occupiedByBlack(&self) -> BitSet {
+        self.occupied() - self.whites
+    }
+
+    /// fields occupied by Player
+    pub fn occupiedBy(&self, p: Player) -> BitSet {
+        match p {
+            Player::WHITE => self.occupiedByWhite(),
+            Player::BLACK => self.occupiedByBlack(),
+        }
     }
 }
 
