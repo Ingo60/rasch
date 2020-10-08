@@ -1,0 +1,9 @@
+edition = "2018"
+fn_params_layout = "Compressed"
+fn_single_line = true
+format_strings = true
+struct_lit_width = 60
+struct_variant_width = 60
+wrap_comments = true
+struct_field_align_threshold = 30
+

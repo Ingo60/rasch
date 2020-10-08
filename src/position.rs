@@ -19,17 +19,14 @@ use super::fieldset::Field;
 use super::fieldset::Field::*;
 
 /// short form of BitSet::singleton
-pub const fn bit(f: Field) -> BitSet {
-    BitSet::singleton(f)
-}
 
+pub const fn bit(f: Field) -> BitSet { BitSet::singleton(f) }
 /// short form of BitSet::bitIndex
-pub fn fld(b: BitSet) -> Field {
-    b.bitIndex()
-}
 
+pub fn fld(b: BitSet) -> Field { b.bitIndex() }
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 #[repr(u32)]
+
 pub enum Player {
     BLACK,
     WHITE,
@@ -37,7 +34,9 @@ pub enum Player {
 
 impl Player {
     /// the color of the opponent
+
     pub fn opponent(self) -> Player {
+
         match self {
             Player::BLACK => Player::WHITE,
             Player::WHITE => Player::BLACK,
@@ -45,12 +44,12 @@ impl Player {
     }
 
     /// compute -1 or 1 without conditional branch
-    pub fn factor(self) -> i32 {
-        2 * (self as i32) - 1
-    }
+
+    pub fn factor(self) -> i32 { 2 * (self as i32) - 1 }
 }
 
 pub const BLACK: Player = Player::BLACK;
+
 pub const WHITE: Player = Player::WHITE;
 
 //                  Board Geometry
@@ -66,37 +65,41 @@ pub const WHITE: Player = Player::WHITE;
 /// If the initial position and the application of moves is correct
 /// and the move generator does indeed generate
 /// valid moves only, then it should be impossible to reach an illegal state.
-///
 
 #[derive(Clone, Copy, Debug)]
+
 pub struct Position {
-    /// The flags bitset informs about castling rights, en passant position and who's turn it is.
-    /// In addition, whether the kings actually did castle, the 50-moves-rule ply counter
-    /// and the distance to root ply counter.
+    /// The flags bitset informs about castling rights, en passant position and
+    /// who's turn it is. In addition, whether the kings actually did
+    /// castle, the 50-moves-rule ply counter and the distance to root ply
+    /// counter.
     ///
     /// - If A1 is in the set, it is 'WHITE's turn, otherwise 'BLACK's.
     /// - If en passant is possible, one of  A3..H3 or A6..H6 is in the set
     /// - If castling is possible, the corresponding target fields of the Kings
-    ///   are in the set. This would be G1 (white kingside), C1 (white queenside),
-    ///   G8 (black kingside) or C8 (black queenside).
-    /// - If castling actually was performed, F1, D1, F8 or G8 are set (the field
-    ///   that the 'KING' skipped).
-    /// - The bits 'A4' .. 'H4' contain the unsigned half-move counter. It is reset to 0
-    ///   on a 'PAWN' move or a capturing move. For all other moves, it is incremented.
-    /// - The bits 'A5' .. 'H5' contain the unsigned root-move counter. It is incremented with
-    ///   every move, but reset to 0 after a usermove was carried out. Hence, in searches,
-    ///   one can see how many levels deep in the search we are (distance to root), while the
-    ///   "depth" parameter of said search functions gives the distance to the horizon.
+    ///   are in the set. This would be G1 (white kingside), C1 (white
+    ///   queenside), G8 (black kingside) or C8 (black queenside).
+    /// - If castling actually was performed, F1, D1, F8 or G8 are set (the
+    ///   field that the 'KING' skipped).
+    /// - The bits 'A4' .. 'H4' contain the unsigned half-move counter. It is
+    ///   reset to 0 on a 'PAWN' move or a capturing move. For all other moves,
+    ///   it is incremented.
+    /// - The bits 'A5' .. 'H5' contain the unsigned root-move counter. It is
+    ///   incremented with every move, but reset to 0 after a usermove was
+    ///   carried out. Hence, in searches, one can see how many levels deep in
+    ///   the search we are (distance to root), while the "depth" parameter of
+    ///   said search functions gives the distance to the horizon.
     ///
-    /// Note: the counter bits and the F1, D1, F8 and G8 bits are not reflected in the hash key.
+    /// Note: the counter bits and the F1, D1, F8 and G8 bits are not reflected
+    /// in the hash key.
     flags: BitSet,
 
     /// the fields occupied by WHITE pieces
     whites: BitSet,
 
     /// For encoding of figures, we use only 3 sets instead of 6, namely        
-    /// 'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the following
-    /// convention:
+    /// 'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the
+    /// following convention:
     ///
     /// ```ignore
     /// Set       P      B     R
@@ -108,14 +111,15 @@ pub struct Position {
     /// KING      x      -     x
     /// ```
     ///
-    /// For example, if the bit E5 is set in the pawnSet and the rookSet, but not in the
-    /// bishopSet, then there is a KING on E5. If the E5 flag is set in whites,
-    /// then it is a white king, else a black king.
-    pawnSet: BitSet,
+    /// For example, if the bit E5 is set in the pawnSet and the rookSet, but
+    /// not in the bishopSet, then there is a KING on E5. If the E5 flag is
+    /// set in whites, then it is a white king, else a black king.
+    pawnSet:   BitSet,
     bishopSet: BitSet,
-    rookSet: BitSet,
+    rookSet:   BitSet,
 
-    /// the Zobrist hash key, a special hashing method usually employed in chess programming
+    /// the Zobrist hash key, a special hashing method usually employed in chess
+    /// programming
     ///
     /// The following is guaranteed:
     ///
@@ -136,6 +140,7 @@ pub struct Position {
 pub const plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
 
 /// how many bits to shift right to get the ply counter
+
 pub const plyCounterShift: u32 = 24;
 
 /// Bitmask for selection of the distance to root ply counter
@@ -144,9 +149,11 @@ pub const plyCounterShift: u32 = 24;
 pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
 
 /// number of bits to shift right to get the ply counter
+
 pub const rootCounterShift: u32 = 32;
 
 /// A bitmask used to turn all the counter bits off
+
 pub const counterBits: BitSet = plyCounterBits.union(rootCounterBits);
 
 #[rustfmt::skip]
@@ -165,8 +172,10 @@ pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; 
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
 pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
 
-/// give the bitmask that can be used to find out whether a given player has castled
+/// give the bitmask that can be used to find out whether a given player has
+/// castled
 pub const fn playerCastledBits(p: Player) -> BitSet {
+
     match p {
         Player::BLACK => blackHasCastledBits,
         Player::WHITE => whiteHasCastledBits,
@@ -179,56 +188,45 @@ pub const fn playerCastledBits(p: Player) -> BitSet {
 pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-H3, A6-H6
 
 /// constant to add or subtract 1 from both counters in one go
-/// It goes without saying that we must never decrement beyond zero, nor increment beyond 255.
+/// It goes without saying that we must never decrement beyond zero, nor
+/// increment beyond 255.
 pub const onePly: u64 = 0x1_0100_0000; // A4 and A5
 
-/// This is used when only the root counter must be incremented (on 'PAWN' moves and captures)
+/// This is used when only the root counter must be incremented (on 'PAWN' moves
+/// and captures)
 pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
 
 impl Position {
     /// the set of fields that are occupied by PAWNS
-    pub fn pawns(&self) -> BitSet {
-        (self.pawnSet - self.bishopSet) - self.rookSet
-    }
 
+    pub fn pawns(&self) -> BitSet { (self.pawnSet - self.bishopSet) - self.rookSet }
     /// the set of fields that are occupied by KNIGHTS
-    pub fn knights(&self) -> BitSet {
-        (self.pawnSet * self.bishopSet) - self.rookSet
-    }
 
+    pub fn knights(&self) -> BitSet { (self.pawnSet * self.bishopSet) - self.rookSet }
     /// the set of fields that are occupied by BISHOPS
-    pub fn bishops(&self) -> BitSet {
-        (self.bishopSet - self.pawnSet) - self.rookSet
-    }
 
+    pub fn bishops(&self) -> BitSet { (self.bishopSet - self.pawnSet) - self.rookSet }
     /// the set of fields that are occupied by ROOKS
-    pub fn rooks(&self) -> BitSet {
-        (self.rookSet - self.bishopSet) - self.pawnSet
-    }
 
+    pub fn rooks(&self) -> BitSet { (self.rookSet - self.bishopSet) - self.pawnSet }
     /// the set of fields that are occupied by QUEENS
-    pub fn queens(&self) -> BitSet {
-        (self.rookSet * self.bishopSet) - self.pawnSet
-    }
 
+    pub fn queens(&self) -> BitSet { (self.rookSet * self.bishopSet) - self.pawnSet }
     /// the set of fields that are occupied by KINGS
-    pub fn kings(&self) -> BitSet {
-        (self.pawnSet * self.rookSet) - self.bishopSet
-    }
 
+    pub fn kings(&self) -> BitSet { (self.pawnSet * self.rookSet) - self.bishopSet }
     /// get the number of `Move`s applied since the last pawn move or capture
-    /// (Castling, despite technically doing 3 moves, corrects the counter acordingly)
-    pub fn getPlyCounter(&self) -> u64 {
-        (self.flags * plyCounterBits).bits >> plyCounterShift
-    }
+    /// (Castling, despite technically doing 3 moves, corrects the counter
+    /// acordingly)
 
+    pub fn getPlyCounter(&self) -> u64 { (self.flags * plyCounterBits).bits >> plyCounterShift }
     /// get the number of `Move`s applied since the last root counter reset
-    pub fn getRootDistance(&self) -> u64 {
-        (self.flags * rootCounterBits).bits >> rootCounterShift
-    }
 
+    pub fn getRootDistance(&self) -> u64 { (self.flags * rootCounterBits).bits >> rootCounterShift }
     /// clear the 50-move ply counter
+
     pub fn clearPlyCounter(&self) -> Position {
+
         Position {
             flags: self.flags - plyCounterBits,
             ..*self
@@ -236,7 +234,9 @@ impl Position {
     }
 
     /// clear the root ply counter
+
     pub fn clearRootPlyCounter(&self) -> Position {
+
         Position {
             flags: self.flags - rootCounterBits,
             ..*self
@@ -244,7 +244,9 @@ impl Position {
     }
 
     /// Increment the ply counter(s) using either `onePly` or `onePlyRootOnly`
+
     pub fn incrPlyCounters(&self, mask: u64) -> Position {
+
         Position {
             flags: BitSet {
                 bits: self.flags.bits + mask,
@@ -255,8 +257,10 @@ impl Position {
 
     /// Decrement both counters
     /// Note: it will never be necessary to decrement only one counter.
-    /// Only used after castling, where we actually do 3 ordinary (but illegal) moves.  
+    /// Only used after castling, where we actually do 3 ordinary (but illegal)
+    /// moves.
     pub fn decrPlyCounters(&self) -> Position {
+
         Position {
             flags: BitSet {
                 bits: self.flags.bits - onePly,
@@ -266,55 +270,58 @@ impl Position {
     }
 
     /// subtract 2 from the plyCounters (conveniece for castlings)
+
     pub fn correctPlyCounterForCastling(&self) -> Position {
+
         self.decrPlyCounters().decrPlyCounters()
     }
 
     /// the set of occupied fields
-    pub fn occupied(&self) -> BitSet {
-        self.pawnSet + self.bishopSet + self.rookSet
-    }
 
+    pub fn occupied(&self) -> BitSet { self.pawnSet + self.bishopSet + self.rookSet }
     /// `true` if and only if the given `Field` is not occupied by some piece
-    pub fn isEmpty(&self, f: Field) -> bool {
-        !self.occupied().member(f)
-    }
 
+    pub fn isEmpty(&self, f: Field) -> bool { !self.occupied().member(f) }
     /// `true` if and only if no member of the given set is an occupied field
-    pub fn areEmpty(&self, fs: BitSet) -> bool {
-        (self.occupied() * fs).null()
-    }
 
+    pub fn areEmpty(&self, fs: BitSet) -> bool { (self.occupied() * fs).null() }
     /// tell who's turn it is
+
     pub fn turn(&self) -> Player {
+
         if self.flags.member(A1) {
+
             WHITE
         } else {
+
             BLACK
         }
     }
 
     /// fields occupied by WHITE
-    pub fn occupiedByWhite(&self) -> BitSet {
-        self.occupied() * self.whites
-    }
 
+    pub fn occupiedByWhite(&self) -> BitSet { self.occupied() * self.whites }
     /// fields occupied by BLACK
-    pub fn occupiedByBlack(&self) -> BitSet {
-        self.occupied() - self.whites
-    }
 
+    pub fn occupiedByBlack(&self) -> BitSet { self.occupied() - self.whites }
     /// fields occupied by Player
+
     pub fn occupiedBy(&self, p: Player) -> BitSet {
+
         match p {
             Player::WHITE => self.occupiedByWhite(),
             Player::BLACK => self.occupiedByBlack(),
         }
     }
+
+    /// fields occupied by the player who's turn it is
+
+    pub fn occupiedByActive(&self) -> BitSet { self.occupiedBy(self.turn()) }
 }
 
 impl PartialEq for Position {
     fn eq(&self, other: &Position) -> bool {
+
         self.flags - counterBits == other.flags - counterBits
             && self.whites == other.whites
             && self.pawnSet == other.pawnSet
@@ -322,10 +329,9 @@ impl PartialEq for Position {
             && self.rookSet == other.rookSet
     }
 }
+
 impl Eq for Position {}
 
 impl Hash for Position {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.zobrist.hash(state);
-    }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.zobrist.hash(state); }
 }
