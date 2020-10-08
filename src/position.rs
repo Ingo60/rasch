@@ -1,6 +1,3 @@
-#![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
-#![allow(non_upper_case_globals)] // as well as this
-
 //!   # The central data structure, the `Position`
 //!
 //! A `Position` encodes the state of the chess board.
@@ -11,6 +8,10 @@
 //! * whether and where a pawn can capture en-passant
 //! * the number of half moves since the last pawn move or capture
 
+#![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
+#![allow(non_upper_case_globals)] // as well as this
+
+// use standard packages
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -388,6 +389,7 @@ impl Position {
     pub fn occupiedByActive(&self) -> BitSet { self.occupiedBy(self.turn()) }
 
     /// Tell us the piece that occupies some Field.
+    #[allow(clippy::many_single_char_names)] // because we are no snowflakes
     pub fn onField(&self, f: Field) -> Piece {
         let s = bit(f);
         let p = if (s * self.pawnSet).null() { 0 } else { 4 };
@@ -399,13 +401,15 @@ impl Position {
     /// compute the hash
     pub fn computeZobrist(&self) -> u64 {
         let flagz = ((self.flags - counterBits) - castlingDoneBits)
-            .into_iter()
+            // .into_iter()
             .fold(0u64, |acc, f| acc ^ super::zobrist::flagZobrist(f as u32));
-        self.occupied().into_iter().fold(flagz, |acc, f| {
-            let player = Player::from(self.whites.member(f));
-            let piece = self.onField(f);
-            acc ^ super::zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
-        })
+        self.occupied()
+            // .into_iter()
+            .fold(flagz, |acc, f| {
+                let player = Player::from(self.whites.member(f));
+                let piece = self.onField(f);
+                acc ^ super::zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
+            })
     }
 
     /// rehash the Position, will be done once with each move
@@ -460,6 +464,9 @@ pub struct Move {
     mv: u32,
 }
 
+#[allow(clippy::inconsistent_digit_grouping)]
+// we use the unconventional digit grouping to demonstrate the structure of the
+// bitfield
 impl Move {
     /// Tell if this is a killer move
     pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
@@ -517,13 +524,13 @@ impl Move {
     /// only. Assuming the move generator generates all possible moves for
     /// any position, the move entered **must be** in the list, or else it is
     /// illegal.
-    pub fn unAlgebraic(vec: &Vec<Move>, src: &str) -> Result<Move, String> {
-        for mv in vec.iter() {
+    pub fn unAlgebraic(list: &[Move], src: &str) -> Result<Move, String> {
+        for mv in list.iter() {
             if mv.algebraic() == src {
                 return Ok(*mv);
             }
         }
-        let vs: Vec<_> = vec.iter().map(|x| x.algebraic()).collect();
+        let vs: Vec<_> = list.iter().map(|x| x.algebraic()).collect();
         Err(format!(
             "Move {} does not appear in [{}]",
             src,
