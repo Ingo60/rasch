@@ -11,6 +11,8 @@
 //! * whether and where a pawn can capture en-passant
 //! * the number of half moves since the last pawn move or capture
 
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
 
@@ -19,14 +21,13 @@ use super::fieldset::Field;
 use super::fieldset::Field::*;
 
 /// short form of BitSet::singleton
-
 pub const fn bit(f: Field) -> BitSet { BitSet::singleton(f) }
+
 /// short form of BitSet::bitIndex
-
 pub fn fld(b: BitSet) -> Field { b.bitIndex() }
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-#[repr(u32)]
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[repr(u32)]
 pub enum Player {
     BLACK,
     WHITE,
@@ -34,9 +35,7 @@ pub enum Player {
 
 impl Player {
     /// the color of the opponent
-
     pub fn opponent(self) -> Player {
-
         match self {
             Player::BLACK => Player::WHITE,
             Player::WHITE => Player::BLACK,
@@ -44,13 +43,66 @@ impl Player {
     }
 
     /// compute -1 or 1 without conditional branch
-
     pub fn factor(self) -> i32 { 2 * (self as i32) - 1 }
 }
 
 pub const BLACK: Player = Player::BLACK;
-
 pub const WHITE: Player = Player::WHITE;
+
+/// Enumeration of the chess pieces
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[repr(u32)]
+pub enum Piece {
+    EMPTY,
+    PAWN,
+    KNIGHT,
+    BISHOP,
+    ROOK,
+    QUEEN,
+    KING,
+}
+
+impl Display for Piece {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.show()) }
+}
+
+impl Piece {
+    /// Produce a single letter String for a Piece: -PBNRQK
+    pub fn show(self) -> String {
+        String::from(match self {
+            EMPTY => "-",
+            PAWN => "P",
+            BISHOP => "B",
+            KNIGHT => "N",
+            ROOK => "R",
+            QUEEN => "Q",
+            KING => "K",
+        })
+    }
+
+    /// Encode the 3 bit information (4 in pawnSet, 2 in bishopSet, 1 in
+    /// rookSet) into a Piece. Any value >6 results in EMPTY, as well as 0
+    /// (which is proper)
+    pub fn encodePBR(pbr: u8) -> Piece {
+        match pbr {
+            0b001 => ROOK,
+            0b010 => BISHOP,
+            0b011 => QUEEN,
+            0b100 => PAWN,
+            0b101 => KING,
+            0b110 => KNIGHT,
+            _ => EMPTY,
+        }
+    }
+}
+
+pub const EMPTY: Piece = Piece::EMPTY;
+pub const PAWN: Piece = Piece::PAWN;
+pub const BISHOP: Piece = Piece::BISHOP;
+pub const KNIGHT: Piece = Piece::KNIGHT;
+pub const ROOK: Piece = Piece::ROOK;
+pub const QUEEN: Piece = Piece::QUEEN;
+pub const KING: Piece = Piece::KING;
 
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
@@ -175,7 +227,6 @@ pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; 
 /// give the bitmask that can be used to find out whether a given player has
 /// castled
 pub const fn playerCastledBits(p: Player) -> BitSet {
-
     match p {
         Player::BLACK => blackHasCastledBits,
         Player::WHITE => whiteHasCastledBits,
@@ -198,35 +249,33 @@ pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
 
 impl Position {
     /// the set of fields that are occupied by PAWNS
-
     pub fn pawns(&self) -> BitSet { (self.pawnSet - self.bishopSet) - self.rookSet }
+
     /// the set of fields that are occupied by KNIGHTS
-
     pub fn knights(&self) -> BitSet { (self.pawnSet * self.bishopSet) - self.rookSet }
+
     /// the set of fields that are occupied by BISHOPS
-
     pub fn bishops(&self) -> BitSet { (self.bishopSet - self.pawnSet) - self.rookSet }
+
     /// the set of fields that are occupied by ROOKS
-
     pub fn rooks(&self) -> BitSet { (self.rookSet - self.bishopSet) - self.pawnSet }
+
     /// the set of fields that are occupied by QUEENS
-
     pub fn queens(&self) -> BitSet { (self.rookSet * self.bishopSet) - self.pawnSet }
-    /// the set of fields that are occupied by KINGS
 
+    /// the set of fields that are occupied by KINGS
     pub fn kings(&self) -> BitSet { (self.pawnSet * self.rookSet) - self.bishopSet }
+
     /// get the number of `Move`s applied since the last pawn move or capture
     /// (Castling, despite technically doing 3 moves, corrects the counter
     /// acordingly)
-
     pub fn getPlyCounter(&self) -> u64 { (self.flags * plyCounterBits).bits >> plyCounterShift }
+
     /// get the number of `Move`s applied since the last root counter reset
-
     pub fn getRootDistance(&self) -> u64 { (self.flags * rootCounterBits).bits >> rootCounterShift }
+
     /// clear the 50-move ply counter
-
     pub fn clearPlyCounter(&self) -> Position {
-
         Position {
             flags: self.flags - plyCounterBits,
             ..*self
@@ -234,9 +283,7 @@ impl Position {
     }
 
     /// clear the root ply counter
-
     pub fn clearRootPlyCounter(&self) -> Position {
-
         Position {
             flags: self.flags - rootCounterBits,
             ..*self
@@ -244,9 +291,7 @@ impl Position {
     }
 
     /// Increment the ply counter(s) using either `onePly` or `onePlyRootOnly`
-
     pub fn incrPlyCounters(&self, mask: u64) -> Position {
-
         Position {
             flags: BitSet {
                 bits: self.flags.bits + mask,
@@ -260,7 +305,6 @@ impl Position {
     /// Only used after castling, where we actually do 3 ordinary (but illegal)
     /// moves.
     pub fn decrPlyCounters(&self) -> Position {
-
         Position {
             flags: BitSet {
                 bits: self.flags.bits - onePly,
@@ -270,44 +314,36 @@ impl Position {
     }
 
     /// subtract 2 from the plyCounters (conveniece for castlings)
-
     pub fn correctPlyCounterForCastling(&self) -> Position {
-
         self.decrPlyCounters().decrPlyCounters()
     }
 
     /// the set of occupied fields
-
     pub fn occupied(&self) -> BitSet { self.pawnSet + self.bishopSet + self.rookSet }
+
     /// `true` if and only if the given `Field` is not occupied by some piece
-
     pub fn isEmpty(&self, f: Field) -> bool { !self.occupied().member(f) }
+
     /// `true` if and only if no member of the given set is an occupied field
-
     pub fn areEmpty(&self, fs: BitSet) -> bool { (self.occupied() * fs).null() }
+
     /// tell who's turn it is
-
     pub fn turn(&self) -> Player {
-
         if self.flags.member(A1) {
-
             WHITE
         } else {
-
             BLACK
         }
     }
 
     /// fields occupied by WHITE
-
     pub fn occupiedByWhite(&self) -> BitSet { self.occupied() * self.whites }
+
     /// fields occupied by BLACK
-
     pub fn occupiedByBlack(&self) -> BitSet { self.occupied() - self.whites }
+
     /// fields occupied by Player
-
     pub fn occupiedBy(&self, p: Player) -> BitSet {
-
         match p {
             Player::WHITE => self.occupiedByWhite(),
             Player::BLACK => self.occupiedByBlack(),
@@ -315,13 +351,20 @@ impl Position {
     }
 
     /// fields occupied by the player who's turn it is
-
     pub fn occupiedByActive(&self) -> BitSet { self.occupiedBy(self.turn()) }
+
+    /// Tell us the piece that occupies some Field.
+    pub fn onField(&self, f: Field) -> Piece {
+        let s = bit(f);
+        let p = if (s * self.pawnSet).null() { 0 } else { 4 };
+        let b = if (s * self.bishopSet).null() { 0 } else { 2 };
+        let r = if (s * self.rookSet).null() { 0 } else { 1 };
+        Piece::encodePBR(p + b + r)
+    }
 }
 
 impl PartialEq for Position {
     fn eq(&self, other: &Position) -> bool {
-
         self.flags - counterBits == other.flags - counterBits
             && self.whites == other.whites
             && self.pawnSet == other.pawnSet
