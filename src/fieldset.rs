@@ -115,6 +115,10 @@ impl BitSet {
     pub const fn empty() -> BitSet {
         BitSet { bits: 0 }
     }
+    /// `true` if and only if this set is empty
+    pub const fn null(self) -> bool {
+        self.bits == 0
+    }
     /// A BitSet that contains all fields
     pub const fn all() -> BitSet {
         BitSet { bits: !0 }
