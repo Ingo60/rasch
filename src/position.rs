@@ -36,12 +36,17 @@ pub enum Player {
 }
 
 impl Player {
-    ///
+    /// the color of the opponent
     pub fn opponent(self) -> Player {
         match self {
             Player::BLACK => Player::WHITE,
             Player::WHITE => Player::BLACK,
         }
+    }
+
+    /// compute -1 or 1 without conditional branch
+    pub fn factor(self) -> i32 {
+        2 * (self as i32) - 1
     }
 }
 
@@ -160,35 +165,124 @@ pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; 
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
 pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
 
+/// give the bitmask that can be used to find out whether a given player has castled
+pub const fn playerCastledBits(p: Player) -> BitSet {
+    match p {
+        Player::BLACK => blackHasCastledBits,
+        Player::WHITE => whiteHasCastledBits,
+    }
+}
+
+#[rustfmt::skip]
+/// Bitmask to select the Bits that can be targets of an en-passant capture (rank 3 and rank 6)
+/// If any of those is set in the position flags, an en passant capture is possible
+pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-H3, A6-H6
+
+/// constant to add or subtract 1 from both counters in one go
+/// It goes without saying that we must never decrement beyond zero, nor increment beyond 255.
+pub const onePly: u64 = 0x1_0100_0000; // A4 and A5
+
+/// This is used when only the root counter must be incremented (on 'PAWN' moves and captures)
+pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
+
 impl Position {
     /// the set of fields that are occupied by PAWNS
-    pub fn pawns(self) -> BitSet {
+    pub fn pawns(&self) -> BitSet {
         (self.pawnSet - self.bishopSet) - self.rookSet
     }
 
     /// the set of fields that are occupied by KNIGHTS
-    pub fn knights(self) -> BitSet {
+    pub fn knights(&self) -> BitSet {
         (self.pawnSet * self.bishopSet) - self.rookSet
     }
 
     /// the set of fields that are occupied by BISHOPS
-    pub fn bishops(self) -> BitSet {
+    pub fn bishops(&self) -> BitSet {
         (self.bishopSet - self.pawnSet) - self.rookSet
     }
 
     /// the set of fields that are occupied by ROOKS
-    pub fn rooks(self) -> BitSet {
+    pub fn rooks(&self) -> BitSet {
         (self.rookSet - self.bishopSet) - self.pawnSet
     }
 
     /// the set of fields that are occupied by QUEENS
-    pub fn queens(self) -> BitSet {
+    pub fn queens(&self) -> BitSet {
         (self.rookSet * self.bishopSet) - self.pawnSet
     }
 
     /// the set of fields that are occupied by KINGS
-    pub fn kings(self) -> BitSet {
+    pub fn kings(&self) -> BitSet {
         (self.pawnSet * self.rookSet) - self.bishopSet
+    }
+
+    /// get the number of `Move`s applied since the last pawn move or capture
+    /// (Castling, despite technically doing 3 moves, corrects the counter acordingly)
+    pub fn getPlyCounter(&self) -> u64 {
+        (self.flags * plyCounterBits).bits >> plyCounterShift
+    }
+
+    /// get the number of `Move`s applied since the last root counter reset
+    pub fn getRootDistance(&self) -> u64 {
+        (self.flags * rootCounterBits).bits >> rootCounterShift
+    }
+
+    /// clear the 50-move ply counter
+    pub fn clearPlyCounter(&self) -> Position {
+        Position {
+            flags: self.flags - plyCounterBits,
+            ..*self
+        }
+    }
+
+    /// clear the root ply counter
+    pub fn clearRootPlyCounter(&self) -> Position {
+        Position {
+            flags: self.flags - rootCounterBits,
+            ..*self
+        }
+    }
+
+    /// Increment the ply counter(s) using either `onePly` or `onePlyRootOnly`
+    pub fn incrPlyCounters(&self, mask: u64) -> Position {
+        Position {
+            flags: BitSet {
+                bits: self.flags.bits + mask,
+            },
+            ..*self
+        }
+    }
+
+    /// Decrement both counters
+    /// Note: it will never be necessary to decrement only one counter.
+    /// Only used after castling, where we actually do 3 ordinary (but illegal) moves.  
+    pub fn decrPlyCounters(&self) -> Position {
+        Position {
+            flags: BitSet {
+                bits: self.flags.bits - onePly,
+            },
+            ..*self
+        }
+    }
+
+    /// subtract 2 from the plyCounters (conveniece for castlings)
+    pub fn correctPlyCounterForCastling(&self) -> Position {
+        self.decrPlyCounters().decrPlyCounters()
+    }
+
+    /// the set of occupied fields
+    pub fn occupied(&self) -> BitSet {
+        self.pawnSet + self.bishopSet + self.rookSet
+    }
+
+    /// `true` if and only if the given `Field` is not occupied by some piece
+    pub fn empty(&self, f: Field) -> bool {
+        !self.occupied().member(f)
+    }
+
+    /// `true` if and only if no member of the given set is an occupied field
+    pub fn allEmpty(&self, fs: BitSet) -> bool {
+        (self.occupied() * fs).null()
     }
 }
 
