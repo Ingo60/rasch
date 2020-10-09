@@ -73,9 +73,7 @@ impl FromStr for Field {
                     if c >= '1' && c <= '8' {
                         let rank = c as u32 - '1' as u32;
                         match iter.next() {
-                            Some(_) => {
-                                Err(String::from("cannot parse field from more than 2 chars"))
-                            }
+                            Some(_) => Err(String::from("cannot parse field from more than 2 chars")),
                             None => Ok(Field::from((rank << 3) as u8 + file as u8)),
                         }
                     } else {
@@ -116,6 +114,8 @@ impl BitSet {
     pub const fn empty() -> BitSet { BitSet { bits: 0 } }
     /// `true` if and only if this set is empty
     pub const fn null(self) -> bool { self.bits == 0 }
+    /// `true` if and only if this set is not empty
+    pub const fn some(self) -> bool { self.bits != 0 }
     /// A BitSet that contains all fields
     pub const fn all() -> BitSet { BitSet { bits: !0 } }
     #[inline]
@@ -125,8 +125,8 @@ impl BitSet {
     /// tue if and only if the given field is a member of this BitSet
     pub const fn member(self, m: Field) -> bool { self.bits & BitSet::singleton(m).bits != 0 }
     #[inline]
-    /// The set of fields that are members of this set or members of the other
-    /// set
+    /// The set of fields that are members of this set or members of the
+    /// other set
     pub const fn union(self, other: BitSet) -> BitSet {
         BitSet {
             bits: self.bits | other.bits,
@@ -139,8 +139,8 @@ impl BitSet {
             bits: self.bits & other.bits,
         }
     }
-    /// The set of fields that are mebers of this set and non-members of the
-    /// other set
+    /// The set of fields that are mebers of this set and non-members of
+    /// the other set
     #[inline]
     pub const fn difference(self, other: BitSet) -> BitSet {
         BitSet {
@@ -152,8 +152,8 @@ impl BitSet {
     pub const fn card(self) -> u32 { self.bits.count_ones() }
     /// the smallest field that is member of this set
     /// will panic when given the empty set
-    /// This is, in some sense, the inverse of singleton, becaue it is the case
-    /// that `singleton(x).bitIndex() == x
+    /// This is, in some sense, the inverse of singleton, becaue it is
+    /// the case that `singleton(x).bitIndex() == x`
     pub fn bitIndex(self) -> Field {
         if self.bits == 0 {
             panic!("bitIndex called on empty set");
@@ -167,10 +167,7 @@ impl BitSet {
     /// or: BitSet::new(&v[..]) where v is a Vec<Field>
     /// (but use BitSet::empty() instead of BitSet::new(&[]) and
     /// BitSet::singleton(f) instead of BitSet::new(&[Field::D5])
-    pub fn new(flds: &[Field]) -> BitSet {
-        flds.iter()
-            .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f))
-    }
+    pub fn new(flds: &[Field]) -> BitSet { flds.iter().fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f)) }
 }
 
 impl Add for BitSet {
@@ -267,16 +264,10 @@ mod tests {
 
     #[test]
     fn test_iter() {
-        assert_eq!(
-            "[]",
-            format!("{:?}", BitSet::empty().into_iter().collect::<Vec<_>>())
-        );
+        assert_eq!("[]", format!("{:?}", BitSet::empty().into_iter().collect::<Vec<_>>()));
         assert_eq!(
             "[A1, B1, C1]",
-            format!(
-                "{:?}",
-                (!BitSet::empty()).into_iter().take(3).collect::<Vec<_>>()
-            )
+            format!("{:?}", (!BitSet::empty()).into_iter().take(3).collect::<Vec<_>>())
         );
     }
 
@@ -373,10 +364,7 @@ mod tests {
             + BitSet::singleton(Field::B6)
             + BitSet::singleton(Field::C7)
             + BitSet::singleton(Field::E8);
-        assert_eq!(
-            a5b6c7e8,
-            BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8])
-        );
+        assert_eq!(a5b6c7e8, BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8]));
     }
 
     #[test]
