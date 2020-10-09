@@ -20,6 +20,7 @@ use std::hash::Hasher;
 use super::fieldset::BitSet;
 use super::fieldset::Field;
 use super::fieldset::Field::*;
+use super::mdb;
 
 /// short form of BitSet::singleton
 pub const fn bit(f: Field) -> BitSet { BitSet::singleton(f) }
@@ -444,6 +445,105 @@ impl Position {
             ..*self
         }
     }
+
+    /// Like `attacked`, but reports attacks by `PAWN`s only. O(1)
+    pub fn attackedByPawns(&self, wo: Field, durch: Player) -> BitSet {
+        let attackers = match durch {
+            WHITE => mdb::targetOfWhitePawns(wo),
+            BLACK => mdb::targetOfBlackPawns(wo),
+        };
+        match durch {
+            WHITE => (self.pawns() * attackers) * self.whites,
+            BLACK => (self.pawns() * attackers) - self.whites,
+        }
+    }
+
+    /// Like `attacked`, but reports attacks by `KNIGHT`s only. O(1)
+    pub fn attackedByKnights(&self, wo: Field, durch: Player) -> BitSet {
+        let attackers = self.knights() * mdb::knightTargets(wo);
+        match durch {
+            WHITE => (self.pawns() * attackers) * self.whites,
+            BLACK => (self.pawns() * attackers) - self.whites,
+        }
+    }
+
+    /// Like `attacked`, but reports attacks by `KINGS`s only. O(1)
+    pub fn attackedByKings(&self, wo: Field, durch: Player) -> BitSet {
+        let attackers = self.kings() * mdb::kingTargets(wo);
+        match durch {
+            WHITE => (self.pawns() * attackers) * self.whites,
+            BLACK => (self.pawns() * attackers) - self.whites,
+        }
+    }
+
+    /// Like `attacked`, but reports attacks by `BISHOP`s only. Needs 1
+    /// fold through attacker's bishops
+    pub fn attackedByBishops(&self, wo: Field, durch: Player) -> BitSet {
+        let bishops = match durch {
+            // find the attacker's bishops
+            WHITE => self.bishops() * self.whites,
+            BLACK => self.bishops() - self.whites,
+        };
+        self.validBishopTargets(wo, bishops)
+    }
+
+    /// Like `attacked`, but reports attacks by `ROOK`s only. Needs 1
+    /// fold through attacker's rooks.
+    pub fn attackedByRooks(&self, wo: Field, durch: Player) -> BitSet {
+        let rooks = match durch {
+            // find the attacker's rooks
+            WHITE => self.rooks() * self.whites,
+            BLACK => self.rooks() - self.whites,
+        };
+        self.validRookTargets(wo, rooks)
+    }
+
+    /// Like `attacked`, but reports attacks by `QUEEN`s only. Needs 2
+    /// folds through attacker's queens.
+    pub fn attackedByQueens(&self, wo: Field, durch: Player) -> BitSet {
+        let queens = match durch {
+            // find the attacker's queens
+            WHITE => self.queens() * self.whites,
+            BLACK => self.queens() - self.whites,
+        };
+        self.validRookTargets(wo, queens) + self.validBishopTargets(wo, queens)
+    }
+
+    /// Where does a BISHOP on a given field attack in the current
+    /// position, taking actual board status in account? Result can
+    /// be restricted to certain set of fields to save iteration
+    /// cycles.
+    ///
+    /// To find this out, we must loop through the set of general
+    /// targets (restricted by the mask) and check if the
+    /// intermediate fields, if any, are all empty.
+    ///
+    /// Note that the current position must not actually have a BISHOP
+    /// on the from field. Indeed, this function can be used in
+    /// determining whether a certain field is attacked by a BISHOP.
+    /// This is so because BISHOP moves are symmetric. That is, if a
+    /// BISHOP standing on the from field could attack a BISHOP
+    /// somewhere this means the from field is also attacked by that
+    /// BISHOP.
+    pub fn validBishopTargets(&self, from: Field, mask: BitSet) -> BitSet {
+        let targets = mdb::bishopTargets(from) * mask;
+        // chances are we can avoid all the iteration overhead
+        if targets.null() {
+            targets
+        } else {
+            targets.filter(|to| self.areEmpty(mdb::canBishop(from, *to))).collect()
+        }
+    }
+
+    /// like `validBishopTargets` but for ROOKs
+    pub fn validRookTargets(&self, from: Field, mask: BitSet) -> BitSet {
+        let targets = mdb::rookTargets(from) * mask;
+        if targets.null() {
+            targets
+        } else {
+            targets.filter(|to| self.areEmpty(mdb::canRook(from, *to))).collect()
+        }
+    }
 }
 
 impl PartialEq for Position {
@@ -513,7 +613,7 @@ impl Move {
 
     /// construct a move from player, piece to move, piece to promote,
     /// from field and to field
-    pub fn new(pl: Player, pc: Piece, pr: Piece, from: Field, to: Field) -> Move {
+    pub const fn new(pl: Player, pc: Piece, pr: Piece, from: Field, to: Field) -> Move {
         Move {
             mv: ((pl as u32) << 18) | ((pc as u32) << 15) | ((pr as u32) << 12) | ((to as u32) << 6) | (from as u32),
         }
@@ -560,3 +660,10 @@ impl Move {
 impl Display for Move {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
 }
+
+// some prominent moves
+
+pub const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
+pub const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
+pub const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
+pub const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
