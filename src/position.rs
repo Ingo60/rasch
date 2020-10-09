@@ -477,7 +477,7 @@ impl Position {
     }
 
     /// Like `attacked`, but reports attacks by `BISHOP`s only. Needs 1
-    /// fold through attacker's bishops
+    /// iteration through attacker's bishops
     pub fn attackedByBishops(&self, wo: Field, durch: Player) -> BitSet {
         let bishops = match durch {
             // find the attacker's bishops
@@ -488,7 +488,7 @@ impl Position {
     }
 
     /// Like `attacked`, but reports attacks by `ROOK`s only. Needs 1
-    /// fold through attacker's rooks.
+    /// iteration through attacker's rooks.
     pub fn attackedByRooks(&self, wo: Field, durch: Player) -> BitSet {
         let rooks = match durch {
             // find the attacker's rooks
@@ -499,7 +499,7 @@ impl Position {
     }
 
     /// Like `attacked`, but reports attacks by `QUEEN`s only. Needs 2
-    /// folds through attacker's queens.
+    /// iterations through attacker's queens.
     pub fn attackedByQueens(&self, wo: Field, durch: Player) -> BitSet {
         let queens = match durch {
             // find the attacker's queens
@@ -509,10 +509,80 @@ impl Position {
         self.validRookTargets(wo, queens) + self.validBishopTargets(wo, queens)
     }
 
+    /// Like `attackedByBishops` but reports also QUEENs  attacking with
+    /// BISHOP moves. Needs 1 iteration through attacker's queens and
+    /// bishops.
+    pub fn attackedByBishopsOrQueens(&self, wo: Field, durch: Player) -> BitSet {
+        let pieces = match durch {
+            // find the attacker's bishops and queens
+            WHITE => (self.bishops() + self.queens()) * self.whites,
+            BLACK => (self.bishops() + self.queens()) - self.whites,
+        };
+        self.validBishopTargets(wo, pieces)
+    }
+
+    /// Like `attackedByRooks` but reports also QUEENs  attacking with
+    /// ROOK moves. Needs 1 iteration through attacker's queens and
+    /// rooks.
+    pub fn attackedByRooksOrQueens(&self, wo: Field, durch: Player) -> BitSet {
+        let pieces = match durch {
+            // find the attacker's rooks and queens
+            WHITE => (self.rooks() + self.queens()) * self.whites,
+            BLACK => (self.rooks() + self.queens()) - self.whites,
+        };
+        self.validRookTargets(wo, pieces)
+    }
+
+    /// Tell if the indicated field is attacked by a piece of the
+    /// indicated player This is faster than
+    ///
+    ///         !position.attacked(f,p).null()
+    ///
+    /// because it can short circuit whenever an attacker is found. And
+    /// of course it tries the pieces first that have an O(1) time
+    /// complexity. In the worst case, when the attack is from a ROOK or
+    /// QUEEN it'll need 2 iterations.
+    pub fn isAttacked(&self, wo: Field, durch: Player) -> bool { !self.isNotAttacked(wo, durch) }
+
+    /// the opposite of isAttacked
+    pub fn isNotAttacked(&self, wo: Field, durch: Player) -> bool {
+        self.attackedByPawns(wo, durch).null()
+            && self.attackedByKnights(wo, durch).null()
+            && self.attackedByKings(wo, durch).null()
+            && self.attackedByBishopsOrQueens(wo, durch).null()
+            && self.attackedByRooksOrQueens(wo, durch).null()
+    }
+
+    /// Given a `Position`, a `Field` and a `Player` computes the set of
+    /// fields that are occupied  by a `Piece` of `Player`
+    /// that could move to the given `Field` (and capture).
+    ///
+    /// Note that computation for `QUEEN`, `ROOK` and `BISHOP` attackers
+    /// require two iterations. Therefore, whenever one just needs
+    /// to know *whether* the `Field` is attacked or not, use
+    /// 'isAttacked'
+    pub fn attacked(&self, wo: Field, durch: Player) -> BitSet {
+        self.attackedByPawns(wo, durch)
+            + self.attackedByKnights(wo, durch)
+            + self.attackedByKings(wo, durch)
+            + self.attackedByBishopsOrQueens(wo, durch)
+            + self.attackedByRooksOrQueens(wo, durch)
+    }
+
+    /// Tell if `Players` KING stands in check.
+    pub fn inCheck(&self, wer: Player) -> bool {
+        let king = match wer {
+            WHITE => self.kings() * self.whites,
+            BLACK => self.kings() - self.whites,
+        };
+        // an invalid position without kings will crash fld()
+        self.isAttacked(fld(king), wer.opponent())
+    }
+
     /// Where does a BISHOP on a given field attack in the current
     /// position, taking actual board status in account? Result can
     /// be restricted to certain set of fields to save iteration
-    /// cycles.
+    /// cycles or all results can be kept using BitSet::all()
     ///
     /// To find this out, we must loop through the set of general
     /// targets (restricted by the mask) and check if the
@@ -542,6 +612,19 @@ impl Position {
             targets
         } else {
             targets.filter(|to| self.areEmpty(mdb::canRook(from, *to))).collect()
+        }
+    }
+
+    /// Give the least attacking piece, if any
+    pub fn leastAttacker(&self, wo: Field, durch: Player) -> Piece {
+        match () {
+            () if self.attackedByPawns(wo, durch).some() => PAWN,
+            () if self.attackedByKnights(wo, durch).some() => KNIGHT,
+            () if self.attackedByBishops(wo, durch).some() => BISHOP,
+            () if self.attackedByRooks(wo, durch).some() => ROOK,
+            () if self.attackedByQueens(wo, durch).some() => QUEEN,
+            () if self.attackedByKings(wo, durch).some() => KING,
+            () => EMPTY,
         }
     }
 }
