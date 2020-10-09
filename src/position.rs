@@ -117,8 +117,8 @@ impl Piece {
     }
 
     /// Encode the 3 bit information (4 in pawnSet, 2 in bishopSet, 1 in
-    /// rookSet) into a Piece. Any value >6 results in EMPTY, as well as 0
-    /// (which is proper)
+    /// rookSet) into a Piece. Any value >6 results in EMPTY, as well as
+    /// 0 (which is proper)
     pub fn encodePBR(pbr: u8) -> Piece {
         match pbr {
             0b001 => ROOK,
@@ -141,6 +141,7 @@ impl Piece {
 // pub const KING: Piece = Piece::KING;
 use Piece::*;
 
+#[rustfmt::skip]
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
 //  hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
@@ -153,42 +154,46 @@ use Piece::*;
 /// - and the possibility to apply a `Move`
 /// If the initial position and the application of moves is correct
 /// and the move generator does indeed generate
-/// valid moves only, then it should be impossible to reach an illegal state.
+/// valid moves only, then it should be impossible to reach an illegal
+/// state.
 
 #[derive(Clone, Copy, Debug)]
 
 pub struct Position {
-    /// The flags bitset informs about castling rights, en passant position and
-    /// who's turn it is. In addition, whether the kings actually did
-    /// castle, the 50-moves-rule ply counter and the distance to root ply
-    /// counter.
+    /// The flags bitset informs about castling rights, en passant
+    /// position and who's turn it is. In addition, whether the
+    /// kings actually did castle, the 50-moves-rule ply counter and
+    /// the distance to root ply counter.
     ///
     /// - If A1 is in the set, it is 'WHITE's turn, otherwise 'BLACK's.
-    /// - If en passant is possible, one of  A3..H3 or A6..H6 is in the set
-    /// - If castling is possible, the corresponding target fields of the Kings
-    ///   are in the set. This would be G1 (white kingside), C1 (white
-    ///   queenside), G8 (black kingside) or C8 (black queenside).
-    /// - If castling actually was performed, F1, D1, F8 or G8 are set (the
-    ///   field that the 'KING' skipped).
-    /// - The bits 'A4' .. 'H4' contain the unsigned half-move counter. It is
-    ///   reset to 0 on a 'PAWN' move or a capturing move. For all other moves,
-    ///   it is incremented.
-    /// - The bits 'A5' .. 'H5' contain the unsigned root-move counter. It is
-    ///   incremented with every move, but reset to 0 after a usermove was
-    ///   carried out. Hence, in searches, one can see how many levels deep in
-    ///   the search we are (distance to root), while the "depth" parameter of
-    ///   said search functions gives the distance to the horizon.
+    /// - If en passant is possible, one of  A3..H3 or A6..H6 is in the
+    ///   set
+    /// - If castling is possible, the corresponding target fields of
+    ///   the Kings are in the set. This would be G1 (white kingside),
+    ///   C1 (white queenside), G8 (black kingside) or C8 (black
+    ///   queenside).
+    /// - If castling actually was performed, F1, D1, F8 or G8 are set
+    ///   (the field that the 'KING' skipped).
+    /// - The bits 'A4' .. 'H4' contain the unsigned half-move counter.
+    ///   It is reset to 0 on a 'PAWN' move or a capturing move. For all
+    ///   other moves, it is incremented.
+    /// - The bits 'A5' .. 'H5' contain the unsigned root-move counter.
+    ///   It is incremented with every move, but reset to 0 after a
+    ///   usermove was carried out. Hence, in searches, one can see how
+    ///   many levels deep in the search we are (distance to root),
+    ///   while the "depth" parameter of said search functions gives the
+    ///   distance to the horizon.
     ///
-    /// Note: the counter bits and the F1, D1, F8 and G8 bits are not reflected
-    /// in the hash key.
+    /// Note: the counter bits and the F1, D1, F8 and G8 bits are not
+    /// reflected in the hash key.
     flags: BitSet,
 
     /// the fields occupied by WHITE pieces
     whites: BitSet,
 
-    /// For encoding of figures, we use only 3 sets instead of 6, namely        
-    /// 'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the
-    /// following convention:
+    /// For encoding of figures, we use only 3 sets instead of 6, namely
+    /// 'Position.pawnSet', Position.bishopSet' and
+    /// 'Position.rookSet', with the following convention:
     ///
     /// ```text
     /// Set       P      B     R
@@ -200,15 +205,16 @@ pub struct Position {
     /// KING      x      -     x
     /// ```
     ///
-    /// For example, if the bit E5 is set in the pawnSet and the rookSet, but
-    /// not in the bishopSet, then there is a KING on E5. If the E5 flag is
-    /// set in whites, then it is a white king, else a black king.
+    /// For example, if the bit E5 is set in the pawnSet and the
+    /// rookSet, but not in the bishopSet, then there is a KING on
+    /// E5. If the E5 flag is set in whites, then it is a white
+    /// king, else a black king.
     pawnSet:   BitSet,
     bishopSet: BitSet,
     rookSet:   BitSet,
 
-    /// the Zobrist hash key, a special hashing method usually employed in chess
-    /// programming
+    /// the Zobrist hash key, a special hashing method usually employed
+    /// in chess programming
     ///
     /// The following is guaranteed:
     ///
@@ -259,8 +265,8 @@ pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; 
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
 pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
 
-/// give the bitmask that can be used to find out whether a given player has
-/// castled
+/// give the bitmask that can be used to find out whether a given player
+/// has castled
 pub const fn playerCastledBits(p: Player) -> BitSet {
     match p {
         Player::BLACK => blackHasCastledBits,
@@ -278,8 +284,8 @@ pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-
 /// increment beyond 255.
 pub const onePly: u64 = 0x1_0100_0000; // A4 and A5
 
-/// This is used when only the root counter must be incremented (on 'PAWN' moves
-/// and captures)
+/// This is used when only the root counter must be incremented (on
+/// 'PAWN' moves and captures)
 pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
 
 impl Position {
@@ -301,12 +307,13 @@ impl Position {
     /// the set of fields that are occupied by KINGS
     pub fn kings(&self) -> BitSet { (self.pawnSet * self.rookSet) - self.bishopSet }
 
-    /// get the number of `Move`s applied since the last pawn move or capture
-    /// (Castling, despite technically doing 3 moves, corrects the counter
-    /// acordingly)
+    /// get the number of `Move`s applied since the last pawn move or
+    /// capture (Castling, despite technically doing 3 moves,
+    /// corrects the counter acordingly)
     pub fn getPlyCounter(&self) -> u64 { (self.flags * plyCounterBits).bits >> plyCounterShift }
 
-    /// get the number of `Move`s applied since the last root counter reset
+    /// get the number of `Move`s applied since the last root counter
+    /// reset
     pub fn getRootDistance(&self) -> u64 { (self.flags * rootCounterBits).bits >> rootCounterShift }
 
     /// clear the 50-move ply counter
@@ -325,7 +332,8 @@ impl Position {
         }
     }
 
-    /// Increment the ply counter(s) using either `onePly` or `onePlyRootOnly`
+    /// Increment the ply counter(s) using either `onePly` or
+    /// `onePlyRootOnly`
     pub fn incrPlyCounters(&self, mask: u64) -> Position {
         Position {
             flags: BitSet {
@@ -337,8 +345,8 @@ impl Position {
 
     /// Decrement both counters
     /// Note: it will never be necessary to decrement only one counter.
-    /// Only used after castling, where we actually do 3 ordinary (but illegal)
-    /// moves.
+    /// Only used after castling, where we actually do 3 ordinary (but
+    /// illegal) moves.
     pub fn decrPlyCounters(&self) -> Position {
         Position {
             flags: BitSet {
@@ -349,18 +357,26 @@ impl Position {
     }
 
     /// subtract 2 from the plyCounters (conveniece for castlings)
-    pub fn correctPlyCounterForCastling(&self) -> Position {
-        self.decrPlyCounters().decrPlyCounters()
-    }
+    pub fn correctPlyCounterForCastling(&self) -> Position { self.decrPlyCounters().decrPlyCounters() }
 
     /// the set of occupied fields
     pub fn occupied(&self) -> BitSet { self.pawnSet + self.bishopSet + self.rookSet }
 
-    /// `true` if and only if the given `Field` is not occupied by some piece
+    /// `true` if and only if the given `Field` is not occupied by some
+    /// piece
     pub fn isEmpty(&self, f: Field) -> bool { !self.occupied().member(f) }
 
-    /// `true` if and only if no member of the given set is an occupied field
+    /// `true` if and only if no member of the given set is an occupied
+    /// field
     pub fn areEmpty(&self, fs: BitSet) -> bool { (self.occupied() * fs).null() }
+
+    /// `true` if and only if the given `Field` is occupied by WHITE
+    ///
+    /// Note that `false` does **not** imply it's occupied by BLACK, it
+    /// could just be empty. But if you already know that the field
+    /// **is** occupied, this'll save a few cycles consulting the
+    /// pawn, rook and bishop sets.
+    pub fn isWhite(&self, f: Field) -> bool { self.whites.member(f) }
 
     /// tell who's turn it is
     pub fn turn(&self) -> Player {
@@ -390,12 +406,21 @@ impl Position {
 
     /// Tell us the piece that occupies some Field.
     #[allow(clippy::many_single_char_names)] // because we are no snowflakes
-    pub fn onField(&self, f: Field) -> Piece {
+    pub fn pieceOn(&self, f: Field) -> Piece {
         let s = bit(f);
         let p = if (s * self.pawnSet).null() { 0 } else { 4 };
         let b = if (s * self.bishopSet).null() { 0 } else { 2 };
         let r = if (s * self.rookSet).null() { 0 } else { 1 };
         Piece::encodePBR(p + b + r)
+    }
+
+    /// Tell us the player occupying some Field.
+    pub fn playerOn(&self, f: Field) -> Option<Player> {
+        if self.occupied().member(f) {
+            Some(Player::from(self.isWhite(f)))
+        } else {
+            None
+        }
     }
 
     /// compute the hash
@@ -406,8 +431,8 @@ impl Position {
         self.occupied()
             // .into_iter()
             .fold(flagz, |acc, f| {
-                let player = Player::from(self.whites.member(f));
-                let piece = self.onField(f);
+                let player = Player::from(self.isWhite(f));
+                let piece = self.pieceOn(f);
                 acc ^ super::zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
             })
     }
@@ -440,10 +465,10 @@ impl Hash for Position {
 /// Representation of a move
 ///    
 /// Normally, the promote bits are EMPTY, e.g. 0b000.
-/// If moving piece is KING, promote may be QUEEN or KING to indicate queenside
-/// or kingside castling. If it's a promoting PAWN move, promote may be KNIGHT,
-/// BISHOP, ROOK or QUEEN. If it's an en passant capturing, promote will be
-/// PAWN.
+/// If moving piece is KING, promote may be QUEEN or KING to indicate
+/// queenside or kingside castling. If it's a promoting PAWN move,
+/// promote may be KNIGHT, BISHOP, ROOK or QUEEN. If it's an en passant
+/// capturing, promote will be PAWN.
 ///
 /// We need 20 bits:
 ///
@@ -451,8 +476,8 @@ impl Hash for Position {
 /// KPfffpppttttttssssss
 /// ```
 ///
-/// - [K] This bit indicates whether this move caused a cut and is thus a so
-/// called killer move.
+/// - [K] This bit indicates whether this move caused a cut and is thus
+///   a so called killer move.
 /// - [P] 1 bit for player where 0 means BLACK, 1 means WHITE
 /// - [fff] 3 bit encoding for moving Piece
 /// - [ppp] 3 bit for promotion piece
@@ -465,8 +490,8 @@ pub struct Move {
 }
 
 #[allow(clippy::inconsistent_digit_grouping)]
-// we use the unconventional digit grouping to demonstrate the structure of the
-// bitfield
+// we use the unconventional digit grouping to demonstrate the structure
+// of the bitfield
 impl Move {
     /// Tell if this is a killer move
     pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
@@ -486,15 +511,11 @@ impl Move {
     /// From whence are we moving?
     pub fn from(self) -> Field { Field::from((self.mv & 0b111111u32) as u8) }
 
-    /// construct a move from player, piece to move, piece to promote, from
-    /// field and to field
+    /// construct a move from player, piece to move, piece to promote,
+    /// from field and to field
     pub fn new(pl: Player, pc: Piece, pr: Piece, from: Field, to: Field) -> Move {
         Move {
-            mv: ((pl as u32) << 18)
-                | ((pc as u32) << 15)
-                | ((pr as u32) << 12)
-                | ((to as u32) << 6)
-                | (from as u32),
+            mv: ((pl as u32) << 18) | ((pc as u32) << 15) | ((pr as u32) << 12) | ((to as u32) << 6) | (from as u32),
         }
     }
 
@@ -517,13 +538,14 @@ impl Move {
         self.from().show() + &self.to().show() + &p
     }
 
-    /// Find a move in a list that corresponds to a given string or post an Err.
-    /// This will be used when accepting a move to make from the user.
+    /// Find a move in a list that corresponds to a given string or post
+    /// an Err. This will be used when accepting a move to make from
+    /// the user.
     ///
-    /// This is so that we'll use the moves generated by our move generator
-    /// only. Assuming the move generator generates all possible moves for
-    /// any position, the move entered **must be** in the list, or else it is
-    /// illegal.
+    /// This is so that we'll use the moves generated by our move
+    /// generator only. Assuming the move generator generates all
+    /// possible moves for any position, the move entered **must
+    /// be** in the list, or else it is illegal.
     pub fn unAlgebraic(list: &[Move], src: &str) -> Result<Move, String> {
         for mv in list.iter() {
             if mv.algebraic() == src {
@@ -531,11 +553,7 @@ impl Move {
             }
         }
         let vs: Vec<_> = list.iter().map(|x| x.algebraic()).collect();
-        Err(format!(
-            "Move {} does not appear in [{}]",
-            src,
-            &vs[..].join(", ")
-        ))
+        Err(format!("Move {} does not appear in [{}]", src, &vs[..].join(", ")))
     }
 }
 

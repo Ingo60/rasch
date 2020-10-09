@@ -2,8 +2,11 @@ edition = "2018"
 fn_params_layout = "Compressed"
 fn_single_line = true
 format_strings = true
-struct_lit_width = 60
-struct_variant_width = 60
-wrap_comments = true
+struct_lit_single_line = true
 struct_field_align_threshold = 30
-
+struct_lit_width = 80
+struct_variant_width = 80
+single_line_if_else_max_width=80
+wrap_comments = true
+comment_width = 72
+max_width = 120
