@@ -391,6 +391,16 @@ pub const whiteToMove: BitSet = bit(A1);
 /// Bit mask that indicates BLACK is to move
 pub const blackToMove: BitSet = BitSet::empty();
 
+/// Helper function that turns `false` into `0u64` and `true` into
+/// `0xffff_ffff_ffff_ffffu64`
+#[inline]
+pub const fn boolMask(b: bool) -> u64 {
+    match b {
+        false => 0,
+        true => 0xffff_ffff_ffff_ffffu64,
+    }
+}
+
 impl Position {
     /// the set of fields that are occupied by PAWNS
     pub fn pawns(&self) -> BitSet { (self.pawnSet - self.bishopSet) - self.rookSet }
