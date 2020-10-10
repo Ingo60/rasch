@@ -21,6 +21,7 @@ use super::fieldset::BitSet;
 use super::fieldset::Field;
 use super::fieldset::Field::*;
 use super::mdb;
+use super::zobrist;
 
 /// short form of BitSet::singleton
 pub const fn bit(f: Field) -> BitSet { BitSet::singleton(f) }
@@ -391,6 +392,17 @@ pub const whiteToMove: BitSet = bit(A1);
 /// Bit mask that indicates BLACK is to move
 pub const blackToMove: BitSet = BitSet::empty();
 
+/// Zobrist hash value commonly used: A1
+static flagZobristA1: u64 = zobrist::flagZobrist(A1 as u32);
+/// Zobrist hash value commonly used: C1
+static flagZobristC1: u64 = zobrist::flagZobrist(C1 as u32);
+/// Zobrist hash value commonly used: G1
+static flagZobristG1: u64 = zobrist::flagZobrist(G1 as u32);
+/// Zobrist hash value commonly used: C8
+static flagZobristC8: u64 = zobrist::flagZobrist(C8 as u32);
+/// Zobrist hash value commonly used: G8
+static flagZobristG8: u64 = zobrist::flagZobrist(G8 as u32);
+
 /// Helper function that turns `false` into `0u64` and `true` into
 /// `0xffff_ffff_ffff_ffffu64`
 #[inline]
@@ -546,7 +558,7 @@ impl Position {
             .fold(flagz, |acc, f| {
                 let player = Player::from(self.isWhite(f));
                 let piece = self.pieceOn(f);
-                acc ^ super::zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
+                acc ^ zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
             })
     }
 
@@ -783,6 +795,157 @@ impl Position {
             bishopSet,
             rookSet,
             ..*self
+        }
+    }
+
+    /// Apply an ordinary move. Used only my `apply`
+    fn applyOrdinary(&self, mv: Move) -> Position {
+        // construct the part of the flag that tells who's move it is
+        let tomove = BitSet {
+            bits: (self.flags * whiteToMove).bits ^ whiteToMove.bits,
+        };
+        // construct the counter part of the flags
+        let plies = match mv.piece() {
+            PAWN if self.isEmpty(mv.to()) => BitSet {
+                bits: (self.flags * rootCounterBits).bits + onePlyRootOnly,
+            },
+            _otherwise => BitSet {
+                bits: (self.flags * rootCounterBits).bits + onePly,
+            },
+        };
+        // LCR means "lost castling rights"
+        // the castling rights that are lost if this was a KING move
+        let kingMoveLCR = match mv.piece() {
+            KING => match mv.player() {
+                WHITE => whiteCastlingRights,
+                BLACK => blackCastlingRights,
+            },
+            _otherwise => BitSet::empty(),
+        };
+        // the castling rights that are lost if this was a ROOK move
+        // it suffices to check for the from positions, since the same rights
+        // are also long lost if there is something else on the ROOK fields
+        let rookMoveLCR = match mv.from() {
+            A8 => bit(C8),
+            H8 => bit(G8),
+            A1 => bit(C1),
+            H1 => bit(G1),
+            _other => BitSet::empty(),
+        };
+        // the castling rights lost if the target of the move if an original
+        // ROOK field Again, it matters not if the original ROOK is
+        // standing there or not, the rights are lost anyway.
+        let rookCaptureLCR = match mv.to() {
+            A8 => bit(C8),
+            H8 => bit(G8),
+            A1 => bit(C1),
+            H1 => bit(G1),
+            _other => BitSet::empty(),
+        };
+        // All lost castling rights in this move.
+        // For example, moving the rook from a8 to a1 would loose C8 and C1
+        let lostCastlingRights = kingMoveLCR + rookMoveLCR + rookCaptureLCR;
+        // The new castling rights are the difference between the maybe still
+        // existing castling rights and the lost castling rights
+        let castlingRights = (self.flags * castlingBits) - lostCastlingRights;
+        // en passant bit to set, if any
+        let enPassantBit = match mv.piece() {
+            PAWN if mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
+            PAWN if mv.to() as u8 == mv.from() as u8 - 16 => bit(Field::from(mv.from() as u8 - 8)),
+            _otherwise => BitSet::empty(),
+        };
+        // the new castled flag to set, if any
+        let gainedCastledBit = match mv.piece() {
+            KING => match mv.from() {
+                E1 => match mv.to() {
+                    G1 => bit(F1),
+                    C1 => bit(D1),
+                    _otherwise => BitSet::empty(),
+                },
+                E8 => match mv.to() {
+                    G8 => bit(F8),
+                    C8 => bit(D8),
+                    _otherwise => BitSet::empty(),
+                },
+                _otherwise => BitSet::empty(),
+            },
+            _otherwise => BitSet::empty(),
+        };
+        // The new part of flags that tells who has castled already.
+        let hasCastledFlags = (self.flags * castlingDoneBits) + gainedCastledBit;
+        // Fields that will be empty after this move.
+        let fromMask = bit(mv.from())
+            + match mv.promote() {
+                // compute field of piece captured by en passant
+                PAWN if mv.player() == WHITE => bit(Field::from(mv.to() as u8 - 8)),
+                PAWN if mv.player() == BLACK => bit(Field::from(mv.to() as u8 + 8)),
+                _otherwise => BitSet::empty(),
+            };
+        // The following must be xor'ed out from the hash
+        let fromHash = zobrist::ppfZobrist(mv.player() as u32, mv.piece() as u32, mv.from() as u32)
+            ^ match mv.promote() {
+                // compute zobrist of captured piece
+                PAWN if mv.player() == WHITE => {
+                    zobrist::ppfZobrist(mv.player().opponent() as u32, PAWN as u32, mv.to() as u32 - 8)
+                }
+                PAWN if mv.player() == BLACK => {
+                    zobrist::ppfZobrist(mv.player().opponent() as u32, PAWN as u32, mv.to() as u32 + 8)
+                }
+                _otherwise => 0,
+            };
+        // field that will be set after the move
+        let toMask = bit(mv.to());
+        // the value that must be xor'ed out of the hash
+        let toHash = match self.pieceOn(mv.to()) {
+            EMPTY => 0,
+            p => zobrist::ppfZobrist(mv.player().opponent() as u32, p as u32, mv.to() as u32),
+        };
+        // the piece to place on to
+        let piece = match mv.piece() {
+            PAWN if mv.promote() >= KNIGHT => mv.promote(),
+            _otherwise => mv.piece(),
+        };
+        // the fields occupied by WHITE after the move
+        let whites = match mv.player() {
+            WHITE => (self.whites - fromMask) + toMask,
+            BLACK => self.whites - (fromMask + toMask),
+        };
+        // updated pawn set
+        let pawnSet = match piece {
+            PAWN | KNIGHT | KING => self.pawnSet - fromMask + toMask,
+            _otherwise => self.pawnSet - fromMask - toMask,
+        };
+        // updated bishop set
+        let bishopSet = match piece {
+            BISHOP | KNIGHT | QUEEN => self.bishopSet - fromMask + toMask,
+            _otherwise => self.bishopSet - fromMask - toMask,
+        };
+        // updated bishop set
+        let rookSet = match piece {
+            ROOK | KING | QUEEN => self.rookSet - fromMask + toMask,
+            _otherwise => self.rookSet - fromMask - toMask,
+        };
+        // current en passant bit
+        let currentEP = self.flags * enPassantBits;
+        // new hash
+        let hash = self.hash
+            ^ flagZobristA1   // flip the A1 hash
+            ^ (boolMask((self.flags * lostCastlingRights).member(C1)) & flagZobristC1)
+            ^ (boolMask((self.flags * lostCastlingRights).member(G1)) & flagZobristG1)
+            ^ (boolMask((self.flags * lostCastlingRights).member(C8)) & flagZobristC8)
+            ^ (boolMask((self.flags * lostCastlingRights).member(G8)) & flagZobristG8)
+            ^ (boolMask(currentEP.some()) & zobrist::flagZobrist(fld(currentEP) as u32))
+            ^ (boolMask(enPassantBit.some()) & zobrist::flagZobrist(fld(enPassantBit) as u32))
+            ^ fromHash
+            ^ zobrist::ppfZobrist(mv.player() as u32, piece as u32, mv.to() as u32)
+            ^ toHash;
+        Position {
+            flags: tomove + castlingRights + hasCastledFlags + enPassantBit + plies,
+            whites,
+            pawnSet,
+            bishopSet,
+            rookSet,
+            hash,
         }
     }
 }
