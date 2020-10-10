@@ -640,6 +640,37 @@ impl Position {
             () => EMPTY,
         }
     }
+
+    /// Helper function to place pieces on a board, removing any that
+    /// occupy the indicated fields. Can be given EMPTY to remove.
+    ///
+    /// Not for public use as it leaves the hash in an
+    /// illegal state.
+    fn place(&self, player: Player, piece: Piece, mask: BitSet) -> Position {
+        let whites = match player {
+            WHITE if piece != EMPTY => self.whites + mask,
+            _other => self.whites - mask,
+        };
+        let pawnSet = match piece {
+            PAWN | KING | KNIGHT => self.pawnSet + mask,
+            _other => self.pawnSet - mask,
+        };
+        let bishopSet = match piece {
+            BISHOP | QUEEN | KNIGHT => self.bishopSet + mask,
+            _other => self.bishopSet - mask,
+        };
+        let rookSet = match piece {
+            ROOK | QUEEN | KING => self.rookSet + mask,
+            _other => self.rookSet - mask,
+        };
+        Position {
+            whites,
+            pawnSet,
+            bishopSet,
+            rookSet,
+            ..*self
+        }
+    }
 }
 
 impl PartialEq for Position {
