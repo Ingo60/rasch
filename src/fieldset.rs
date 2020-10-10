@@ -222,6 +222,20 @@ impl FromIterator<Field> for BitSet {
     }
 }
 
+impl<'a> FromIterator<&'a Field> for BitSet {
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = &'a Field>,
+    {
+        let mut acc = BitSet::empty();
+        for f in iter {
+            // eprintln!("collect {}", *f);
+            acc = acc + BitSet::singleton(*f);
+        }
+        acc
+    }
+}
+
 impl Display for BitSet {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let v: Vec<String> = self.into_iter().map(|f| f.to_string()).collect();
