@@ -4,8 +4,8 @@
 //!
 //! The index in the zrandoms table is like `pxxxffffff`
 //!  
-//! Computes the zobrist constant for a certain piece (1..6) of a certain player on a certain square.
-//! Arguments are not checked.
+//! Computes the zobrist constant for a certain piece (1..6) of a
+//! certain player on a certain square. Arguments are not checked.
 //!
 //! To encode flag bits use `ppfZobrist()`.
 //!  
@@ -13,22 +13,20 @@
 //!  * piece  1 to 6 for PAWN to KING
 //!  * index  0 to 255 for A1 to H8
 
-pub fn ppfZobrist(player: u32, piece: u32, index: u32) -> u64 {
+pub const fn ppfZobrist(player: u32, piece: u32, index: u32) -> u64 {
 	ZRANDOMS[(((player * 6 + piece) << 6) + index) as usize]
 }
 
 /**
- * Convenience to get zobrist keys for flag bits (i.e. en-passant and castling information)
+ * Convenience to get zobrist keys for flag bits (i.e. en-passant
+ * and castling information)
  */
-pub fn flagZobrist(index: u32) -> u64 {
-	ppfZobrist(0, 0, index)
-}
+pub const fn flagZobrist(index: u32) -> u64 { ppfZobrist(0, 0, index) }
 
 /// 1000 random long numbers for computation of Zobrist hash keys
-/// We need only 832, but hey ....
-
+/// We need only 832, but hey ...
 #[rustfmt::skip]
-static ZRANDOMS: [u64; 1000] = [
+const ZRANDOMS: [u64; 1000] = [
 	0x29e48473df053401u64, 0x436328cac0eb14ffu64, 0x94df472ce2bfc808u64, 0xfae82f66506c5e5bu64,
 	0xdb9533eb28d7d1cau64, 0xeed84e170d796a72u64, 0x5906d39eb751b57au64, 0x40e99acbffd458c1u64,
 	0x273be4babd76ac77u64, 0xdf2c0fb73f664547u64, 0x4c9c77ab65735ec3u64, 0x54a0eac3783fc85fu64,
