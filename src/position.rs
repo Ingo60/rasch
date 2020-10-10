@@ -56,12 +56,18 @@ impl Player {
     }
 
     /// compute -1 or 1 without conditional branch
+    ///
+    /// ```
+    /// use rasch::position as P;
+    /// assert_eq!(P::WHITE.factor(), 1);
+    /// assert_eq!(P::BLACK.factor(), -1);
+    /// ```
     pub fn factor(self) -> i32 { 2 * (self as i32) - 1 }
 }
 
 // pub const BLACK: Player = Player::BLACK;
 // pub const WHITE: Player = Player::WHITE;
-use Player::*;
+pub use Player::*;
 
 /// Enumeration of the chess pieces
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -85,7 +91,7 @@ impl From<u32> for Piece {
     /// Will panic! if not in range 0..6
     ///
     /// ```
-    /// use crate::rasch::position::Piece;
+    /// use rasch::position::Piece;
     ///
     /// assert!((0..6).all(|u| Piece::from(u) as u32 == u));
     /// ```
@@ -232,38 +238,129 @@ pub struct Position {
 /// The evaluator will return 0 for a position where the ply counter is 100 or more.
 /// Also, the protocol handler will claim a draw when the move played results in a position
 /// with ply counter 100 or more.
+/// 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!(P::plyCounterBits.member(F::Field::A4));
+/// assert!(P::plyCounterBits.member(F::Field::B4));
+/// assert!(P::plyCounterBits.member(F::Field::C4));
+/// assert!(P::plyCounterBits.member(F::Field::D4));
+/// assert!(P::plyCounterBits.member(F::Field::E4));
+/// assert!(P::plyCounterBits.member(F::Field::F4));
+/// assert!(P::plyCounterBits.member(F::Field::G4));
+/// assert!(P::plyCounterBits.member(F::Field::H4));
+/// assert_eq!(P::plyCounterBits.card(), 8);
+/// ```
 #[rustfmt::skip]
 pub const plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
 
 /// how many bits to shift right to get the ply counter
-
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::plyCounterBits.bits >> P::plyCounterShift, 255);
+/// ```
 pub const plyCounterShift: u32 = 24;
 
 /// Bitmask for selection of the distance to root ply counter
 /// This counter is reset to 0 before a seach starts and incremented with every move
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!(P::rootCounterBits.member(F::Field::A5));
+/// assert!(P::rootCounterBits.member(F::Field::B5));
+/// assert!(P::rootCounterBits.member(F::Field::C5));
+/// assert!(P::rootCounterBits.member(F::Field::D5));
+/// assert!(P::rootCounterBits.member(F::Field::E5));
+/// assert!(P::rootCounterBits.member(F::Field::F5));
+/// assert!(P::rootCounterBits.member(F::Field::G5));
+/// assert!(P::rootCounterBits.member(F::Field::H5));
+/// assert_eq!(P::rootCounterBits.card(), 8);
+/// ```
 #[rustfmt::skip]
 pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
 
 /// number of bits to shift right to get the ply counter
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::rootCounterBits.bits >> P::rootCounterShift, 255);
+/// ```
 pub const rootCounterShift: u32 = 32;
 
 /// A bitmask used to turn all the counter bits off
-pub const counterBits: BitSet = plyCounterBits.union(rootCounterBits);
+///
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::counterBits, P::rootCounterBits + P::plyCounterBits);
+/// ```
+pub const counterBits: BitSet = BitSet {
+    bits: 0x0000_00FF_FF00_0000,
+};
 
 #[rustfmt::skip]
 /// Bitmask for selection of the bits that indicate the rights to castle
+/// 
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::castlingBits, P::whiteCastlingRights + P::blackCastlingRights)
+/// ```
 pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, C1, G8, C8
 
 #[rustfmt::skip]
+/// Bitmask for selection of the bits that indicate the rights to castle for WHITE
+/// 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!   (P::whiteCastlingRights.member(F::Field::G1));
+/// assert!   (P::whiteCastlingRights.member(F::Field::C1));
+/// assert_eq!(P::whiteCastlingRights.card(), 2);
+/// ```
+pub const whiteCastlingRights: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; // G1, C1
+
+#[rustfmt::skip]
+/// Bitmask for selection of the bits that indicate the rights to castle for BLACK
+/// 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!   (P::blackCastlingRights.member(F::Field::G8));
+/// assert!   (P::blackCastlingRights.member(F::Field::C8));
+/// assert_eq!(P::blackCastlingRights.card(), 2);
+/// ```
+pub const blackCastlingRights: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; // G8, C8
+
+#[rustfmt::skip]
 /// Bitmask for selection of the bits that indicate the fields that were skipped when the king castled
+/// 
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::castlingDoneBits, P::whiteHasCastledBits + P::blackHasCastledBits)
+/// ```
 pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // F1, D1, F8, D8
 
 #[rustfmt::skip]
 /// Bitmask for selection of the bits that tell us whether the white king has castled and whereto.
+///
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!   (P::whiteHasCastledBits.member(F::Field::F1));
+/// assert!   (P::whiteHasCastledBits.member(F::Field::D1));
+/// assert_eq!(P::whiteHasCastledBits.card(), 2);
+/// ```
 pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; // F1, D1
 
 #[rustfmt::skip]
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
+/// 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// assert!   (P::blackHasCastledBits.member(F::Field::F8));
+/// assert!   (P::blackHasCastledBits.member(F::Field::D8));
+/// assert_eq!(P::blackHasCastledBits.card(), 2);
+/// ```
 pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
 
 /// give the bitmask that can be used to find out whether a given player
@@ -288,6 +385,11 @@ pub const onePly: u64 = 0x1_0100_0000; // A4 and A5
 /// This is used when only the root counter must be incremented (on
 /// 'PAWN' moves and captures)
 pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
+
+/// Bit mask that indicates WHITE is to move
+pub const whiteToMove: BitSet = bit(A1);
+/// Bit mask that indicates BLACK is to move
+pub const blackToMove: BitSet = BitSet::empty();
 
 impl Position {
     /// the set of fields that are occupied by PAWNS
@@ -534,9 +636,11 @@ impl Position {
     }
 
     /// Tell if the indicated field is attacked by a piece of the
-    /// indicated player This is faster than
+    /// indicated player. This is faster than
     ///
-    ///         !position.attacked(f,p).null()
+    /// ```text
+    ///     !position.attacked(f,p).null()
+    /// ```
     ///
     /// because it can short circuit whenever an attacker is found. And
     /// of course it tries the pieces first that have an O(1) time
