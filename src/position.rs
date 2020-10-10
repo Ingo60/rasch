@@ -16,6 +16,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
+// use std::iter::FromIterator;
 
 use super::fieldset::BitSet;
 use super::fieldset::Field;
@@ -194,10 +195,10 @@ pub struct Position {
     ///
     /// Note: the counter bits and the F1, D1, F8 and G8 bits are not
     /// reflected in the hash key.
-    flags: BitSet,
+    pub flags: BitSet,
 
     /// the fields occupied by WHITE pieces
-    whites: BitSet,
+    pub whites: BitSet,
 
     /// For encoding of figures, we use only 3 sets instead of 6, namely
     /// 'Position.pawnSet', Position.bishopSet' and
@@ -217,9 +218,9 @@ pub struct Position {
     /// rookSet, but not in the bishopSet, then there is a KING on
     /// E5. If the E5 flag is set in whites, then it is a white
     /// king, else a black king.
-    pawnSet:   BitSet,
-    bishopSet: BitSet,
-    rookSet:   BitSet,
+    pub pawnSet:   BitSet,
+    pub bishopSet: BitSet,
+    pub rookSet:   BitSet,
 
     /// the Zobrist hash key, a special hashing method usually employed
     /// in chess programming
@@ -230,7 +231,7 @@ pub struct Position {
     /// x.hash != y.hash → x != y
     /// x == y           → x.hash == y.hash
     /// ```
-    hash: u64,
+    pub hash: u64,
 }
 
 /// Bitmask for selection of the ply (half-move) counter, which is used to support the 50 moves rule.
@@ -403,6 +404,23 @@ static flagZobristC8: u64 = zobrist::flagZobrist(C8 as u32);
 /// Zobrist hash value commonly used: G8
 static flagZobristG8: u64 = zobrist::flagZobrist(G8 as u32);
 
+/// Move sequences for castlings consist of 3 moves to get the "who is
+/// to move" bit right. Castling rights are taken care of by the
+/// ordinary move logic. Since this happens maybe once in a game,
+/// efficiency is less important.
+const whiteShortCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, F1);
+const whiteShortCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, F1, G1);
+const whiteShortCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, H1, F1);
+const whiteLongCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, D1);
+const whiteLongCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, D1, C1);
+const whiteLongCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, A1, D1);
+const blackShortCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, F8);
+const blackShortCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, F8, G8);
+const blackShortCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, H8, F8);
+const blackLongCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
+const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
+const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
+
 /// Helper function that turns `false` into `0u64` and `true` into
 /// `0xffff_ffff_ffff_ffffu64`
 #[inline]
@@ -563,6 +581,21 @@ impl Position {
     }
 
     /// rehash the Position, will be done once with each move
+    ///
+    /// ```
+    /// use rasch::mdb;
+    /// use rasch::position as P;
+    /// use rasch::fieldset::Field::*;
+    /// use rasch::position::Player::*;
+    /// use rasch::position::Piece::*;
+    /// mdb::initStatic();
+    /// let p = P::initialBoard();
+    /// assert_eq!(0xc49244f1909c1fabu64, p.hash);
+    /// let m = P::Move::new(WHITE, PAWN, EMPTY, E2, E4);
+    /// let p2 = p.apply(m);
+    /// let p3 = p2.rehash();
+    /// assert_eq!(p2.hash, p3.hash);
+    /// ```
     pub fn rehash(&self) -> Position {
         Position {
             hash: self.computeZobrist(),
@@ -586,8 +619,8 @@ impl Position {
     pub fn attackedByKnights(&self, wo: Field, durch: Player) -> BitSet {
         let attackers = self.knights() * mdb::knightTargets(wo);
         match durch {
-            WHITE => (self.pawns() * attackers) * self.whites,
-            BLACK => (self.pawns() * attackers) - self.whites,
+            WHITE => (self.knights() * attackers) * self.whites,
+            BLACK => (self.knights() * attackers) - self.whites,
         }
     }
 
@@ -595,8 +628,8 @@ impl Position {
     pub fn attackedByKings(&self, wo: Field, durch: Player) -> BitSet {
         let attackers = self.kings() * mdb::kingTargets(wo);
         match durch {
-            WHITE => (self.pawns() * attackers) * self.whites,
-            BLACK => (self.pawns() * attackers) - self.whites,
+            WHITE => (self.kings() * attackers) * self.whites,
+            BLACK => (self.kings() * attackers) - self.whites,
         }
     }
 
@@ -686,7 +719,21 @@ impl Position {
     /// Note that computation for `QUEEN`, `ROOK` and `BISHOP` attackers
     /// require two iterations. Therefore, whenever one just needs
     /// to know *whether* the `Field` is attacked or not, use
-    /// 'isAttacked'
+    /// `isAttacked`
+    ///
+    /// ```
+    /// use rasch::mdb;
+    /// use rasch::position as P;
+    /// use rasch::fieldset as F;
+    /// use rasch::fieldset::Field::*;
+    /// use rasch::position::Player::*;
+    /// use rasch::position::Piece::*;
+    /// mdb::initStatic();
+    /// let p = P::initialBoard();
+    /// eprintln!("should be {}", p.attacked(C3, WHITE));
+    /// assert_eq!(p.attacked(C3, WHITE), F::BitSet::empty());
+    /// ```
+
     pub fn attacked(&self, wo: Field, durch: Player) -> BitSet {
         self.attackedByPawns(wo, durch)
             + self.attackedByKnights(wo, durch)
@@ -708,6 +755,13 @@ impl Position {
     /// Tell if current position is ok in that the **passive** player is
     /// not in check. Can be used after having applied a user's move
     /// or a speculative move to see if it was possible at all.
+    ///
+    /// ```
+    /// use rasch::mdb;
+    /// use rasch::position as P;
+    /// mdb::initStatic();
+    /// assert!(P::initialBoard().notInCheck());
+    /// ```
     pub fn notInCheck(&self) -> bool {
         let player = self.turn();
         let otherking = match player {
@@ -767,6 +821,25 @@ impl Position {
         }
     }
 
+    /// Apply a move in a position and return the resulting position.
+    /// The move should be one of the moves generated for this position.
+    pub fn apply(&self, mv: Move) -> Position {
+        eprintln!(
+            "applying {:?} {:?} {:?} {} {}",
+            mv.player(),
+            mv.piece(),
+            mv.promote(),
+            mv.from(),
+            mv.to()
+        );
+        eprintln!("to {}", self);
+        if mv.piece() == KING && mv.promote() != EMPTY {
+            self.applyCastling(mv)
+        } else {
+            self.applyOrdinary(mv)
+        }
+    }
+
     /// Helper function to place pieces on a board, removing any that
     /// occupy the indicated fields. Can be given EMPTY to remove.
     ///
@@ -798,7 +871,46 @@ impl Position {
         }
     }
 
-    /// Apply an ordinary move. Used only my `apply`
+    /// Helper to set a certain bit in flags
+    fn setFlag(&self, f: Field) -> Position {
+        Position {
+            flags: self.flags + bit(f),
+            ..*self
+        }
+    }
+
+    /// Apply a castling move. Used only by `apply`
+    fn applyCastling(&self, mv: Move) -> Position {
+        let castled = match mv.player() {
+            WHITE => match mv.promote() {
+                KING => self
+                    .applyOrdinary(whiteShortCastlingMove1)
+                    .applyOrdinary(whiteShortCastlingMove2)
+                    .applyOrdinary(whiteShortCastlingMove3)
+                    .setFlag(F1),
+                _other => self
+                    .applyOrdinary(whiteLongCastlingMove1)
+                    .applyOrdinary(whiteLongCastlingMove2)
+                    .applyOrdinary(whiteLongCastlingMove3)
+                    .setFlag(D1),
+            },
+            BLACK => match mv.promote() {
+                KING => self
+                    .applyOrdinary(blackShortCastlingMove1)
+                    .applyOrdinary(blackShortCastlingMove2)
+                    .applyOrdinary(blackShortCastlingMove3)
+                    .setFlag(F8),
+                _other => self
+                    .applyOrdinary(blackLongCastlingMove1)
+                    .applyOrdinary(blackLongCastlingMove2)
+                    .applyOrdinary(blackLongCastlingMove3)
+                    .setFlag(D8),
+            },
+        };
+        castled.correctPlyCounterForCastling()
+    }
+
+    /// Apply an ordinary move. Used only by `apply`
     fn applyOrdinary(&self, mv: Move) -> Position {
         // construct the part of the flag that tells who's move it is
         let tomove = BitSet {
@@ -855,25 +967,27 @@ impl Position {
             _otherwise => BitSet::empty(),
         };
         // the new castled flag to set, if any
-        let gainedCastledBit = match mv.piece() {
-            KING => match mv.from() {
-                E1 => match mv.to() {
-                    G1 => bit(F1),
-                    C1 => bit(D1),
-                    _otherwise => BitSet::empty(),
-                },
-                E8 => match mv.to() {
-                    G8 => bit(F8),
-                    C8 => bit(D8),
-                    _otherwise => BitSet::empty(),
-                },
-                _otherwise => BitSet::empty(),
-            },
-            _otherwise => BitSet::empty(),
-        };
+        // not needed as we do castling in applyCastling
+        // let gainedCastledBit = match mv.piece() {
+        //     KING => match mv.from() {
+        //         E1 => match mv.to() {
+        //             G1 => bit(F1),
+        //             C1 => bit(D1),
+        //             _otherwise => BitSet::empty(),
+        //         },
+        //         E8 => match mv.to() {
+        //             G8 => bit(F8),
+        //             C8 => bit(D8),
+        //             _otherwise => BitSet::empty(),
+        //         },
+        //         _otherwise => BitSet::empty(),
+        //     },
+        //     _otherwise => BitSet::empty(),
+        // };
+
         // The new part of flags that tells who has castled already.
-        let hasCastledFlags = (self.flags * castlingDoneBits) + gainedCastledBit;
-        // Fields that will be empty after this move.
+        let hasCastledFlags = self.flags * castlingDoneBits; // + gainedCastledBit;
+                                                             // Fields that will be empty after this move.
         let fromMask = bit(mv.from())
             + match mv.promote() {
                 // compute field of piece captured by en passant
@@ -964,6 +1078,16 @@ impl Eq for Position {}
 
 impl Hash for Position {
     fn hash<H: Hasher>(&self, state: &mut H) { self.hash.hash(state); }
+}
+
+impl Display for Position {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "P(hash={:x}, flags={}, whites={}, pawnSet={}, bishopSet={}, rookSet={})",
+            self.hash, self.flags, self.whites, self.pawnSet, self.bishopSet, self.rookSet
+        )
+    }
 }
 
 /// Representation of a move
@@ -1065,9 +1189,27 @@ impl Display for Move {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
 }
 
-// some prominent moves
-
-pub const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
-pub const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
-pub const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
-pub const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
+pub fn initialBoard() -> Position {
+    let empty = Position {
+        hash:      0,
+        flags:     bit(A1) + castlingBits,
+        whites:    BitSet::empty(),
+        pawnSet:   BitSet::empty(),
+        bishopSet: BitSet::empty(),
+        rookSet:   BitSet::empty(),
+    };
+    empty
+        .place(BLACK, PAWN, [A7, B7, C7, D7, E7, F7, G7, H7].iter().collect())
+        .place(WHITE, PAWN, [A2, B2, C2, D2, E2, F2, G2, H2].iter().collect())
+        .place(BLACK, BISHOP, [C8, F8].iter().collect())
+        .place(WHITE, BISHOP, [C1, F1].iter().collect())
+        .place(BLACK, KNIGHT, [B8, G8].iter().collect())
+        .place(WHITE, KNIGHT, [B1, G1].iter().collect())
+        .place(BLACK, ROOK, [A8, H8].iter().collect())
+        .place(WHITE, ROOK, [A1, H1].iter().collect())
+        .place(BLACK, QUEEN, bit(D8))
+        .place(WHITE, QUEEN, bit(D1))
+        .place(BLACK, KING, bit(E8))
+        .place(WHITE, KING, bit(E1))
+        .rehash()
+}

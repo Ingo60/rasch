@@ -3,11 +3,10 @@
 use rasch::computing as C;
 use rasch::fieldset::*;
 use rasch::mdb;
-use rasch::zobrist;
+use rasch::position as P;
+use rasch::zobrist as Z;
 
 fn main() {
-    println!("ppfZobrist(1,6,0) {:#}", zobrist::ppfZobrist(1, 6, 0));
-    println!("value {:x}  !value {:x}", 0xaau8, !0xaau8);
     mdb::initStatic();
     println!(
         "Can a white pawn go from E2 to E4? {}",
@@ -76,4 +75,12 @@ fn main() {
     C::finishThinking();
     println!("stop thinking is now {}", C::thinkingFinished());
     // println!("imposssible {}", BitSet::empty().bitIndex());
+    println!("ppfZobrist(1,6,0) {:x}", Z::ppfZobrist(1, 6, 0));
+    let board = P::initialBoard();
+    println!("hash {:x}", board.hash);
+    println!("flags {}", board.flags);
+    println!("whites {}", board.whites);
+    println!("pawnSet {}", board.pawnSet);
+    println!("bishopSet {}", board.bishopSet);
+    println!("rookSet {}", board.rookSet);
 }
