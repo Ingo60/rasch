@@ -579,6 +579,19 @@ impl Position {
         self.isAttacked(fld(king), wer.opponent())
     }
 
+    /// Tell if current position is ok in that the **passive** player is
+    /// not in check. Can be used after having applied a user's move
+    /// or a speculative move to see if it was possible at all.
+    pub fn notInCheck(&self) -> bool {
+        let player = self.turn();
+        let otherking = match player {
+            WHITE => self.kings() - self.whites,
+            BLACK => self.kings() * self.whites,
+        };
+        // an invalid position without kings will crash fld()
+        self.isNotAttacked(fld(otherking), player)
+    }
+
     /// Where does a BISHOP on a given field attack in the current
     /// position, taking actual board status in account? Result can
     /// be restricted to certain set of fields to save iteration
