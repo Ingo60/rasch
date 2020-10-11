@@ -17,6 +17,7 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
+use std::cmp::{min, max};
 // use std::iter::FromIterator;
 
 use super::fieldset::BitSet;
@@ -42,6 +43,22 @@ pub fn percent(p: i32, v: i32) -> i32 { (p*v) / 100 }
 pub const blackIsMate: i32 = 0x8000;
 /// score when WHITE is mate
 pub const whiteIsMate: i32 = -blackIsMate;
+
+/// Compute the penalty for a hanging piece `hang` that is attacked by some piece `att`
+/// depending on whether the hanging piece is defended or not
+pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
+    let scoreh = hang.score();
+    let scorea = att.score();
+    match att {
+        EMPTY => 0,
+        KING if defended => 0,
+        _otherwise => match defended {
+            false => percent(70, hang.score()), 
+            true if scoreh > scorea => percent(70, scoreh - scorea),
+            _other => 0  
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 #[repr(u32)]
@@ -175,7 +192,7 @@ impl Piece {
     }
 
     /// Base score for a piece in centipawns, used in evaluation
-    pub fn value(self) -> i32 {
+    pub fn score(self) -> i32 {
         match self {
             EMPTY => 0,
             PAWN => 100,
@@ -601,7 +618,7 @@ impl Position {
     }
 
     /// fields occupied by WHITE
-    pub fn occupiedByWhite(&self) -> BitSet { self.occupied() * self.whites }
+    pub fn occupiedByWhite(&self) -> BitSet { self.whites }
 
     /// fields occupied by BLACK
     pub fn occupiedByBlack(&self) -> BitSet { self.occupied() - self.whites }
@@ -1141,6 +1158,19 @@ impl Position {
         }
     }
 
+    /// Apply a "null move", that is, pretend it is the opponents move without changing anything on the board
+    /// Note that this may result in an "impossible board".
+    /// For example, if the active player stands in check, applying a null move would result in a board
+    /// where the KING could be captured. Such a move, then, must not be applied, as certain functions
+    /// will panic when there is no king.
+    pub fn applyNull(&self) -> Position {
+        Position {
+            flags: BitSet { bits: (self.flags.bits ^ whiteToMove.bits) + onePlyRootOnly },
+            hash: self.hash ^ flagZobristA1,
+            .. *self
+        }
+    } 
+
     /// generate the castling moves possible in this position
     fn castlingMoves(&self, vec: &mut Vec<Move>) {
         match self.turn() {
@@ -1239,7 +1269,7 @@ impl Position {
     /// List of possible moves in a given position.
     /// Verified to not leave the king of the moving player in check.
     pub fn moves(&self) -> Vec<Move> {
-        let mut vec = Vec::with_capacity(40);
+        let mut vec = Vec::with_capacity(64);
         self.rawMoves(&mut vec);
         vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
     }
@@ -1257,6 +1287,101 @@ impl Position {
     pub fn inEndgame(&self) -> bool {
         self.pawns().card() < 5
             || self.occupied().card() < 11
+    }
+
+    /// Compensate for the immobility penalty caused by pieces near the king
+    /// Own pieces adjacent to the king are preferred
+    pub fn coveredKing(&self, player: Player) -> i32 {
+        // we assume there is a king for this player ;-)
+        let kingIndex = fld(self.kings() * self.occupiedBy(player));
+        let targets   = mdb::kingTargets(kingIndex);
+        (self.occupiedBy(player.opponent()) * targets).card() as i32 * 5
+        + (self.occupiedBy(player) * targets).card() as i32 * 6
+    }
+
+    /// Sum scores for material
+    pub fn scoreMaterial(&self, player: Player) -> i32 {
+        self.occupiedBy(player).map(|f| self.pieceOn(f).score()).sum()
+    }
+
+    /// compute the penalty for a hanging piece, at best 0 when piece is not in danger
+    pub fn penaltyForHangingPiece(&self, f: Field) -> i32 {
+        let piece = self.pieceOn(f);
+        match self.playerOn(f) {
+            None => 0,  // wtf???
+            Some(player) => {
+                let active = player == self.turn();
+                let hanging = hangingPenalty(
+                                piece, 
+                                self.leastAttacker(f, player.opponent()), 
+                                self.isAttacked(f, player));
+                if active { percent(25, hanging) } else { hanging }
+            }
+        }
+    }
+
+    /// Compute the penalty for all the hanging pieces of a given player.
+    /// We must take care that we don't just add the penalties. This would mean
+    /// that it is ok to have the QUEEN hanging when the other player has a ROOK and 4 PAWNs hanging.
+    /// Instead, we slightly increase the maximum value to indicate that it is better to
+    /// attack, say, a ROOK and a BISHOP than just a ROOK.
+    pub fn penalizeHanging(&self, player: Player) -> i32 {
+        let mut score = 0;
+        for f in self.occupiedBy(player) {
+            let p = self.penaltyForHangingPiece(f);
+            if p > 0 { 
+                if score > 0 {
+                    score = percent(110, max(score,p));
+                }
+                else {
+                    score = p;
+                }
+            }
+        }
+        score
+    }
+
+    /// Try to make castling attractive.
+    /// Give a bonus of 25 if the player has castled.
+    /// If the player hasn't castled yet, but has both castling rights, give a malus of -25.
+    /// If he has only one castling right left, give a malus of -50.
+    /// And finally, if the player hasn't castled and has no castling rights left, give a malus of -75.
+    pub fn scoreCastling(&self, player: Player) -> i32 {
+        let hasCastledBits = self.flags * match player {
+            BLACK => blackHasCastledBits,
+            WHITE => whiteHasCastledBits,
+        };
+        let castlingRights = self.flags * match player {
+            BLACK => blackCastlingRights,
+            WHITE => whiteCastlingRights
+        };
+        if hasCastledBits.some() { 25 }
+        else { castlingRights.card() as i32 * 25 - 75 }
+    }
+
+    /// Evaluate a position. A positive score indicates a position favourable for white,
+    /// while a negative one indicates a position favourable by black.
+    /// 
+    /// This function does **not** detect mate, stalemate, 
+    /// draw by repetition or draw by the 50 moves rule.
+    pub fn eval(&self) -> i32 {
+        let matWhite = self.scoreMaterial(WHITE);
+        let matBlack = self.scoreMaterial(BLACK);
+        let matDelta = matWhite - matBlack;
+        // The delta increases when the difference gets greater
+        // This should result in an unwillingness to exchange pieces by the weaker party
+        let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
+        let check = self.inCheck(self.turn());
+        let checkBonus = if check { 25 } else { 0 };
+        let playerMoves = self.moves().len() as i32;
+        let opponentMoves = self.applyNull().moves().len() as i32;
+        
+        matRelation
+        - self.penalizeHanging(WHITE) + self.penalizeHanging(BLACK)
+        + self.turn().opponent().forP(checkBonus + 4*opponentMoves)
+        + self.turn().forP(4*playerMoves)
+        + self.scoreCastling(WHITE) - self.scoreCastling(BLACK)
+        + self.coveredKing(WHITE)   - self.coveredKing(BLACK)
     }
 }
 
