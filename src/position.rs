@@ -16,6 +16,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::vec::Vec;
 // use std::iter::FromIterator;
 
 use super::fieldset::BitSet;
@@ -421,6 +422,12 @@ const blackLongCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
 const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
 const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
 
+/// kingside castling for WHITE
+const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
+const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
+const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
+const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
+
 /// Helper function that turns `false` into `0u64` and `true` into
 /// `0xffff_ffff_ffff_ffffu64`
 #[inline]
@@ -428,6 +435,22 @@ pub const fn boolMask(b: bool) -> u64 {
     match b {
         false => 0,
         true => 0xffff_ffff_ffff_ffffu64,
+    }
+}
+
+/// Give the set of fields that are targeted by some piece
+fn pieceTargets(piece: Piece, player: Player, from: Field) -> BitSet {
+    match piece {
+        PAWN => match player {
+            WHITE => mdb::whitePawnTargets(from),
+            BLACK => mdb::blackPawnTargets(from),
+        },
+        KNIGHT => mdb::knightTargets(from),
+        BISHOP => mdb::bishopTargets(from),
+        ROOK => mdb::rookTargets(from),
+        QUEEN => mdb::rookTargets(from) + mdb::bishopTargets(from),
+        KING => mdb::kingTargets(from),
+        EMPTY => BitSet::empty(),
     }
 }
 
@@ -962,8 +985,8 @@ impl Position {
         let castlingRights = (self.flags * castlingBits) - lostCastlingRights;
         // en passant bit to set, if any
         let enPassantBit = match mv.piece() {
-            PAWN if mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
-            PAWN if mv.to() as u8 == mv.from() as u8 - 16 => bit(Field::from(mv.from() as u8 - 8)),
+            PAWN if mv.from().rank() == 1 && mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
+            PAWN if mv.from().rank() == 7 && mv.to() as u8 == mv.from() as u8 - 16 => bit(Field::from(mv.from() as u8 - 8)),
             _otherwise => BitSet::empty(),
         };
         // the new castled flag to set, if any
@@ -1069,6 +1092,109 @@ impl Position {
             rookSet,
             hash,
         }
+    }
+
+    /// generate the castling moves possible in this position
+    fn castlingMoves(&self, vec: &mut Vec<Move>) {
+        match self.turn() {
+            WHITE => {
+                let short = self.flags.member(G1)                   // short castling permitted, implies ROOK is on H1
+                            && self.areEmpty(bit(G1) + bit(F1))     // fields between KING & ROOK are empty
+                            && self.isNotAttacked(E1, BLACK)        // KING is not in check
+                            && self.isNotAttacked(F1, BLACK)        // nor is the skipped field attacked
+                            && self.isNotAttacked(G1, BLACK); // nor is the target field attacked
+                let long = self.flags.member(C1)                    // long castling permitte, implies ROOK is on A1
+                            && self.areEmpty(bit(D1)+bit(C1)+bit(B1))    // fields in betwen are empty
+                            && self.isNotAttacked(E1, BLACK)
+                            && self.isNotAttacked(D1, BLACK)
+                            && self.isNotAttacked(C1, BLACK);
+                if short {
+                    vec.push(castlingShortWhite);
+                }
+                if long {
+                    vec.push(castlingLongWhite);
+                }
+            }
+            BLACK => {
+                let short = self.flags.member(G8)                   // short castling permitted, implies ROOK is on H8
+                            && self.areEmpty(bit(G8) + bit(F8))     // fields between KING & ROOK are empty
+                            && self.isNotAttacked(E8, WHITE)        // KING is not in check
+                            && self.isNotAttacked(F8, WHITE)        // nor is the skipped field attacked
+                            && self.isNotAttacked(G8, WHITE); // nor is the target field attacked
+                let long = self.flags.member(C8)                    // long castling permitte, implies ROOK is on A1
+                            && self.areEmpty(bit(D8)+bit(C8)+bit(B8))    // fields in betwen are empty
+                            && self.isNotAttacked(E8, WHITE)
+                            && self.isNotAttacked(D8, WHITE)
+                            && self.isNotAttacked(C8, WHITE);
+                if short {
+                    vec.push(castlingShortBlack);
+                }
+                if long {
+                    vec.push(castlingLongBlack);
+                }
+            }
+        };
+    }
+
+    /// Given a position and a field, generate the possible moves for
+    /// the piece standing there
+    fn genMove(&self, vec: &mut Vec<Move>, from: Field) {
+        let piece = self.pieceOn(from);
+        let player = self.turn();
+        let validTargets = pieceTargets(piece, player, from) - self.occupiedByActive();
+        
+        for to in validTargets {
+            let mv = Move::new(player, piece, EMPTY, from, to);
+            match piece {
+                PAWN => {
+                    let es = match player {
+                        WHITE => mdb::canWhitePawn(from, to),
+                        BLACK => mdb::canBlackPawn(from, to),
+                    };
+                    let promotion = player == WHITE && to.rank() == 8 || player == BLACK && to.rank() == 1;
+                    let valid = es.some() && self.areEmpty(es)
+                            || es.null() // it's a capturing move
+                                &&     (self.occupiedBy(player.opponent()).member(to) 
+                                    || (self.flags*enPassantBits).member(to));
+                    if valid {
+                        if promotion {
+                            for p in [KNIGHT, BISHOP, ROOK, QUEEN].iter() {
+                                vec.push(Move::new(player, PAWN, *p, from, to));
+                            }
+                        }
+                        else if es.null() && self.isEmpty(to) {  // capturing en-passant
+                            vec.push(Move::new(player, PAWN, PAWN, from, to));
+                        }
+                        else {
+                            vec.push(mv);
+                        }
+                    };
+                },
+                BISHOP => if self.areEmpty(mdb::canBishop(from, to)) { vec.push(mv); },
+                ROOK   => if self.areEmpty(mdb::canRook(from, to))   { vec.push(mv); },
+                QUEEN  => if self.areEmpty(mdb::canBishop(from, to)) 
+                            || self.areEmpty(mdb::canRook(from, to)) { vec.push(mv); },
+                _other => vec.push(mv),
+            };
+        }
+    }
+
+    /// List of possible moves in a given position. Some moves may still
+    /// turn out to be illegal due to check.
+    fn rawMoves(&self, vec: &mut Vec<Move>) {
+        // let mut vec = Vec::new();
+        self.castlingMoves(vec);
+        for from in self.occupiedByActive() {
+            self.genMove(vec, from);
+        }
+    }
+
+    /// List of possible moves in a given position.
+    /// Verified to not leave the king of the moving player in check.
+    pub fn moves(&self) -> Vec<Move> {
+        let mut vec = Vec::with_capacity(40);
+        self.rawMoves(&mut vec);
+        vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
     }
 }
 

@@ -83,4 +83,9 @@ fn main() {
     println!("pawnSet {}", board.pawnSet);
     println!("bishopSet {}", board.bishopSet);
     println!("rookSet {}", board.rookSet);
+    print!("moves: ");
+    for mv in board.moves() {
+        print!("{} ", mv);
+    }
+    println!();
 }
