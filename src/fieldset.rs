@@ -44,20 +44,20 @@ impl Field {
     ///
     /// ```
     /// use rasch::fieldset::Field::*;
-    /// assert_eq(A1.rank(), 1);
-    /// assert_eq(H1.rank(), 1);
-    /// assert_eq(A8.rank(), 8);
-    /// assert_eq(H8.rank(), 8);
+    /// assert_eq!(A1.rank(), 1);
+    /// assert_eq!(H1.rank(), 1);
+    /// assert_eq!(A8.rank(), 8);
+    /// assert_eq!(H8.rank(), 8);
     /// ```
     pub fn rank(self) -> u8 { 1 + (self as u8 >> 3) }
     /// The **file** of the field.
     ///
     /// ```
     /// use rasch::fieldset::Field::*;
-    /// assert_eq(A1.file(), 'a');
-    /// assert_eq(H1.file(), 'h');
-    /// assert_eq(A8.file(), 'a');
-    /// assert_eq(H8.file(), 'h');
+    /// assert_eq!(A1.file(), 'a');
+    /// assert_eq!(H1.file(), 'h');
+    /// assert_eq!(A8.file(), 'a');
+    /// assert_eq!(H8.file(), 'h');
     /// ```
     pub fn file(self) -> char { (b'a' + (self as u8 & 7)) as char }
     /// ```
