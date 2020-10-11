@@ -731,7 +731,7 @@ impl Position {
     /// mdb::initStatic();
     /// let p = P::initialBoard();
     /// eprintln!("should be {}", p.attacked(C3, WHITE));
-    /// assert_eq!(p.attacked(C3, WHITE), F::BitSet::empty());
+    /// assert_eq!(p.attacked(C3, WHITE), [B1, B2, D2].iter().collect());
     /// ```
 
     pub fn attacked(&self, wo: Field, durch: Player) -> BitSet {
@@ -1039,8 +1039,16 @@ impl Position {
             ROOK | KING | QUEEN => self.rookSet - fromMask + toMask,
             _otherwise => self.rookSet - fromMask - toMask,
         };
-        // current en passant bit
-        let currentEP = self.flags * enPassantBits;
+        // current en passant hash value, if any, needs to get xor'ed out
+        let currentEPHash = match self.flags * enPassantBits {
+            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as u32),
+            _otherwise => 0,
+        };
+        // hash for new en passant bit, if any, needs to get xor'ed in
+        let enPassantHash = match enPassantBit {
+            bits if bits.some() => zobrist::flagZobrist(fld(enPassantBit) as u32),
+            _otherwise => 0,
+        };
         // new hash
         let hash = self.hash
             ^ flagZobristA1   // flip the A1 hash
@@ -1048,8 +1056,8 @@ impl Position {
             ^ (boolMask((self.flags * lostCastlingRights).member(G1)) & flagZobristG1)
             ^ (boolMask((self.flags * lostCastlingRights).member(C8)) & flagZobristC8)
             ^ (boolMask((self.flags * lostCastlingRights).member(G8)) & flagZobristG8)
-            ^ (boolMask(currentEP.some()) & zobrist::flagZobrist(fld(currentEP) as u32))
-            ^ (boolMask(enPassantBit.some()) & zobrist::flagZobrist(fld(enPassantBit) as u32))
+            ^ currentEPHash
+            ^ enPassantHash
             ^ fromHash
             ^ zobrist::ppfZobrist(mv.player() as u32, piece as u32, mv.to() as u32)
             ^ toHash;
@@ -1122,21 +1130,27 @@ pub struct Move {
 // of the bitfield
 impl Move {
     /// Tell if this is a killer move
+    #[inline]
     pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
 
     /// Which player is moving?
+    #[inline]
     pub fn player(self) -> Player { Player::from(self.mv & 0b01_000_000_000000_000000u32 != 0) }
 
     /// What piece is moving?
+    #[inline]
     pub fn piece(self) -> Piece { Piece::from((self.mv & 0b00_111_000_000000_000000u32) >> 15) }
 
     /// What is it promoting into, if any?
+    #[inline]
     pub fn promote(self) -> Piece { Piece::from((self.mv & 0b00_000_111_000000_000000u32) >> 12) }
 
     /// Whereto are we moving?
+    #[inline]
     pub fn to(self) -> Field { Field::from(((self.mv & 0b00_000_000_111111_000000u32) >> 6) as u8) }
 
     /// From whence are we moving?
+    #[inline]
     pub fn from(self) -> Field { Field::from((self.mv & 0b111111u32) as u8) }
 
     /// construct a move from player, piece to move, piece to promote,
