@@ -31,6 +31,18 @@ pub const fn bit(f: Field) -> BitSet { BitSet::singleton(f) }
 /// short form of BitSet::bitIndex
 pub fn fld(b: BitSet) -> Field { b.bitIndex() }
 
+/// Compute p percent of v
+/// ```
+/// use rasch::position as P;
+/// assert_eq!(P::percent(90, 200), 180);
+/// ```
+pub fn percent(p: i32, v: i32) -> i32 { (p*v) / 100 }
+
+/// score when BLACK is mate
+pub const blackIsMate: i32 = 0x8000;
+/// score when WHITE is mate
+pub const whiteIsMate: i32 = -blackIsMate;
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 #[repr(u32)]
 pub enum Player {
@@ -51,6 +63,7 @@ impl From<bool> for Player {
 
 impl Player {
     /// the color of the opponent
+    #[inline]
     pub fn opponent(self) -> Player {
         match self {
             Player::BLACK => Player::WHITE,
@@ -65,7 +78,27 @@ impl Player {
     /// assert_eq!(P::WHITE.factor(), 1);
     /// assert_eq!(P::BLACK.factor(), -1);
     /// ```
+    #[inline]
     pub fn factor(self) -> i32 { 2 * (self as i32) - 1 }
+
+    /// a value in favor of this player
+    /// 
+    /// ```
+    /// use rasch::position as P;
+    /// assert_eq!(P::WHITE.forP(42), 42);
+    /// assert_eq!(P::BLACK.forP(42), -42);
+    /// ```
+    #[inline]
+    pub fn forP(self, v: i32) -> i32 { self.factor() * v }
+
+    /// penalize player on condition by n
+    /// If the condition holds, count n in favor of players opponent, else 0
+    pub fn penalize(self, cond: bool, n: i32) -> i32 {
+        match cond {
+            true => self.opponent().forP(n),
+            false => 0
+        }
+    }
 }
 
 // pub const BLACK: Player = Player::BLACK;
@@ -138,6 +171,20 @@ impl Piece {
             0b101 => KING,
             0b110 => KNIGHT,
             _ => EMPTY,
+        }
+    }
+
+    /// Base score for a piece in centipawns, used in evaluation
+    pub fn value(self) -> i32 {
+        match self {
+            EMPTY => 0,
+            PAWN => 100,
+            KNIGHT => 300,
+            BISHOP => 305,
+            ROOK => 550,
+            QUEEN => 875,
+            KING => 1000
+
         }
     }
 }
@@ -1195,6 +1242,21 @@ impl Position {
         let mut vec = Vec::with_capacity(40);
         self.rawMoves(&mut vec);
         vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
+    }
+
+    /// Positions qualify as "in opening"  if there are 
+    /// at least 12 pawns and both sides have still castling rights
+    pub fn inOpening(&self) -> bool {
+        self.pawns().card() >= 12 
+            && (self.flags * whiteCastlingRights).some() 
+            && (self.flags * blackCastlingRights).some()
+    }
+
+    /// Positions qualify as "in endgame" if there are 
+    /// less than 11 pieces or less than 5 pawns
+    pub fn inEndgame(&self) -> bool {
+        self.pawns().card() < 5
+            || self.occupied().card() < 11
     }
 }
 
