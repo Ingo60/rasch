@@ -498,6 +498,35 @@ pub const whiteBishopBlockingPawns: BitSet = BitSet { bits: 0x0000_0000_0000_5A0
 /// ```
 pub const blackBishopBlockingPawns: BitSet = BitSet { bits: 0x005A_0000_0000_0000 };
 
+/// Bitmask to select the fields where white officers start out.
+/// Evaluation will penalize if those fields are still occupied by officers.
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// use rasch::fieldset::Field::*;
+/// assert!   (P::whiteOfficers.member(B1));
+/// assert!   (P::whiteOfficers.member(C1));
+/// assert!   (P::whiteOfficers.member(F1));
+/// assert!   (P::whiteOfficers.member(G1));
+/// assert_eq!(P::whiteOfficers.card(), 4);
+/// ```
+pub const whiteOfficers: BitSet = BitSet { bits: 0x0000_0000_0000_0066 };
+
+/// Bitmask to select the fields where black officers start out.
+/// Evaluation will penalize if those fields are still occupied by officers.
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// use rasch::fieldset::Field::*;
+/// assert!   (P::blackOfficers.member(B8));
+/// assert!   (P::blackOfficers.member(C8));
+/// assert!   (P::blackOfficers.member(F8));
+/// assert!   (P::blackOfficers.member(G8));
+/// assert_eq!(P::blackOfficers.card(), 4);
+/// ```
+pub const blackOfficers: BitSet = BitSet { bits: 0x6600_0000_0000_0000 };
+
+
 /// constant to add or subtract 1 from both counters in one go
 /// It goes without saying that we must never decrement beyond zero, nor
 /// increment beyond 255.
@@ -1373,6 +1402,20 @@ impl Position {
         (before * self.occupied()).card() as i32 * 21
     }
 
+    /// Compute penalty for bad bishops.
+    /// A bishop is bad when it has no room to move since it's blocked by pieces
+    /// of the same colour.
+    pub fn penaltyBadBishops(&self, player: Player) -> i32 {
+        let bishops = self.bishops() * self.occupiedBy(player);
+        let mut count = 0;
+        for from in bishops {
+            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) {
+                count += 43;
+            }
+        };
+        count
+    }
+
     /// Sum scores for material
     pub fn scoreMaterial(&self, player: Player) -> i32 {
         self.occupiedBy(player).map(|f| self.pieceOn(f).score()).sum()
@@ -1457,6 +1500,7 @@ impl Position {
         + self.scoreCastling(WHITE) - self.scoreCastling(BLACK)
         + self.coveredKing(WHITE)   - self.coveredKing(BLACK)
         - self.penaltyBlockedBishopBlockingPawns(WHITE) + self.penaltyBlockedBishopBlockingPawns(BLACK)
+        - self.penaltyBadBishops(WHITE) + self.penaltyBadBishops(BLACK)
     }
 }
 
