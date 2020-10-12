@@ -1353,6 +1353,26 @@ impl Position {
         + (self.occupiedBy(player) * targets).card() as i32 * 6
     }
 
+    /// Compute penalty for blocked pawns that are likely to block the (undeveloped) bishops.
+    /// That is, for white, there shouldn't be any pieces on B3,D3,E3 or G3 before pawns.
+    pub fn penaltyBlockedBishopBlockingPawns(&self, player: Player) -> i32 {
+        // actual pawns on the fields in questions
+        let pawns = self.pawns() * match player {
+            WHITE => whiteBishopBlockingPawns, BLACK => blackBishopBlockingPawns
+        };
+        // restrict to own pawns, we don't want to penalize a white rook standing on E3
+        // when a black pawn stands on E2, to the contrary
+        let myPawns = match player {
+            WHITE => pawns * self.whites, BLACK => pawns - self.whites
+        };
+        // compute the fields directly "before" the pawns, so as to block them
+        let before = match player {
+            WHITE => BitSet { bits: myPawns.bits << 8 },
+            BLACK => BitSet { bits: myPawns.bits >> 8 },
+        };
+        (before * self.occupied()).card() as i32 * 21
+    }
+
     /// Sum scores for material
     pub fn scoreMaterial(&self, player: Player) -> i32 {
         self.occupiedBy(player).map(|f| self.pieceOn(f).score()).sum()
@@ -1436,6 +1456,7 @@ impl Position {
         + self.turn().forP(4*playerMoves)
         + self.scoreCastling(WHITE) - self.scoreCastling(BLACK)
         + self.coveredKing(WHITE)   - self.coveredKing(BLACK)
+        - self.penaltyBlockedBishopBlockingPawns(WHITE) + self.penaltyBlockedBishopBlockingPawns(BLACK)
     }
 }
 
