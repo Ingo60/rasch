@@ -440,9 +440,63 @@ pub const fn playerCastledBits(p: Player) -> BitSet {
 }
 
 #[rustfmt::skip]
-/// Bitmask to select the Bits that can be targets of an en-passant capture (rank 3 and rank 6)
-/// If any of those is set in the position flags, an en passant capture is possible
+/// Bitmask to select the Bits that can be targets of an en-passant capture (rank 3 and rank 6).
+/// 
+/// If any of those is set in the position flags, an en passant capture is possible.
+/// 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// use rasch::fieldset::Field::*;
+/// assert!   (P::enPassantBits.member(A3));
+/// assert!   (P::enPassantBits.member(B3));
+/// assert!   (P::enPassantBits.member(C3));
+/// assert!   (P::enPassantBits.member(D3));
+/// assert!   (P::enPassantBits.member(E3));
+/// assert!   (P::enPassantBits.member(F3));
+/// assert!   (P::enPassantBits.member(G3));
+/// assert!   (P::enPassantBits.member(H3));
+/// assert!   (P::enPassantBits.member(A6));
+/// assert!   (P::enPassantBits.member(B6));
+/// assert!   (P::enPassantBits.member(C6));
+/// assert!   (P::enPassantBits.member(D6));
+/// assert!   (P::enPassantBits.member(E6));
+/// assert!   (P::enPassantBits.member(F6));
+/// assert!   (P::enPassantBits.member(G6));
+/// assert!   (P::enPassantBits.member(H6));
+/// assert_eq!(P::enPassantBits.card(), 16);
+/// ```
 pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-H3, A6-H6
+
+/// Bitmask to select the white pawns that may block an unmoved bishop.
+/// Evaluation will penalize if those pawns are blocked themselves as this makes it
+/// extremely unlikely that the bishops can be developed. 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// use rasch::fieldset::Field::*;
+/// assert!   (P::whiteBishopBlockingPawns.member(B2));
+/// assert!   (P::whiteBishopBlockingPawns.member(D2));
+/// assert!   (P::whiteBishopBlockingPawns.member(E2));
+/// assert!   (P::whiteBishopBlockingPawns.member(G2));
+/// assert_eq!(P::whiteBishopBlockingPawns.card(), 4);
+/// ```
+pub const whiteBishopBlockingPawns: BitSet = BitSet { bits: 0x0000_0000_0000_5A00 };
+
+/// Bitmask to select the black pawns that may block an unmoved bishop.
+/// Evaluation will penalize if those pawns are blocked themselves as this makes it
+/// extremely unlikely that the bishops can be developed. 
+/// ```
+/// use rasch::position as P;
+/// use rasch::fieldset as F;
+/// use rasch::fieldset::Field::*;
+/// assert!   (P::blackBishopBlockingPawns.member(B7));
+/// assert!   (P::blackBishopBlockingPawns.member(D7));
+/// assert!   (P::blackBishopBlockingPawns.member(E7));
+/// assert!   (P::blackBishopBlockingPawns.member(G7));
+/// assert_eq!(P::blackBishopBlockingPawns.card(), 4);
+/// ```
+pub const blackBishopBlockingPawns: BitSet = BitSet { bits: 0x005A_0000_0000_0000 };
 
 /// constant to add or subtract 1 from both counters in one go
 /// It goes without saying that we must never decrement beyond zero, nor
@@ -1260,7 +1314,6 @@ impl Position {
     /// turn out to be illegal due to check.
     fn rawMoves(&self, vec: &mut Vec<Move>) {
         // let mut vec = Vec::new();
-        self.castlingMoves(vec);
         for from in self.occupiedByActive() {
             self.genMove(vec, from);
         }
@@ -1270,6 +1323,7 @@ impl Position {
     /// Verified to not leave the king of the moving player in check.
     pub fn moves(&self) -> Vec<Move> {
         let mut vec = Vec::with_capacity(64);
+        self.castlingMoves(&mut vec);
         self.rawMoves(&mut vec);
         vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
     }
