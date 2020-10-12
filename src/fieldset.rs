@@ -180,6 +180,9 @@ impl BitSet {
         }
     }
 
+    /// `true` if this is a subset of some other set
+    pub fn subset(self, other: BitSet) -> bool { self * other == self }
+
     /// make a BitSet from a slice of Field
     /// usage: BitSet::new(&[Field::E3, Field::H7])
     /// or: BitSet::new(&v[..]) where v is a Vec<Field>
