@@ -27,6 +27,8 @@ pub enum Field {
     , A8 , B8 , C8 , D8 , E8 , F8 , G8 , H8
 }
 
+pub use Field::*;
+
 #[rustfmt::skip]
 static ALLFIELDS: [Field; 64] = [
       Field::A1 , Field::B1 , Field::C1 , Field::D1 , Field::E1 , Field::F1 , Field::G1 , Field::H1
@@ -66,6 +68,101 @@ impl Field {
     /// assert_eq!(E7.show(), "e7");
     /// ```
     pub fn show(self) -> String { self.file().to_string() + &self.rank().to_string() }
+
+    /// Make a Field from rank and file
+    pub fn fromFR(f: char, r: u8) -> Field {
+        match f.to_ascii_lowercase() {
+            'a' => match r {
+                1 => A1,
+                2 => A2,
+                3 => A3,
+                4 => A4,
+                5 => A5,
+                6 => A6,
+                7 => A7,
+                8 => A8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'b' => match r {
+                1 => B1,
+                2 => B2,
+                3 => B3,
+                4 => B4,
+                5 => B5,
+                6 => B6,
+                7 => B7,
+                8 => B8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'c' => match r {
+                1 => C1,
+                2 => C2,
+                3 => C3,
+                4 => C4,
+                5 => C5,
+                6 => C6,
+                7 => C7,
+                8 => C8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'd' => match r {
+                1 => D1,
+                2 => D2,
+                3 => D3,
+                4 => D4,
+                5 => D5,
+                6 => D6,
+                7 => D7,
+                8 => D8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'e' => match r {
+                1 => E1,
+                2 => E2,
+                3 => E3,
+                4 => E4,
+                5 => E5,
+                6 => E6,
+                7 => E7,
+                8 => E8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'f' => match r {
+                1 => F1,
+                2 => F2,
+                3 => F3,
+                4 => F4,
+                5 => F5,
+                6 => F6,
+                7 => F7,
+                8 => F8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'g' => match r {
+                1 => G1,
+                2 => G2,
+                3 => G3,
+                4 => G4,
+                5 => G5,
+                6 => G6,
+                7 => G7,
+                8 => G8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            'h' => match r {
+                1 => H1,
+                2 => H2,
+                3 => H3,
+                4 => H4,
+                5 => H5,
+                6 => H6,
+                7 => H7,
+                8 => H8,
+                w => panic!(format!("illegal rank {}", w)),
+            },
+            _ => panic!(format!("illegal file '{}'", f)),
+        }
+    }
 }
 
 impl Display for Field {
@@ -413,12 +510,23 @@ mod tests {
 
     // const e5: Field = Field::E5;
     use super::Field::E5 as e5;
-    use super::Field::*;
+    // use super::Field::*;
 
     #[test]
     fn from_array() {
         let bs: BitSet = [e5].iter().map(|r| *r).collect();
         //                                  ^^^^^^^^^^^  this is ugly
         assert_eq!(bs, BitSet::singleton(E5));
+    }
+
+    #[test]
+    fn fromFR() {
+        for f in 'a'..'h' {
+            for r in 1..8 {
+                let fld = Field::fromFR(f, r);
+                assert_eq!(fld.file(), f);
+                assert_eq!(fld.rank(), r);
+            }
+        }
     }
 }
