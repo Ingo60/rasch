@@ -77,15 +77,16 @@ fn main() {
     // println!("imposssible {}", BitSet::empty().bitIndex());
     println!("ppfZobrist(1,6,0) {:x}", Z::ppfZobrist(1, 6, 0));
     let board = P::initialBoard();
-    println!("hash {:x}", board.hash);
-    println!("flags {}", board.flags);
-    println!("whites {}", board.whites);
-    println!("pawnSet {}", board.pawnSet);
-    println!("bishopSet {}", board.bishopSet);
-    println!("rookSet {}", board.rookSet);
+    println!("initial {}", board);
     print!("moves: ");
     for mv in board.moves() {
         print!("{} ", mv);
     }
     println!();
+    let mv1 = P::Move::new(P::WHITE, P::PAWN, P::EMPTY, Field::E2, Field::E4);
+    let mv2 = P::Move::new(P::BLACK, P::PAWN, P::EMPTY, Field::E7, Field::E5);
+    let b1 = board.apply(mv1);
+    println!("after e2e4 {}", b1);
+    let b2 = b1.apply(mv2);
+    println!("after e7e5 {}", b2);
 }

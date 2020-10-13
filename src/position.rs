@@ -213,7 +213,7 @@ impl Piece {
 // pub const ROOK: Piece = Piece::ROOK;
 // pub const QUEEN: Piece = Piece::QUEEN;
 // pub const KING: Piece = Piece::KING;
-use Piece::*;
+pub use Piece::*;
 
 #[rustfmt::skip]
 //                  Board Geometry
@@ -994,7 +994,7 @@ impl Position {
     /// Apply a move in a position and return the resulting position.
     /// The move should be one of the moves generated for this position.
     pub fn apply(&self, mv: Move) -> Position {
-        eprintln!(
+        /* eprintln!(
             "applying {:?} {:?} {:?} {} {}",
             mv.player(),
             mv.piece(),
@@ -1002,7 +1002,7 @@ impl Position {
             mv.from(),
             mv.to()
         );
-        eprintln!("to {}", self);
+        eprintln!("to {}", self); */
         if mv.piece() == KING && mv.promote() != EMPTY {
             self.applyCastling(mv)
         } else {
@@ -1132,7 +1132,7 @@ impl Position {
         let castlingRights = (self.flags * castlingBits) - lostCastlingRights;
         // en passant bit to set, if any
         let enPassantBit = match mv.piece() {
-            PAWN if mv.from().rank() == 1 && mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
+            PAWN if mv.from().rank() == 2 && mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
             PAWN if mv.from().rank() == 7 && mv.to() as u8 == mv.from() as u8 - 16 => bit(Field::from(mv.from() as u8 - 8)),
             _otherwise => BitSet::empty(),
         };
@@ -1247,9 +1247,14 @@ impl Position {
     /// where the KING could be captured. Such a move, then, must not be applied, as certain functions
     /// will panic when there is no king.
     pub fn applyNull(&self) -> Position {
+        // current en passant hash value, if any, needs to get xor'ed out
+        let currentEPHash = match self.flags * enPassantBits {
+            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as u32),
+            _otherwise => 0,
+        };
         Position {
-            flags: BitSet { bits: (self.flags.bits ^ whiteToMove.bits) + onePlyRootOnly },
-            hash: self.hash ^ flagZobristA1,
+            flags: BitSet { bits: (self.flags.bits ^ whiteToMove.bits) + onePlyRootOnly } - enPassantBits,
+            hash: self.hash ^ flagZobristA1 ^ currentEPHash,
             .. *self
         }
     } 
@@ -1416,6 +1421,22 @@ impl Position {
         count
     }
 
+    /// Compute penalty for lazy officers.
+    /// In the opening, KNIGHTs and BISHOPs should be moved.
+    /// The penalty does not apply anymore once the player has castled.
+    pub fn penaltyLazyOfficers(&self, player: Player) -> i32 {
+        let castled = match player {
+            WHITE => self.flags * whiteHasCastledBits,
+            BLACK => self.flags * blackHasCastledBits
+        };
+        if castled.some() { return 0; }
+        let officers = match player {
+            WHITE => whiteOfficers,
+            BLACK => blackOfficers
+        };
+        (officers * (self.bishops() + self.knights()) * self.occupiedBy(player)).card() as i32 * 17
+    }
+
     /// Sum scores for material
     pub fn scoreMaterial(&self, player: Player) -> i32 {
         self.occupiedBy(player).map(|f| self.pieceOn(f).score()).sum()
@@ -1501,6 +1522,7 @@ impl Position {
         + self.coveredKing(WHITE)   - self.coveredKing(BLACK)
         - self.penaltyBlockedBishopBlockingPawns(WHITE) + self.penaltyBlockedBishopBlockingPawns(BLACK)
         - self.penaltyBadBishops(WHITE) + self.penaltyBadBishops(BLACK)
+        - self.penaltyLazyOfficers(WHITE) + self.penaltyLazyOfficers(BLACK)
     }
 }
 
@@ -1522,10 +1544,32 @@ impl Hash for Position {
 
 impl Display for Position {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let wmoves = if self.turn() == WHITE { self.moves() } else { self.applyNull().moves() };
+        let bmoves = if self.turn() == BLACK { self.moves() } else { self.applyNull().moves() };
+        let wvs: Vec<_> = wmoves.iter().map(|x| x.algebraic()).collect();
+        let bvs: Vec<_> = bmoves.iter().map(|x| x.algebraic()).collect();
         write!(
             f,
-            "P(hash={:x}, flags={}, whites={}, pawnSet={}, bishopSet={}, rookSet={})",
-            self.hash, self.flags, self.whites, self.pawnSet, self.bishopSet, self.rookSet
+            "P:hash=0x{:x}  flags{}\n\
+             whites{}\n\
+             pawns {}\n\
+             bishops{}  knights{}\n\
+             rooks  {}  queens {} kings{}\n\
+             eval={}  check={}\n\
+             material       {}  {}\n\
+             hanging        {}  {}\n\
+             moves          {}  {}\n\
+             white moves    [{}]\n\
+             black moves    [{}]",
+            self.hash, self.flags - counterBits, self.whites, 
+            self.pawns(), 
+            self.bishops(), self.knights(),
+            self.rooks(), self.queens(), self.kings(),
+            self.eval(), self.inCheck(self.turn()),
+            self.scoreMaterial(WHITE), self.scoreMaterial(BLACK),
+            -self.penalizeHanging(WHITE), self.penalizeHanging(BLACK),
+            wmoves.len(), bmoves.len(), 
+            &wvs[..].join(", "), &bvs[..].join(", ")
         )
     }
 }
