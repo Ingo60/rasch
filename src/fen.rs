@@ -244,3 +244,62 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
     }
     Ok(pos.rehash())
 }
+
+/// Encode a Position as FEN String
+///
+/// ```
+/// use rasch::position as P;
+/// use rasch::fen as FEN;
+/// assert_eq!(FEN::encodeFEN(&P::initialBoard()), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w QKqk - 0 1");
+/// assert_eq!(FEN::decodeFEN(&FEN::encodeFEN(&P::initialBoard())), Ok(P::initialBoard()));
+/// ```
+pub fn encodeFEN(pos: &P::Position) -> String {
+    let fen6 = "1";
+    let fen5 = pos.getPlyCounter().to_string();
+    let eps = pos.flags * P::enPassantBits;
+    let fen4 = if eps.some() {
+        P::fld(eps).to_string()
+    } else {
+        String::from("-")
+    };
+    let crs = pos.flags * P::castlingBits;
+    let fen3 = if crs.null() {
+        String::from("")
+    } else {
+        crs.map(|f| match f {
+            C1 => 'Q',
+            G1 => 'K',
+            C8 => 'q',
+            G8 => 'k',
+            _ => '?',
+        })
+        .collect()
+    };
+    let fen2 = String::from(if pos.turn() == WHITE { "w" } else { "b" });
+    let fen1: String = fenOrder
+        .iter()
+        .map(|f| {
+            let prefix = String::from(match f {
+                A7 | A6 | A5 | A4 | A3 | A2 | A1 => "/",
+                _other => "",
+            });
+            let p = pos.pieceOn(*f).show();
+            let pP = if pos.whites.member(*f) {
+                p
+            } else {
+                p.to_ascii_lowercase()
+            };
+            prefix + &pP
+        })
+        .collect();
+    let fen1 = fen1
+        .replace("--------", "8")
+        .replace("-------", "7")
+        .replace("------", "6")
+        .replace("-----", "5")
+        .replace("----", "4")
+        .replace("---", "3")
+        .replace("--", "2")
+        .replace("-", "1");
+    fen1 + " " + &fen2 + " " + &fen3 + " " + &fen4 + " " + &fen5 + " " + fen6
+}
