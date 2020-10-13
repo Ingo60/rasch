@@ -1015,7 +1015,7 @@ impl Position {
     ///
     /// Not for public use as it leaves the hash in an
     /// illegal state.
-    fn place(&self, player: Player, piece: Piece, mask: BitSet) -> Position {
+    pub fn place(&self, player: Player, piece: Piece, mask: BitSet) -> Position {
         let whites = match player {
             WHITE if piece != EMPTY => self.whites + mask,
             _other => self.whites - mask,
@@ -1689,15 +1689,23 @@ impl Display for Move {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
 }
 
-pub fn initialBoard() -> Position {
-    let empty = Position {
+/// An empty board where it is WHITE's turn and all castling rights are set.
+/// Anything else is zero.
+/// 
+/// You need to place at least two KINGS onto this board before it is valid.
+pub fn emptyBoard() -> Position {
+    Position {
         hash:      0,
         flags:     bit(A1) + castlingBits,
         whites:    BitSet::empty(),
         pawnSet:   BitSet::empty(),
         bishopSet: BitSet::empty(),
         rookSet:   BitSet::empty(),
-    };
+    }
+}
+
+pub fn initialBoard() -> Position {
+    let empty = emptyBoard();
     empty
         .place(BLACK, PAWN, [A7, B7, C7, D7, E7, F7, G7, H7].iter().collect())
         .place(WHITE, PAWN, [A2, B2, C2, D2, E2, F2, G2, H2].iter().collect())
