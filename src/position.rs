@@ -1559,6 +1559,11 @@ impl Display for Position {
              material       {}  {}\n\
              hanging        {}  {}\n\
              moves          {}  {}\n\
+             castling       {}  {}\n\
+             covered king   {}  {}\n\
+             bbbPawns       {}  {}\n\
+             bad bishops    {}  {}\n\
+             lazy officers  {}  {}\n\
              white moves    [{}]\n\
              black moves    [{}]",
             self.hash, self.flags - counterBits, self.whites, 
@@ -1566,9 +1571,14 @@ impl Display for Position {
             self.bishops(), self.knights(),
             self.rooks(), self.queens(), self.kings(),
             self.eval(), self.inCheck(self.turn()),
-            self.scoreMaterial(WHITE), self.scoreMaterial(BLACK),
+            self.scoreMaterial(WHITE), - self.scoreMaterial(BLACK),
             -self.penalizeHanging(WHITE), self.penalizeHanging(BLACK),
-            wmoves.len(), bmoves.len(), 
+            4 * wmoves.len() as i32, -4 * bmoves.len() as i32,
+            self.scoreCastling(WHITE), - self.scoreCastling(BLACK),
+            self.coveredKing(WHITE),   - self.coveredKing(BLACK),
+            - self.penaltyBlockedBishopBlockingPawns(WHITE), self.penaltyBlockedBishopBlockingPawns(BLACK),
+            - self.penaltyBadBishops(WHITE), self.penaltyBadBishops(BLACK),
+            - self.penaltyLazyOfficers(WHITE),  self.penaltyLazyOfficers(BLACK),
             &wvs[..].join(", "), &bvs[..].join(", ")
         )
     }
