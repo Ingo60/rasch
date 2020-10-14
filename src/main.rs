@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use rasch::common;
 use rasch::computing as C;
 use rasch::fieldset::*;
 use rasch::mdb;
@@ -89,4 +90,8 @@ fn main() {
     println!("after e2e4 {}", b1);
     let b2 = b1.apply(mv2);
     println!("after e7e5 {}", b2);
+
+    let mut p = P::initialBoard();
+    p.flags.bits |= 1;
+    common::protocol();
 }
