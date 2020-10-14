@@ -58,14 +58,15 @@ pub enum State {
     THINKING(Instant),
     TERMINATED,
 }
+pub use State::*;
 
 /// State the protocol needs
 pub struct GameState {
     /// the internal state
     pub state:       State,
     /// The channel where threads send `Protocol` records to the
-    /// protocol handler. ;ust be cloned and passed to new threads.
-    pub toMe:        mpsc::SyncSender<Protocol>,
+    /// protocol handler. Must be cloned and passed to new threads.
+    pub toMain:      mpsc::SyncSender<Protocol>,
     /// The channel where `Protocol` records sent from threads are
     /// received.
     pub fromThreads: mpsc::Receiver<Protocol>,
@@ -74,7 +75,44 @@ pub struct GameState {
     /// The channel where answers to the strategy are sent.
     pub toStrategy:  mpsc::SyncSender<bool>,
     /// The channel where the strategy receives answers
-    pub fromMe:      mpsc::Receiver<bool>,
+    pub fromMain:    mpsc::Receiver<bool>,
+    /// The history of the game
+    pub history:     Vec<Position>,
+    /// Our remaining time
+    pub myTime:      Duration,
+    // Their remaining time
+    pub oTime:       Duration,
+    // Time for entire game
+    pub gameTime:    Duration,
+    // Incremental time
+    pub incrTime:    Duration,
+    // Number of moves for game, or 0 for incremental
+    pub gameMoves:   i32,
+}
+
+impl GameState {
+    /// initialize game and start the reader thread
+    pub fn new() -> GameState {
+        let (toMain, fromThreads) = mpsc::sync_channel(1);
+        let (toReader, rdrRcv) = mpsc::sync_channel(1);
+        let (toStrategy, fromMain) = mpsc::sync_channel(1);
+        let rdrSender = toMain.clone();
+        thread::spawn(move || reader(rdrSender, rdrRcv));
+        GameState {
+            state: FORCED,
+            toMain,
+            fromThreads,
+            toReader,
+            toStrategy,
+            fromMain,
+            history: vec![P::initialBoard()],
+            gameMoves: 0,
+            gameTime: Duration::new(0, 0),
+            incrTime: Duration::new(0, 0),
+            myTime: Duration::new(0, 0),
+            oTime: Duration::new(0, 0),
+        }
+    }
 }
 
 pub fn reader(sender: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>) {
@@ -86,7 +124,7 @@ pub fn reader(sender: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>) {
                 sender.send(EOF).unwrap();
                 return;
             }
-            Ok(n) => {
+            Ok(_) => {
                 // eprintln!("got {} bytes", n);
                 sender.send(Line(buffer)).unwrap();
             }
