@@ -570,10 +570,10 @@ const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
 const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
 
 /// kingside castling for WHITE
-const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
-const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
-const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
-const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
+pub const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
+pub const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
+pub const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
+pub const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
 
 /// Helper function that turns `false` into `0u64` and `true` into
 /// `0xffff_ffff_ffff_ffffu64`
@@ -1498,7 +1498,7 @@ impl Position {
     }
 
     /// Evaluate a position. A positive score indicates a position favourable for white,
-    /// while a negative one indicates a position favourable by black.
+    /// while a negative one indicates a position favourable for black.
     /// 
     /// This function does **not** detect mate, stalemate, 
     /// draw by repetition or draw by the 50 moves rule.
@@ -1528,7 +1528,8 @@ impl Position {
 
 impl PartialEq for Position {
     fn eq(&self, other: &Position) -> bool {
-        self.flags - counterBits == other.flags - counterBits
+        self.hash == other.hash 
+            && self.flags - counterBits == other.flags - counterBits
             && self.whites == other.whites
             && self.pawnSet == other.pawnSet
             && self.bishopSet == other.bishopSet
