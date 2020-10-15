@@ -156,7 +156,7 @@ impl GameState {
                 TERMINATED => return,
                 FORCED => {
                     let input = self.fromThreads.recv().unwrap();
-                    self.process(&input);
+                    self.processForced(&input);
                 }
                 _ => panic!("not yet implemented"),
             };
@@ -164,7 +164,7 @@ impl GameState {
     }
 
     /// Processing of protocol commands
-    pub fn process(&mut self, input: &Protocol) {
+    pub fn processForced(&mut self, input: &Protocol) {
         match input {
             EOF => {
                 if let Some(sender) = &self.toStrategy {
@@ -231,9 +231,9 @@ impl GameState {
                             self.history.push(self.current().apply(mv).clearRootPlyCounter());
                             // TODO: more logic for expected move
                         }
-                        Err(_) => println!("Illegal move: '{}'", alg),
+                        Err(_) => println!("Illegal move: {}", alg),
                     },
-                    None => println!("Illegal move: ''"),
+                    None => println!("Illegal move: "),
                 }
             }
             Some("result") => self.state = FORCED,
@@ -250,6 +250,20 @@ impl GameState {
                     self.history.pop();
                 }
             }
+            Some("time") => match iter.next() {
+                Some(number) => match number.parse::<u64>() {
+                    Ok(t) => self.myTime = Duration::from_millis(10 * t),
+                    Err(_) => println!("Error (time not numeric)"),
+                },
+                None => println!("Error (number missing after time)"),
+            },
+            Some("otim") => match iter.next() {
+                Some(number) => match number.parse::<u64>() {
+                    Ok(t) => self.oTime = Duration::from_millis(10 * t),
+                    Err(_) => println!("Error (time not numeric)"),
+                },
+                None => println!("Error (number missing after otim)"),
+            },
             Some(unknown) => {
                 println!("Error (unknown command): {}", unknown);
             }
