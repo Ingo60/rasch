@@ -189,7 +189,8 @@ impl GameState {
             None => return, // silently ignore empty line
             Some("quit") => self.state = TERMINATED,
             Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("hard") | Some("easy")
-            | Some("post") | Some("computer") | Some("cores") => (), // ignored
+            | Some("post") | Some("computer") | Some("cores") | Some("level") | Some("st") | Some("sd")
+            | Some("nps") => (), // ignored
             Some("protover") => {
                 println!("feature myname=\"rasch resign\"");
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
@@ -221,6 +222,32 @@ impl GameState {
                         self.history = vec![p];
                         self.best = None;
                     }
+                }
+            }
+            Some("usermove") => {
+                match iter.next() {
+                    Some(alg) => match Move::unAlgebraic(&self.current().moves(), alg) {
+                        Ok(mv) => {
+                            self.history.push(self.current().apply(mv).clearRootPlyCounter());
+                            // TODO: more logic for expected move
+                        }
+                        Err(_) => println!("Illegal move: '{}'", alg),
+                    },
+                    None => println!("Illegal move: ''"),
+                }
+            }
+            Some("result") => self.state = FORCED,
+            Some("undo") => {
+                self.state = FORCED;
+                if self.history.len() > 1 {
+                    self.history.pop();
+                }
+            }
+            Some("remove") => {
+                self.state = FORCED;
+                if self.history.len() > 2 {
+                    self.history.pop();
+                    self.history.pop();
                 }
             }
             Some(unknown) => {
