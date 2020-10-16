@@ -1,7 +1,11 @@
 #![allow(non_snake_case)]
 
+use std::sync::mpsc;
+
 // use rasch::common;
 use rasch::common::GameState;
+use rasch::common::Protocol;
+use rasch::common::Protocol::*;
 // use rasch::computing as C;
 // use rasch::fieldset::*;
 use rasch::mdb;
@@ -11,5 +15,9 @@ use rasch::mdb;
 fn main() {
     mdb::initStatic();
     let mut gs = GameState::new();
-    gs.mainLoop();
+    gs.mainLoop(strategy_resign);
+}
+
+pub fn strategy_resign(sid: u32, send: mpsc::SyncSender<Protocol>, _recv: mpsc::Receiver<bool>) {
+    send.send(NoMore(sid)).unwrap();
 }

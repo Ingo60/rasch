@@ -3,6 +3,7 @@
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
 #![allow(non_upper_case_globals)] // as well as this
 
+use super::computing;
 use super::fen;
 use super::position as P;
 use super::position::Move;
@@ -13,14 +14,19 @@ use Protocol::*;
 use State::*;
 
 use std::cmp::{max, min};
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-pub type Channel<A> = (mpsc::SyncSender<A>, mpsc::Receiver<A>);
+use rand::Rng;
+
+// pub static mut trtable: Arc<Mutex<HashMap<i32, String>>> =
+// Arc::new(Mutex::new(HashMap::new()));
 
 // Wir brauchen einen Protocol-Channel, wobei der Receiver beim
 // Protokoll-Handler ist, und die Sender gecloned beim Reader/Strategy.
@@ -38,9 +44,9 @@ pub struct Variation {
     /// moves
     pub score: i32,
     /// estimate about searched nodes
-    pub nodes: i32,
+    pub nodes: u32,
     /// estimate of search depth
-    pub depth: i32,
+    pub depth: u32,
 }
 
 /// Data structure to be sent over the Protocol Channel
@@ -65,6 +71,13 @@ pub enum State {
     TERMINATED,
 }
 
+pub type Strategy = fn(u32, mpsc::SyncSender<Protocol>, mpsc::Receiver<bool>) -> ();
+
+pub trait TheStrategy {
+    fn getName(&self) -> String;
+    fn run(&self, send: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>);
+}
+
 /// State the protocol needs
 pub struct GameState {
     /// the internal state
@@ -73,6 +86,8 @@ pub struct GameState {
     pub player:      Player,
     /// Best move so far
     pub best:        Option<Variation>,
+    /// nodes searched
+    pub nodes:       u32,
     /// The channel where threads send `Protocol` records to the
     /// protocol handler. Must be cloned and passed to new threads.
     pub toMain:      mpsc::SyncSender<Protocol>,
@@ -99,6 +114,8 @@ pub struct GameState {
     pub gameMoves:   i32,
     /// identifier for strategy
     pub sid:         u32,
+    /// Transposition table
+    pub trtable:     Arc<Mutex<HashMap<Position, String>>>,
 }
 
 impl GameState {
@@ -113,6 +130,7 @@ impl GameState {
             state: FORCED,
             player: WHITE,
             best: None,
+            nodes: 0,
             toMain,
             fromThreads,
             toReader,
@@ -124,6 +142,7 @@ impl GameState {
             myTime: Duration::new(0, 0),
             oTime: Duration::new(0, 0),
             sid: 0,
+            trtable: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -142,15 +161,20 @@ impl GameState {
     /// remaining time, which is calculated to last another 25
     /// moves, but at least 1 second. If we are behind in time,
     /// subtracts 0,5 seconds from the remaining time.
-    pub fn timePerMove(&self) -> i32 {
-        max(
+    pub fn timePerMove(&self) -> u64 {
+        let remaining = max(
             -500,
             min(3000, self.myTime.as_millis() as i32 - self.oTime.as_millis() as i32),
-        ) + (max(1000, self.myTime.as_millis() as i32 / 25))
+        ) + (max(1000, self.myTime.as_millis() as i32 / 25));
+        assert!(remaining >= 500);
+        return remaining as u64;
     }
 
     /// This is the main loop of the protocol handler
-    pub fn mainLoop(&mut self) {
+    pub fn mainLoop(&mut self, strategy: Strategy)
+    // where
+    //    S: 'static + Strategy + Clone + Send,
+    {
         loop {
             match self.state {
                 TERMINATED => return,
@@ -158,9 +182,147 @@ impl GameState {
                     let input = self.fromThreads.recv().unwrap();
                     self.processForced(&input);
                 }
-                _ => panic!("not yet implemented"),
+                PLAYING => {
+                    if self.current().turn() == self.player {
+                        // it's our turn, nevertheless, we make sure there is no other request
+                        // at this time before starting the thread
+                        match self.fromThreads.try_recv() {
+                            Ok(input) => self.processForced(&input),
+                            Err(mpsc::TryRecvError::Empty) => self.start(strategy),
+                            Err(mpsc::TryRecvError::Disconnected) => return,
+                        }
+                    } else {
+                        let input = self.fromThreads.recv().unwrap();
+                        self.processForced(&input);
+                    }
+                }
+                THINKING(since) => {
+                    let used = since.elapsed().as_millis() as u64;
+                    let have = self.timePerMove();
+                    let time = if have < used { 500 } else { max(500, have - used) };
+                    let todo = if let None = self.best {
+                        // when we have no move yet, wait for one, no matter what
+                        match self.fromThreads.recv() {
+                            Ok(x) => Ok(x),
+                            Err(mpsc::RecvError) => Err(mpsc::RecvTimeoutError::Disconnected),
+                        }
+                    } else {
+                        // wait between 500ms and the calculated millis per move
+                        self.fromThreads.recv_timeout(Duration::from_millis(time))
+                    };
+                    match todo {
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            panic!("should not happen - channel disconnected while thinking")
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            println!("# Thinking timed out.");
+                            io::stdout().flush().unwrap_or_default();
+                            if let Some(sender) = &self.toStrategy {
+                                // ask strategy to finish if it is still listening
+                                sender.try_send(false).unwrap_or_default();
+                            }
+                            computing::finishThinking();
+                            self.sendMove();
+                        }
+                        Ok(EOF) => {
+                            println!("# EOF on standard input while thinking!?");
+                            io::stdout().flush().unwrap_or_default();
+                            if let Some(sender) = &self.toStrategy {
+                                // ask strategy to finish if it is still listening
+                                sender.try_send(false).unwrap_or_default();
+                            }
+                            computing::finishThinking();
+                            self.state = TERMINATED;
+                        }
+                        Ok(MV(sid, var)) if sid == self.sid => {
+                            let usedMillis = since.elapsed().as_millis() as u64;
+                            // make sure the next depth is not tried if we have already used more
+                            // than the half of the assigned time
+                            let goOn = usedMillis < (2 * self.timePerMove() / 3);
+                            self.nodes += var.nodes;
+                            if let Some(sender) = &self.toStrategy {
+                                sender.send(goOn).unwrap();
+                            };
+                            println!(
+                                "# we have used {}ms of {}ms, continue={}",
+                                usedMillis,
+                                self.timePerMove(),
+                                goOn
+                            );
+                            // show the progress
+                            let mvs: Vec<_> = var.moves.iter().map(|x| x.algebraic()).collect();
+                            println!(
+                                " {} {} {} {} {}",
+                                var.depth,
+                                self.player.factor() * var.score,
+                                (usedMillis + 5) / 10,
+                                self.nodes,
+                                &mvs[..].join(" ")
+                            );
+                            io::stdout().flush().unwrap_or_default();
+                            // TODO: compute best
+                            let oracle: bool = rand::thread_rng().gen();
+                            let best = match &self.best {
+                                None => var,
+                                Some(old) => {
+                                    if var.moves.len() > 0 && old.moves.len() > 0 && var.moves[0] == old.moves[0] {
+                                        var
+                                    } else if (var.score - old.score).abs() <= 5 {
+                                        if oracle {
+                                            var
+                                        } else {
+                                            old.clone()
+                                        }
+                                    } else if self.player == WHITE && var.score > old.score
+                                        || self.player == BLACK && var.score < old.score
+                                    {
+                                        var
+                                    } else {
+                                        old.clone()
+                                    }
+                                }
+                            };
+                            self.best = Some(best);
+                            if !goOn {
+                                self.nodes = 0;
+                                self.sendMove();
+                            }
+                        }
+                    }
+                }
             };
         }
+    }
+
+    /// Start a new thread that'll figure out a move
+    pub fn start(&mut self, strategy: Strategy) {
+        let mvs = self.current().moves();
+        let mate = mvs.len() == 0 && self.current().inCheck(self.current().turn());
+        let stalemate = mvs.len() == 0 && !mate;
+
+        if mate || stalemate {
+            println!("# thinking finds game that has ended");
+            io::stdout().flush().unwrap_or_default();
+            self.state = FORCED;
+            self.best = None;
+            self.nodes = 0;
+        } else {
+            let since = Instant::now();
+            let (snd, rcv) = mpsc::sync_channel(1);
+            computing::beginThinking();
+            let toMe = self.toMain.clone();
+            let sid = self.sid;
+            thread::spawn(move || strategy(sid, toMe, rcv));
+            self.state = THINKING(since);
+            self.best = None;
+            self.nodes = 0;
+            self.toStrategy = Some(snd);
+        }
+    }
+
+    /// Send the best move, if any
+    pub fn sendMove(&mut self) {
+        panic!("FIXME");
     }
 
     /// Processing of protocol commands
@@ -182,7 +344,7 @@ impl GameState {
     /// Processing input from xboard
     pub fn xboardCommand(&mut self, cmd: &str) {
         // tell the reader to continue unless we got the quit command
-        self.toReader.send(cmd != "quit").unwrap();
+        self.toReader.send(cmd != "quit").unwrap_or_default();
 
         let mut iter = cmd.split_whitespace();
         match iter.next() {
@@ -203,6 +365,7 @@ impl GameState {
                 self.player = BLACK;
                 self.best = None;
                 self.toStrategy = None;
+                self.nodes = 0;
             }
             Some("force") => self.state = FORCED,
             Some("playother") => {
@@ -268,7 +431,7 @@ impl GameState {
                 println!("Error (unknown command): {}", unknown);
             }
         };
-        io::stdout().flush().unwrap();
+        io::stdout().flush().unwrap_or_default();
     }
 }
 
@@ -278,12 +441,12 @@ pub fn reader(sender: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>) {
         match io::stdin().read_line(&mut buffer) {
             Ok(0) | Err(_) => {
                 // eprintln!("got Err({})", x);
-                sender.send(EOF).unwrap();
+                sender.send(EOF).unwrap_or_default();
                 return;
             }
             Ok(_) => {
                 // eprintln!("got {} bytes", n);
-                sender.send(Line(buffer)).unwrap();
+                sender.send(Line(buffer)).unwrap_or_default();
             }
         };
         match recv.recv() {
@@ -294,31 +457,5 @@ pub fn reader(sender: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>) {
                 return;
             }
         };
-    }
-}
-
-pub fn protocol() {
-    let (toMain, fromThreads) = mpsc::sync_channel(1);
-    let (toReader, rdrRcv): Channel<bool> = mpsc::sync_channel(1);
-    let rdrSender = toMain.clone();
-    thread::spawn(move || reader(rdrSender, rdrRcv));
-    loop {
-        let p = fromThreads.recv().unwrap();
-        match p {
-            Line(s) => match s.trim() {
-                "quit" => {
-                    toReader.send(false).unwrap();
-                    return;
-                }
-                wrong => {
-                    eprintln!("not yet implemented: {}", wrong);
-                    toReader.send(true).unwrap();
-                }
-            },
-            EOF => {
-                return;
-            }
-            _ => toReader.send(false).unwrap(),
-        }
     }
 }
