@@ -210,6 +210,8 @@ impl GameState {
                         // wait between 500ms and the calculated millis per move
                         self.fromThreads.recv_timeout(Duration::from_millis(time))
                     };
+                    // at this point, have an answer, a timeout or a disconnect
+                    // note that xboard may send commands even while we are thinking
                     match todo {
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
                             panic!("should not happen - channel disconnected while thinking")
@@ -234,6 +236,7 @@ impl GameState {
                             computing::finishThinking();
                             self.state = TERMINATED;
                         }
+                        Ok(Line(input)) => self.xboardCommand(input.trim()),
                         Ok(MV(sid, var)) if sid == self.sid => {
                             let usedMillis = since.elapsed().as_millis() as u64;
                             // make sure the next depth is not tried if we have already used more
@@ -287,6 +290,19 @@ impl GameState {
                                 self.nodes = 0;
                                 self.sendMove();
                             }
+                        }
+                        Ok(MV(_, _)) => {
+                            println!("# ignoring move from previous strategy instance.");
+                            io::stdout().flush().unwrap_or_default();
+                        }
+                        Ok(NoMore(id)) if id == self.sid => {
+                            println!("# No more moves.");
+                            self.nodes = 0;
+                            self.sendMove();
+                        }
+                        Ok(NoMore(_)) => {
+                            println!("# ignoring NoMore from previous strategy instance.");
+                            io::stdout().flush().unwrap_or_default();
                         }
                     }
                 }
@@ -345,6 +361,8 @@ impl GameState {
     pub fn xboardCommand(&mut self, cmd: &str) {
         // tell the reader to continue unless we got the quit command
         self.toReader.send(cmd != "quit").unwrap_or_default();
+        // note the current state
+        let wasThinking = if let THINKING(_) = self.state { true } else { false };
 
         let mut iter = cmd.split_whitespace();
         match iter.next() {
@@ -363,9 +381,6 @@ impl GameState {
                 self.history = vec![P::initialBoard()];
                 self.state = PLAYING;
                 self.player = BLACK;
-                self.best = None;
-                self.toStrategy = None;
-                self.nodes = 0;
             }
             Some("force") => self.state = FORCED,
             Some("playother") => {
@@ -431,7 +446,22 @@ impl GameState {
                 println!("Error (unknown command): {}", unknown);
             }
         };
+        // flush the output stream
         io::stdout().flush().unwrap_or_default();
+
+        // try to shut down thinking thread gracefully
+        if wasThinking {
+            match self.state {
+                THINKING(_) => (),
+                _other => {
+                    computing::finishThinking();
+                    if let Some(sender) = &self.toStrategy {
+                        sender.try_send(false).unwrap_or_default();
+                        self.toStrategy = None;
+                    }
+                }
+            }
+        };
     }
 }
 
