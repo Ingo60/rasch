@@ -556,18 +556,18 @@ static flagZobristG8: u64 = zobrist::flagZobrist(G8 as u32);
 /// to move" bit right. Castling rights are taken care of by the
 /// ordinary move logic. Since this happens maybe once in a game,
 /// efficiency is less important.
-const whiteShortCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, F1);
-const whiteShortCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, F1, G1);
-const whiteShortCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, H1, F1);
-const whiteLongCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, D1);
-const whiteLongCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, D1, C1);
-const whiteLongCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, A1, D1);
-const blackShortCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, F8);
-const blackShortCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, F8, G8);
-const blackShortCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, H8, F8);
-const blackLongCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
-const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
-const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
+pub const whiteShortCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, F1);
+pub const whiteShortCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, F1, G1);
+pub const whiteShortCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, H1, F1);
+pub const whiteLongCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, D1);
+pub const whiteLongCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, D1, C1);
+pub const whiteLongCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, A1, D1);
+pub const blackShortCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, F8);
+pub const blackShortCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, F8, G8);
+pub const blackShortCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, H8, F8);
+pub const blackLongCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
+pub const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
+pub const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
 
 /// kingside castling for WHITE
 pub const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
@@ -1089,10 +1089,10 @@ impl Position {
         // construct the counter part of the flags
         let plies = match mv.piece() {
             PAWN if self.isEmpty(mv.to()) => BitSet {
-                bits: (self.flags * rootCounterBits).bits + onePlyRootOnly,
+                bits: (self.flags * counterBits).bits + onePlyRootOnly,
             },
             _otherwise => BitSet {
-                bits: (self.flags * rootCounterBits).bits + onePly,
+                bits: (self.flags * counterBits).bits + onePly,
             },
         };
         // LCR means "lost castling rights"
@@ -1551,7 +1551,7 @@ impl Display for Position {
         let bvs: Vec<_> = bmoves.iter().map(|x| x.algebraic()).collect();
         write!(
             f,
-            "P:hash=0x{:x}  flags{}\n\
+            "P:hash=0x{:x}  flags={:x}  flags{}\n\
              whites{}\n\
              pawns {}\n\
              bishops{}  knights{}\n\
@@ -1567,7 +1567,7 @@ impl Display for Position {
              lazy officers  {}  {}\n\
              white moves    [{}]\n\
              black moves    [{}]",
-            self.hash, self.flags - counterBits, self.whites, 
+            self.hash, self.flags.bits, self.flags - counterBits, self.whites, 
             self.pawns(), 
             self.bishops(), self.knights(),
             self.rooks(), self.queens(), self.kings(),
