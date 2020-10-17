@@ -71,11 +71,28 @@ pub enum State {
     TERMINATED,
 }
 
-pub type Strategy = fn(u32, mpsc::SyncSender<Protocol>, mpsc::Receiver<bool>) -> ();
+pub type Strategy = fn(StrategyState) -> ();
 
-pub trait TheStrategy {
-    fn getName(&self) -> String;
-    fn run(&self, send: mpsc::SyncSender<Protocol>, recv: mpsc::Receiver<bool>);
+#[derive(Debug)]
+pub struct StrategyState {
+    /// unique identifier for this instance
+    pub sid:      u32,
+    /// The sender used to send `Protocol` messages to the protocol
+    /// handler
+    pub sender:   mpsc::SyncSender<Protocol>,
+    /// The receiver used to get acknowledgements from the protocol
+    /// handler
+    pub receiver: mpsc::Receiver<bool>,
+    /// The game history. The last pushed position is the current one.
+    /// There will be at least one position.
+    pub history:  Vec<Position>,
+    /// If the user move matched the move we expected, the previously
+    /// computed variation is given back here. It may be sufficient
+    /// to analyze just our suggested move, which is at 3rd
+    /// position, if any.
+    pub plan:     Option<Variation>,
+    /// Transposition table
+    pub trtable:  Arc<Mutex<HashMap<Position, String>>>,
 }
 
 /// State the protocol needs
@@ -326,9 +343,15 @@ impl GameState {
             let since = Instant::now();
             let (snd, rcv) = mpsc::sync_channel(1);
             computing::beginThinking();
-            let toMe = self.toMain.clone();
-            let sid = self.sid;
-            thread::spawn(move || strategy(sid, toMe, rcv));
+            let state = StrategyState {
+                sid:      self.sid,
+                sender:   self.toMain.clone(),
+                receiver: rcv,
+                history:  self.history.clone(),
+                plan:     self.best.clone(),
+                trtable:  Arc::clone(&self.trtable),
+            };
+            thread::spawn(move || strategy(state));
             self.state = THINKING(since);
             self.best = None;
             self.nodes = 0;
@@ -338,7 +361,56 @@ impl GameState {
 
     /// Send the best move, if any
     pub fn sendMove(&mut self) {
-        panic!("FIXME");
+        match &self.best {
+            None => {
+                println!("# strategy busy, but no move found yet!");
+                println!("resign");
+                io::stdout().flush().unwrap_or_default();
+                self.state = FORCED;
+                self.nodes = 0;
+                computing::finishThinking();
+                if let Some(sender) = &self.toStrategy {
+                    sender.try_send(false).unwrap_or_default();
+                    self.toStrategy = None;
+                }
+                self.sid += 1;
+            }
+            Some(pv) => {
+                assert!(pv.moves.len() > 0); // there must be moves
+                println!("move {}", pv.moves[0].algebraic());
+                let pos = self.current().apply(pv.moves[0]);
+                let ms = pos.moves();
+                let mate = ms.len() == 0 && pos.inCheck(pos.turn());
+                let stalemate = ms.len() == 0 && !mate;
+                let moves50 = !mate && !stalemate && pos.getPlyCounter() >= 100;
+                // let repetition =
+                //     !mate && !stalemate && !moves50 &&
+                // self.history.iter().filter(|&p| *p == pos).count() >= 3;
+                let finished = mate || stalemate || moves50;
+                if stalemate {
+                    println!("1/2-1/2 {{Stalemate}}");
+                }
+                if mate {
+                    match pos.turn() {
+                        WHITE => println!("0-1 {{Black mates}}"),
+                        BLACK => println!("1-0 {{White mates}}"),
+                    }
+                };
+                if moves50 {
+                    println!("1/2-1/2 {{50 moves}}");
+                }
+                io::stdout().flush().unwrap_or_default();
+                self.history.push(pos.clearRootPlyCounter());
+                self.sid += 1;
+                self.nodes = 0;
+                if finished {
+                    self.state = FORCED;
+                    self.best = None;
+                } else {
+                    self.state = PLAYING
+                }
+            }
+        }
     }
 
     /// Processing of protocol commands
@@ -402,18 +474,28 @@ impl GameState {
                     }
                 }
             }
-            Some("usermove") => {
-                match iter.next() {
-                    Some(alg) => match Move::unAlgebraic(&self.current().moves(), alg) {
-                        Ok(mv) => {
-                            self.history.push(self.current().apply(mv).clearRootPlyCounter());
-                            // TODO: more logic for expected move
+            Some("usermove") => match iter.next() {
+                Some(alg) => match Move::unAlgebraic(&self.current().moves(), alg) {
+                    Ok(mv) => {
+                        self.history.push(self.current().apply(mv).clearRootPlyCounter());
+                        self.sid += 1;
+                        if let Some(plan) = &self.best {
+                            if self.state == PLAYING && plan.moves.len() > 2 && mv == plan.moves[1] {
+                                println!(
+                                    "# user played expected move {} our answer may be {}",
+                                    mv.algebraic(),
+                                    plan.moves[2]
+                                );
+                            } else {
+                                self.best = None;
+                                println!("# not PLAYING, variation too short or unexpected user move - no plan");
+                            }
                         }
-                        Err(_) => println!("Illegal move: {}", alg),
-                    },
-                    None => println!("Illegal move: "),
-                }
-            }
+                    }
+                    Err(_) => println!("Illegal move: {}", alg),
+                },
+                None => println!("Illegal move: "),
+            },
             Some("result") => self.state = FORCED,
             Some("undo") => {
                 self.state = FORCED;

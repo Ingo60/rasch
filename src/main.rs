@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use rasch::common::GameState;
 use rasch::common::Protocol;
 use rasch::common::Protocol::*;
+use rasch::common::StrategyState;
 // use rasch::computing as C;
 // use rasch::fieldset::*;
 use rasch::mdb;
@@ -18,6 +19,7 @@ fn main() {
     gs.mainLoop(strategy_resign);
 }
 
-pub fn strategy_resign(sid: u32, send: mpsc::SyncSender<Protocol>, _recv: mpsc::Receiver<bool>) {
-    send.send(NoMore(sid)).unwrap();
+pub fn strategy_resign(mut state: StrategyState) {
+    state.sender.send(NoMore(state.sid)).unwrap();
+    state.sid = 0;
 }
