@@ -95,6 +95,20 @@ pub struct StrategyState {
     pub trtable:  Arc<Mutex<HashMap<Position, String>>>,
 }
 
+impl StrategyState {
+    /// Current position. Will panic, if history is an empty Vec.
+    pub fn current(&self) -> Position {
+        match self.history.last() {
+            None => {
+                panic!("StrategyState with empty history must not happen.");
+            }
+            Some(&p) => p,
+        }
+    }
+    /// Current player. Will panic, if history is an empty Vec.
+    pub fn player(&self) -> Player { self.current().turn() }
+}
+
 /// State the protocol needs
 pub struct GameState {
     /// the internal state
