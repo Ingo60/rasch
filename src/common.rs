@@ -210,7 +210,7 @@ impl GameState {
                         // wait between 500ms and the calculated millis per move
                         self.fromThreads.recv_timeout(Duration::from_millis(time))
                     };
-                    // at this point, have an answer, a timeout or a disconnect
+                    // at this point, we have an answer, a timeout or a disconnect
                     // note that xboard may send commands even while we are thinking
                     match todo {
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
