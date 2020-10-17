@@ -442,9 +442,16 @@ impl GameState {
                 },
                 None => println!("Error (number missing after otim)"),
             },
-            Some(unknown) => {
-                println!("Error (unknown command): {}", unknown);
+            // "move now" command only in THINKING mode, but gets ignored if we haven't any move yet
+            Some("?") if wasThinking => {
+                if let Some(_) = self.best {
+                    self.sendMove();
+                } else {
+                    println!("# cannot honour '?' command, I have no move yet.");
+                }
             }
+            Some("?") => println!("Error (command not legal now): ?"),
+            Some(unknown) => println!("Error (unknown command): {}", unknown),
         };
         // flush the output stream
         io::stdout().flush().unwrap_or_default();
