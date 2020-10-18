@@ -586,7 +586,7 @@ pub const fn boolMask(b: bool) -> u64 {
 }
 
 /// Give the set of fields that are targeted by some piece
-fn pieceTargets(piece: Piece, player: Player, from: Field) -> BitSet {
+pub fn pieceTargets(piece: Piece, player: Player, from: Field) -> BitSet {
     match piece {
         PAWN => match player {
             WHITE => mdb::whitePawnTargets(from),
