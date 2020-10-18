@@ -1612,10 +1612,15 @@ pub struct Move {
     mv: u32,
 }
 
+pub const noMove: Move = Move { mv: 0xffff_ffff };
+
 #[allow(clippy::inconsistent_digit_grouping)]
 // we use the unconventional digit grouping to demonstrate the structure
 // of the bitfield
 impl Move {
+    /// `true` if and only if this is not `noMove`
+    #[inline]
+    pub fn isMove(self) -> bool { self != noMove }
     /// Tell if this is a killer move
     #[inline]
     pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
