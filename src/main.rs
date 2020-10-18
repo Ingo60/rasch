@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 // use std::sync::mpsc;
+// use std::collections::HashMap;
 
 // use rasch::common;
 use rasch::common::GameState;
@@ -8,11 +9,15 @@ use rasch::common::GameState;
 use rasch::common::Protocol::*;
 use rasch::common::StrategyState;
 use rasch::common::Variation;
-use rasch::fen;
+// use rasch::fen;
 // use rasch::computing as C;
 // use rasch::fieldset::*;
 use rasch::mdb;
-use rasch::position;
+use rasch::position as P;
+use rasch::position::Move;
+use rasch::position::Piece::*;
+// use rasch::position::Player;
+use rasch::position::Position;
 // use rasch::zobrist as Z;
 
 fn main() {
@@ -64,3 +69,29 @@ pub fn strategy_best(mut state: StrategyState) {
     // just to silence warnings
     state.history = vec![];
 }
+
+#[rustfmt::skip]
+pub fn moveRating(pos: Position, mv: Move) -> i32 {
+    let rpos = pos.apply(mv);
+    let before = pos.pieceOn(mv.from());
+    let after = rpos.pieceOn(mv.to());
+    let vt = pos.pieceOn(mv.to()).score();
+    let goodCapture = if mv.piece().score() < vt - 10             { 9 } else { 0 };
+    let badCapturing = if vt > 0                                  { 1 } else { 0 };
+    let castling = if mv.piece() == KING && mv.promote() != EMPTY { 3 } else { 0 };
+    let checking = if rpos.inCheck(rpos.turn())                   { 1 } else { 0 };
+    
+    let attacking_before = (P::pieceTargets(before, mv.player(), mv.from()) 
+                            * pos.occupiedBy(mv.player().opponent())).card() as i32;
+    
+    let attacking_after  = (P::pieceTargets(after, mv.player(), mv.to()) 
+                            * rpos.occupiedBy(mv.player().opponent())).card() as i32;
+    let attacking = attacking_after - attacking_before;
+    let pawnMove =  if rpos.inEndgame() && mv.piece() == PAWN {
+                        if mv.promote() != EMPTY                  { 10 } else { 5 }
+                    } else { 0 }; 
+    
+    goodCapture + badCapturing + castling + checking + attacking + pawnMove
+}
+
+pub fn strategy_negamin() {}
