@@ -49,6 +49,24 @@ pub struct Variation {
     pub depth: u32,
 }
 
+/// Data structure to be found in the transposition table
+#[derive(Clone, Debug)]
+pub struct Transp {
+    /// At what depth was this transposition made?
+    pub depth:    u32,
+    /// Score with integrated bounds.
+    /// Values of the form `4×n`   mean `n` is an exact score (i.e.
+    /// computed with eval()) Values of the form `4×n+1` mean `n` is
+    /// a lower bound, that is, the score may be higher.
+    /// Values of the form `4xn-1` mean `n` is an upper bound, that is,
+    /// at most `n`
+    pub score:    i32,
+    /// moves of the principal variation
+    pub pvMoves:  Vec<Move>,
+    /// (ordered) moves of the associated position
+    pub posMoves: Vec<Move>,
+}
+
 /// Data structure to be sent over the Protocol Channel
 #[derive(Clone, Debug)]
 pub enum Protocol {
@@ -92,7 +110,7 @@ pub struct StrategyState {
     /// position, if any.
     pub plan:     Option<Variation>,
     /// Transposition table
-    pub trtable:  Arc<Mutex<HashMap<Position, String>>>,
+    pub trtable:  Arc<Mutex<HashMap<Position, Transp>>>,
 }
 
 impl StrategyState {
@@ -166,7 +184,7 @@ pub struct GameState {
     /// identifier for strategy
     pub sid:         u32,
     /// Transposition table
-    pub trtable:     Arc<Mutex<HashMap<Position, String>>>,
+    pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
 }
 
 impl GameState {

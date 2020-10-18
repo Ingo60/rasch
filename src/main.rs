@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 
-// use std::sync::mpsc;
-// use std::collections::HashMap;
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
+use std::sync::MutexGuard;
 
 // use rasch::common;
 use rasch::common::GameState;
@@ -40,6 +40,8 @@ fn main() {
     //     }
     // }
 }
+
+type TransTable<'x> = MutexGuard<'x, HashMap<Position, Transp>>;
 
 pub fn strategy_resign(mut state: StrategyState) {
     state.sender.send(NoMore(state.sid)).unwrap();
@@ -110,14 +112,41 @@ pub fn orderMoves(pos: &Position, moves: &[Move]) -> Vec<Move> {
 
 /// Correct a variation score of mate to slightly smaller value
 /// so that shorter ways to mate have a better score than longer ones.
-pub fn correctMateDistance(pv: &mut Variation) {
-    let dist = pv.moves.len() as i32 * 2;
+pub fn correctMateDistance(var: &Variation) -> Variation {
+    let dist = var.moves.len() as i32 * 2;
+    let mut pv = var.clone();
     if pv.score == P::whiteIsMate {
         pv.score += dist
     } else if pv.score == P::blackIsMate {
         pv.score -= dist
     } else {
     }
+    pv
+}
+
+pub fn insertTest(mut hash: TransTable) {
+    hash.insert(
+        P::initialBoard(),
+        Transp {
+            depth:    0,
+            score:    0,
+            posMoves: Vec::new(),
+            pvMoves:  Vec::new(),
+        },
+    );
+}
+
+/// Move searching with NegaMax
+pub fn negaMax(
+    state: &mut StrategyState,
+    mut hash: TransTable,
+    extended: bool,
+    depth: u32,
+    alpha: i32,
+    beta: i32,
+) -> Variation {
+    insertTest(hash);
+    state.plan.as_ref().unwrap().clone()
 }
 
 /// search with the *negamin* algorithm
@@ -128,6 +157,9 @@ pub fn strategy_negamin(mut state: StrategyState) {
         allMoves.len()
     );
     io::stdout().flush().unwrap_or_default();
+
+    // acquire mutable access to the transposition table
+    let mut hash: TransTable = state.trtable.lock().unwrap(); // the hash is locked all the time
 
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
