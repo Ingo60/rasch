@@ -107,6 +107,26 @@ impl StrategyState {
     }
     /// Current player. Will panic, if history is an empty Vec.
     pub fn player(&self) -> Player { self.current().turn() }
+    /// send something to the protocol handler and wait for the answer
+    pub fn talkDriver(&self, p: Protocol) -> bool {
+        match self.sender.send(p) {
+            Ok(_) => match self.receiver.recv() {
+                Ok(cont) => cont,
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+    /// send a variation to the protocol handler and wait for the answer
+    pub fn talkPV(&self, v: Variation) -> bool { self.talkDriver(MV(self.sid, v)) }
+
+    /// Send something to the protocol handler and don't wait for the
+    /// answer This should be the last thing the strategy ever
+    /// sends.
+    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.send(p).unwrap_or_default() }
+
+    /// send a final NoMore
+    pub fn tellNoMore(&self) { self.tellDriver(NoMore(self.sid)) }
 }
 
 /// State the protocol needs
