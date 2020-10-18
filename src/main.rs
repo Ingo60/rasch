@@ -70,8 +70,9 @@ pub fn strategy_best(mut state: StrategyState) {
     state.history = vec![];
 }
 
+/// estimate a rating for a move
 #[rustfmt::skip]
-pub fn moveRating(pos: Position, mv: Move) -> i32 {
+pub fn moveRating(pos: &Position, mv: Move) -> i32 {
     let rpos = pos.apply(mv);
     let before = pos.pieceOn(mv.from());
     let after = rpos.pieceOn(mv.to());
@@ -94,4 +95,13 @@ pub fn moveRating(pos: Position, mv: Move) -> i32 {
     goodCapture + badCapturing + castling + checking + attacking + pawnMove
 }
 
+/// order a bunch of moves so that the most useful one will processed
+/// first
+pub fn orderMoves(pos: &Position, moves: &Vec<Move>) -> Vec<Move> {
+    let ratings = moves.iter().copied().map(|mv| moveRating(pos, mv));
+    let mut tuples = ratings.zip(moves.iter().copied()).collect::<Vec<_>>();
+    tuples.sort_unstable_by(|(r1, _), (r2, _)| r2.cmp(r1)); // descending
+
+    tuples.iter().copied().map(|(_, m)| m).collect()
+}
 pub fn strategy_negamin() {}
