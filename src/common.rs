@@ -32,21 +32,109 @@ use rand::Rng;
 // Protokoll-Handler ist, und die Sender gecloned beim Reader/Strategy.
 // Und außerdem 2 Bool-Channel für die Antworten.
 
+/// Size of the Moves array in a variation.
+/// (Must be at least 3)
+pub const VariationMoves: usize = 16;
+
 /// Data structure for the "principal variation"
 /// Also used to inform GUI (i.e. xboard) about progress.
 ///
 /// Invariant: there must be at least one Move in the moves field
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Variation {
-    /// sequence of moves
-    pub moves: Vec<Move>,
     /// the given score for the position arrived at after making all
     /// moves
-    pub score: i32,
+    pub score:  i32,
     /// estimate about searched nodes
-    pub nodes: u32,
+    pub nodes:  u32,
     /// estimate of search depth
-    pub depth: u32,
+    pub depth:  u32,
+    /// actual utilization of the array
+    pub length: u32,
+    /// sequence of moves, mostly used for display.
+    pub moves:  [Move; VariationMoves as usize],
+}
+
+impl Variation {
+    /// return the moves as slice
+    pub fn moves(&self) -> &[Move] { &self.moves[0..self.length as usize] }
+
+    /// Push a move.
+    /// Returns the unchanged variation when there is not enough space
+    pub fn push(&self, mv: Move) -> Variation {
+        let mut pv = *self;
+        if pv.length < VariationMoves as u32 {
+            pv.moves[pv.length as usize] = mv;
+            pv.length += 1;
+        }
+        pv
+    }
+
+    /// Pop a move.
+    /// Returns the unchanged variation when the moves array is empty
+    pub fn pop(&self) -> Variation {
+        let mut pv = *self;
+        if pv.length > 0 {
+            pv.length -= 1;
+        }
+        pv
+    }
+
+    /// Unshift a move, that is, push it at the front.
+    /// Subsequent moves are shifted to the right, and the last one
+    /// might fall out
+    pub fn unshift(&self, mv: Move) -> Variation {
+        let mut pv = *self;
+        let newlen = min(pv.length + 1, VariationMoves as u32);
+        while pv.length > 0 {
+            if pv.length < VariationMoves as u32 {
+                pv.moves[pv.length as usize] = pv.moves[pv.length as usize - 1]
+            };
+        }
+        pv.moves[0] = mv;
+        pv.length = newlen;
+        pv
+    }
+
+    /// Return the last move
+    pub fn last(&self) -> Option<Move> {
+        if self.length > 0 {
+            Some(self.moves[self.length as usize - 1])
+        } else {
+            None
+        }
+    }
+
+    /// Return the first move
+    pub fn first(&self) -> Option<Move> {
+        if self.length > 0 {
+            Some(self.moves[0])
+        } else {
+            None
+        }
+    }
+
+    /// Fill the moves array from an iterator
+    pub fn from_iter<I>(&self, iter: &mut I) -> Variation
+    where
+        I: Iterator<Item = Move>,
+    {
+        let mut pv = *self;
+        pv.length = 0;
+        while pv.length < VariationMoves as u32 {
+            match iter.next() {
+                Some(mv) => {
+                    pv.moves[pv.length as usize] = mv;
+                    pv.length += 1;
+                }
+                None => break,
+            }
+        }
+        pv
+    }
+
+    /// Give the moves in algebraic notation, separated by spaces
+    pub fn showMoves(&self) -> String { P::showMoves(self.moves()) }
 }
 
 /// Data structure to be found in the transposition table
@@ -322,14 +410,13 @@ impl GameState {
                                 goOn
                             );
                             // show the progress
-                            let mvs: Vec<_> = var.moves.iter().map(|x| x.algebraic()).collect();
                             println!(
                                 " {} {} {} {} {}",
                                 var.depth,
                                 self.player.factor() * var.score,
                                 (usedMillis + 5) / 10,
                                 self.nodes,
-                                &mvs[..].join(" ")
+                                var.showMoves()
                             );
                             io::stdout().flush().unwrap_or_default();
                             // TODO: compute best
@@ -337,7 +424,7 @@ impl GameState {
                             let best = match &self.best {
                                 None => var,
                                 Some(old) => {
-                                    if var.moves.len() > 0 && old.moves.len() > 0 && var.moves[0] == old.moves[0] {
+                                    if var.length > 0 && old.length > 0 && var.moves[0] == old.moves[0] {
                                         var
                                     } else if (var.score - old.score).abs() <= 5 {
                                         if oracle {
@@ -400,7 +487,7 @@ impl GameState {
                 sender:   self.toMain.clone(),
                 receiver: rcv,
                 history:  self.history.clone(),
-                plan:     self.best.clone(),
+                plan:     self.best,
                 trtable:  Arc::clone(&self.trtable),
             };
             thread::spawn(move || strategy(state));
@@ -428,7 +515,7 @@ impl GameState {
                 self.sid += 1;
             }
             Some(pv) => {
-                assert!(pv.moves.len() > 0); // there must be moves
+                assert!(pv.length > 0); // there must be moves
                 println!("move {}", pv.moves[0].algebraic());
                 let pos = self.current().apply(pv.moves[0]);
                 let ms = pos.moves();
@@ -531,8 +618,8 @@ impl GameState {
                     Ok(mv) => {
                         self.history.push(self.current().apply(mv).clearRootPlyCounter());
                         self.sid += 1;
-                        if let Some(plan) = &self.best {
-                            if self.state == PLAYING && plan.moves.len() > 2 && mv == plan.moves[1] {
+                        if let Some(plan) = self.best {
+                            if self.state == PLAYING && plan.length > 2 && mv == plan.moves[1] {
                                 println!(
                                     "# user played expected move {} our answer may be {}",
                                     mv.algebraic(),
