@@ -40,7 +40,7 @@ pub fn fld(b: BitSet) -> Field { b.bitIndex() }
 pub fn percent(p: i32, v: i32) -> i32 { (p*v) / 100 }
 
 /// score when BLACK is mate
-pub const blackIsMate: i32 = 0x8000;
+pub const blackIsMate: i32 = 32768;
 /// score when WHITE is mate
 pub const whiteIsMate: i32 = -blackIsMate;
 
@@ -1688,6 +1688,11 @@ impl Move {
 
 impl Display for Move {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
+}
+
+
+pub fn showMoves(moves: &[Move]) -> String {
+    moves.iter().map(|x| x.algebraic()).collect::<Vec<_>>().join(" ")
 }
 
 /// An empty board where it is WHITE's turn and all castling rights are set.

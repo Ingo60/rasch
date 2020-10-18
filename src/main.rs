@@ -2,13 +2,16 @@
 
 // use std::sync::mpsc;
 // use std::collections::HashMap;
+use std::io;
+use std::io::Write;
 
 // use rasch::common;
 use rasch::common::GameState;
 // use rasch::common::Protocol;
 use rasch::common::Protocol::*;
-use rasch::common::StrategyState;
-use rasch::common::Variation;
+// use rasch::common::StrategyState;
+// use rasch::common::Variation;
+use rasch::common::*;
 // use rasch::fen;
 // use rasch::computing as C;
 // use rasch::fieldset::*;
@@ -97,11 +100,92 @@ pub fn moveRating(pos: &Position, mv: Move) -> i32 {
 
 /// order a bunch of moves so that the most useful one will processed
 /// first
-pub fn orderMoves(pos: &Position, moves: &Vec<Move>) -> Vec<Move> {
+pub fn orderMoves(pos: &Position, moves: &[Move]) -> Vec<Move> {
     let ratings = moves.iter().copied().map(|mv| moveRating(pos, mv));
     let mut tuples = ratings.zip(moves.iter().copied()).collect::<Vec<_>>();
     tuples.sort_unstable_by(|(r1, _), (r2, _)| r2.cmp(r1)); // descending
 
     tuples.iter().copied().map(|(_, m)| m).collect()
 }
-pub fn strategy_negamin() {}
+
+/// Correct a variation score of mate to slightly smaller value
+/// so that shorter ways to mate have a better score than longer ones.
+pub fn correctMateDistance(pv: &mut Variation) {
+    let dist = pv.moves.len() as i32 * 2;
+    if pv.score == P::whiteIsMate {
+        pv.score += dist
+    } else if pv.score == P::blackIsMate {
+        pv.score -= dist
+    } else {
+    }
+}
+
+/// search with the *negamin* algorithm
+pub fn strategy_negamin(mut state: StrategyState) {
+    let allMoves = orderMoves(&state.current(), &state.current().moves());
+    println!(
+        "# Started strategy negamin, we have {} moves to consider.",
+        allMoves.len()
+    );
+    io::stdout().flush().unwrap_or_default();
+
+    // if there's just 1 move left, we have no choice
+    if allMoves.len() == 1 {
+        if state.talkPV(Variation {
+            depth: 1,
+            nodes: 1,
+            score: state.player().factor() * (-9999),
+            moves: allMoves,
+        }) {
+            state.tellNoMore();
+        }
+        return;
+    };
+    // we do have more than 1 move at this point
+    match &state.plan {
+        // If the plan promises a mate in a few moves, we unconditionally play it.
+        // Note that if this is so, the 50 moves rule doesn't get in the way.
+        Some(plan) if plan.moves.len() > 2 && P::blackIsMate - 100 < plan.score * state.player().factor() => {
+            println!("We have a mate plan: {}", P::showMoves(&plan.moves[2..]));
+            io::stdout().flush().unwrap_or_default();
+            if state.talkPV(Variation {
+                depth: plan.depth - 2,
+                nodes: 1,
+                moves: plan.moves[2..].iter().copied().collect(),
+                ..*plan
+            }) {
+                state.tellNoMore();
+            };
+            return;
+        }
+        // The plan should promise a win of at least 1/4 pawn.
+        Some(plan) if plan.moves.len() > 2 && plan.score * state.player().factor() > 25 => {
+            let planmv = plan.moves[2];
+            println!("We have a plan: {}", P::showMoves(&plan.moves[2..]));
+            io::stdout().flush().unwrap_or_default();
+            if !state.talkPV(Variation {
+                depth: plan.depth - 2,
+                nodes: 1,
+                moves: plan.moves[2..].iter().copied().collect(),
+                ..*plan
+            }) {
+                // for some reason, we must stop
+                return;
+            };
+            // re-search the move
+            let pos = state.current().apply(planmv);
+            let mut pv = Variation {
+                nodes: 0,
+                depth: 0,
+                score: 0,
+                moves: Vec::with_capacity(16),
+            };
+            pv.moves.push(planmv);
+            state.history.push(pos);
+            // TODO: continue with negaMax
+        }
+        _ => {
+            // TODO: processing without a plan
+        }
+    };
+}
