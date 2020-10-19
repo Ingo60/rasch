@@ -1625,6 +1625,9 @@ impl Move {
     #[inline]
     pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
 
+    /// Make this a killer move
+    pub fn flagKiller(self) -> Move { Move { mv: self.mv | 0b10_000_000_000000_000000u32}}
+
     /// Which player is moving?
     #[inline]
     pub fn player(self) -> Player { Player::from(self.mv & 0b01_000_000_000000_000000u32 != 0) }
