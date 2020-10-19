@@ -56,9 +56,17 @@ pub struct Variation {
 }
 
 impl Variation {
-    /// return the moves as slice
-    pub fn moves(&self) -> &[Move] { &self.moves[0..self.length as usize] }
+    /// Return the moves as slice.
+    /// Not that the moves come out in **reverse order**!
+    pub fn rmoves(&self) -> &[Move] { &self.moves[0..self.length as usize] }
 
+    /// Return the moves as slice in the correct order
+    pub fn moves(&self) -> Vec<Move> {
+        let mut v: Vec<Move> = self.rmoves().iter().copied().collect();
+        // let mut arr = v[..];
+        v[..].reverse();
+        v
+    }
     /// Push a move.
     /// Returns the unchanged variation when there is not enough space
     pub fn push(&self, mv: Move) -> Variation {
@@ -124,7 +132,7 @@ impl Variation {
         while pv.length < VariationMoves as u32 {
             match iter.next() {
                 Some(mv) => {
-                    pv.moves[pv.length as usize] = mv;
+                    pv.moves[VariationMoves - 1 - pv.length as usize] = mv;
                     pv.length += 1;
                 }
                 None => break,
@@ -134,7 +142,7 @@ impl Variation {
     }
 
     /// Give the moves in algebraic notation, separated by spaces
-    pub fn showMoves(&self) -> String { P::showMoves(self.moves()) }
+    pub fn showMoves(&self) -> String { P::showMoves(&self.moves()[..]) }
 }
 
 /// Data structure to be found in the transposition table
@@ -516,7 +524,7 @@ impl GameState {
             }
             Some(pv) => {
                 assert!(pv.length > 0); // there must be moves
-                println!("move {}", pv.moves[0].algebraic());
+                println!("move {}", pv.last().unwrap().algebraic());
                 let pos = self.current().apply(pv.moves[0]);
                 let ms = pos.moves();
                 let mate = ms.len() == 0 && pos.inCheck(pos.turn());
