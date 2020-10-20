@@ -17,4 +17,7 @@ Cargo.lock
 #Added by Ingo
 xboard.debug
 frech.jar
+flamegraph.svg
+perf.data
+perf.data.old
 data/
