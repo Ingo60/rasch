@@ -74,6 +74,12 @@ impl Variation {
         if pv.length < VariationMoves as u32 {
             pv.moves[pv.length as usize] = mv;
             pv.length += 1;
+        } else {
+            // make room by shifting left, moving the farthest away move out
+            for i in 1..VariationMoves {
+                pv.moves[i - 1] = pv.moves[i];
+            }
+            pv.moves[VariationMoves - 1] = mv;
         }
         pv
     }
@@ -438,7 +444,9 @@ impl GameState {
                             let best = match &self.best {
                                 None => var,
                                 Some(old) => {
-                                    if var.length > 0 && old.length > 0 && var.moves.last() == old.moves.last() {
+                                    if var.length > 0 && old.length > 0 && var.moves.last() == old.moves.last()
+                                        || var.depth > old.depth
+                                    {
                                         var
                                     } else if (var.score - old.score).abs() <= 5 {
                                         if oracle {
