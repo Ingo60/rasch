@@ -235,14 +235,15 @@ pub fn insertPV<'tt>(
         let tr = common::Transp {
             depth,
             score: bound,
-            pvMoves: pv.moves().iter().copied().collect(),
+            pvMoves: pv.moves(),
             posMoves: moves,
         };
-        // pv moves must get reversed
         hash.insert(pos, tr);
     }
     hash
 }
+
+const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
 
 /// Move searching with NegaMax
 pub fn negaMax<'tt>(
@@ -254,19 +255,16 @@ pub fn negaMax<'tt>(
     beta: i32,
 ) -> (Variation, TransTable<'tt>) {
     let pos = *hist.last().unwrap(); // the history must not be empty
-    let none = [P::noMove; VariationMoves];
+                                     // let none = [P::noMove; VariationMoves];
     #[rustfmt::skip]
     let draw = Variation {
-        score: 0, nodes: 1, depth, length: 0, moves: none,
+        score: 0, nodes: 1, depth, length: 0, moves: NONE,
     };
     let mate = Variation {
         score: P::whiteIsMate,
         ..draw
     };
-    if depth > 3 && computing::thinkingFinished()
-        || pos.getPlyCounter() >= 100
-        || hist[0..hist.len() - 1].contains(&pos)
-    {
+    if computing::thinkingFinished() {
         return (draw, hash);
     }
     // This is the only point where we ever evaluate a position.
@@ -281,10 +279,10 @@ pub fn negaMax<'tt>(
     // the follwoing is needed because else there is a immutable reference
     // to the hash
     let maybe: Option<common::Transp> = match hash.get(&pos) {
-        Some(te) => None, // Some(te.clone()),
+        Some(te) => Some(te.clone()),
         None => None,
     };
-    match maybe {
+    let (rpv, rhash) = match maybe {
         Some(te) => {
             let hashmove = te.pvMoves[0];
             let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
@@ -294,7 +292,7 @@ pub fn negaMax<'tt>(
                 Ordering::Equal if te.depth >= depth => {
                     let found = Variation {
                         length: 0,
-                        moves: none,
+                        moves: NONE,
                         score: te.score >> 2,
                         nodes: 1,
                         depth,
@@ -309,7 +307,7 @@ pub fn negaMax<'tt>(
                         (
                             Variation {
                                 length: 0,
-                                moves: none,
+                                moves: NONE,
                                 score: alpha2,
                                 nodes: 1,
                                 depth,
@@ -334,7 +332,7 @@ pub fn negaMax<'tt>(
                         (
                             Variation {
                                 length: 0,
-                                moves: none,
+                                moves: NONE,
                                 score: beta2,
                                 nodes: 1,
                                 depth,
@@ -387,10 +385,14 @@ pub fn negaMax<'tt>(
                 }
             }
         }
+    };
+    // overwrite the evaluated score with zero if it is repetition or 50
+    // moves rule
+    if pos.getPlyCounter() >= 100 || hist[0..hist.len() - 1].contains(&pos) {
+        (Variation { score: 0, ..rpv }, rhash)
+    } else {
+        (rpv, rhash)
     }
-    // hash = insertTest(hash);
-    // hash = insertTest(hash);
-    // draw
 }
 
 /// Iterative deepening for negaMax
@@ -457,7 +459,8 @@ pub fn strategy_negamin(state: StrategyState) {
         // If the plan promises a mate in a few moves, we unconditionally play it.
         // Note that if this is so, the 50 moves rule doesn't get in the way.
         Some(plan) if plan.length > 2 && plan.score * factor > P::blackIsMate - 100 => {
-            println!("# We have a mate plan: {}", P::showMoves(&plan.moves[2..]));
+            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
+            println!("# We have a mate plan: {}", P::showMoves(&thePlan[2..]));
             io::stdout().flush().unwrap_or_default();
             if state.talkPV(
                 Variation {
@@ -466,7 +469,7 @@ pub fn strategy_negamin(state: StrategyState) {
                     moves: [P::noMove; VariationMoves],
                     ..plan
                 }
-                .from_iter(&mut plan.moves().into_iter().skip(2)),
+                .from_iter(&mut thePlan.into_iter().skip(2)),
             ) {
                 state.tellNoMore();
             };
@@ -474,8 +477,9 @@ pub fn strategy_negamin(state: StrategyState) {
         }
         // The plan should promise a win of at least 1/4 pawn.
         Some(plan) if plan.length > 2 && plan.score * factor > 25 => {
-            let planmv = plan.moves[2];
-            println!("# We have a plan: {}", P::showMoves(&plan.moves[2..]));
+            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
+            let planmv = thePlan[2];
+            println!("# We have a plan: {}", P::showMoves(&thePlan[2..]));
             io::stdout().flush().unwrap_or_default();
             if !state.talkPV(
                 Variation {
@@ -484,7 +488,7 @@ pub fn strategy_negamin(state: StrategyState) {
                     moves: [P::noMove; VariationMoves],
                     ..plan
                 }
-                .from_iter(&mut plan.moves().into_iter().skip(2)),
+                .from_iter(&mut thePlan.into_iter().skip(2)),
             ) {
                 // for some reason, we must stop
                 return;
@@ -502,13 +506,13 @@ pub fn strategy_negamin(state: StrategyState) {
                     &mut hist,
                     hash,
                     false,
-                    min(8, plan.depth - 1),
+                    min(8, plan.length - 1),
                     P::whiteIsMate,
                     P::blackIsMate,
                 );
                 correctMateDistance(&pv)
             };
-            let mut pv = pv2.unshift(planmv);
+            let mut pv = pv2.push(planmv);
             pv.score *= pos.turn().factor();
             pv.depth = plan.depth;
             println!("# Plan continuation: {}", pv.showMoves());
@@ -518,12 +522,20 @@ pub fn strategy_negamin(state: StrategyState) {
             if newscore > P::percent(95, factor * plan.score)
                 && (newscore == P::blackIsMate || newscore <= P::blackIsMate - 100)
             {
-                println!("# Plan looks promising.");
+                println!(
+                    "# Plan looks promising (new score is {}, promised was {}).",
+                    newscore,
+                    factor * plan.score
+                );
                 state.tellNoMore();
             } else {
-                println!("# We better look for another plan.");
+                println!(
+                    "# We better look for another plan (new score is {}, promised was {}).",
+                    newscore,
+                    factor * plan.score
+                );
                 if cont {
-                    negaSimple(state, plan.depth, P::whiteIsMate, P::blackIsMate);
+                    negaSimple(state, plan.length, P::whiteIsMate, P::blackIsMate);
                 }
             }
             io::stdout().flush().unwrap_or_default();

@@ -98,6 +98,7 @@ impl Variation {
             if pv.length < VariationMoves as u32 {
                 pv.moves[pv.length as usize] = pv.moves[pv.length as usize - 1]
             };
+            pv.length -= 1;
         }
         pv.moves[0] = mv;
         pv.length = newlen;
@@ -129,14 +130,19 @@ impl Variation {
     {
         let mut pv = *self;
         pv.length = 0;
-        while pv.length < VariationMoves as u32 {
-            match iter.next() {
-                Some(mv) => {
-                    pv.moves[VariationMoves - 1 - pv.length as usize] = mv;
-                    pv.length += 1;
-                }
-                None => break,
-            }
+        for m in iter {
+            pv.moves[pv.length as usize] = m;
+            pv.length += 1;
+        }
+        // reverse
+        let mut i: usize = 0;
+        let mut j: usize = pv.length as usize - 1;
+        while i < j {
+            let m = pv.moves[i];
+            pv.moves[i] = pv.moves[j];
+            pv.moves[j] = m;
+            i += 1;
+            j -= 1;
         }
         pv
     }
@@ -432,7 +438,7 @@ impl GameState {
                             let best = match &self.best {
                                 None => var,
                                 Some(old) => {
-                                    if var.length > 0 && old.length > 0 && var.moves[0] == old.moves[0] {
+                                    if var.length > 0 && old.length > 0 && var.moves.last() == old.moves.last() {
                                         var
                                     } else if (var.score - old.score).abs() <= 5 {
                                         if oracle {
@@ -525,14 +531,13 @@ impl GameState {
             Some(pv) => {
                 assert!(pv.length > 0); // there must be moves
                 println!("move {}", pv.last().unwrap().algebraic());
-                let pos = self.current().apply(pv.moves[0]);
+                let pos = self.current().apply(pv.last().unwrap());
                 let ms = pos.moves();
                 let mate = ms.len() == 0 && pos.inCheck(pos.turn());
                 let stalemate = ms.len() == 0 && !mate;
                 let moves50 = !mate && !stalemate && pos.getPlyCounter() >= 100;
-                // let repetition =
-                //     !mate && !stalemate && !moves50 &&
-                // self.history.iter().filter(|&p| *p == pos).count() >= 3;
+                let repetition =
+                    !mate && !stalemate && !moves50 && self.history.iter().filter(|&p| *p == pos).count() >= 3;
                 let finished = mate || stalemate || moves50;
                 if stalemate {
                     println!("1/2-1/2 {{Stalemate}}");
@@ -545,6 +550,9 @@ impl GameState {
                 };
                 if moves50 {
                     println!("1/2-1/2 {{50 moves}}");
+                }
+                if repetition {
+                    println!("1/2-1/2 {{repetition}}");
                 }
                 io::stdout().flush().unwrap_or_default();
                 self.history.push(pos.clearRootPlyCounter());
@@ -627,11 +635,11 @@ impl GameState {
                         self.history.push(self.current().apply(mv).clearRootPlyCounter());
                         self.sid += 1;
                         if let Some(plan) = self.best {
-                            if self.state == PLAYING && plan.length > 2 && mv == plan.moves[1] {
+                            if self.state == PLAYING && plan.length > 2 && mv == plan.moves[plan.length as usize - 2] {
                                 println!(
                                     "# user played expected move {} our answer may be {}",
                                     mv.algebraic(),
-                                    plan.moves[2]
+                                    plan.moves[plan.length as usize - 3]
                                 );
                             } else {
                                 self.best = None;

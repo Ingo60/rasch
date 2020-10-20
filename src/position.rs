@@ -53,7 +53,7 @@ pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
         EMPTY => 0,
         KING if defended => 0,
         _otherwise => match defended {
-            false => percent(70, hang.score()), 
+            false => percent(70, scoreh), 
             true if scoreh > scorea => percent(70, scoreh - scorea),
             _other => 0  
         }
@@ -541,16 +541,16 @@ pub const whiteToMove: BitSet = bit(A1);
 /// Bit mask that indicates BLACK is to move
 pub const blackToMove: BitSet = BitSet::empty();
 
-/// Zobrist hash value commonly used: A1
-static flagZobristA1: u64 = zobrist::flagZobrist(A1 as u32);
-/// Zobrist hash value commonly used: C1
-static flagZobristC1: u64 = zobrist::flagZobrist(C1 as u32);
-/// Zobrist hash value commonly used: G1
-static flagZobristG1: u64 = zobrist::flagZobrist(G1 as u32);
-/// Zobrist hash value commonly used: C8
-static flagZobristC8: u64 = zobrist::flagZobrist(C8 as u32);
-/// Zobrist hash value commonly used: G8
-static flagZobristG8: u64 = zobrist::flagZobrist(G8 as u32);
+// Zobrist hash value commonly used: A1
+// static flagZobristA1: u64 = zobrist::flagZobrist(A1 as u32);
+// Zobrist hash value commonly used: C1
+// static flagZobristC1: u64 = zobrist::flagZobrist(C1 as u32);
+// Zobrist hash value commonly used: G1
+// static flagZobristG1: u64 = zobrist::flagZobrist(G1 as u32);
+// Zobrist hash value commonly used: C8
+// static flagZobristC8: u64 = zobrist::flagZobrist(C8 as u32);
+// Zobrist hash value commonly used: G8
+// static flagZobristG8: u64 = zobrist::flagZobrist(G8 as u32);
 
 /// Move sequences for castlings consist of 3 moves to get the "who is
 /// to move" bit right. Castling rights are taken care of by the
@@ -740,13 +740,13 @@ impl Position {
     pub fn computeZobrist(&self) -> u64 {
         let flagz = ((self.flags - counterBits) - castlingDoneBits)
             // .into_iter()
-            .fold(0u64, |acc, f| acc ^ super::zobrist::flagZobrist(f as u32));
+            .fold(0u64, |acc, f| acc ^ super::zobrist::flagZobrist(f as usize));
         self.occupied()
             // .into_iter()
             .fold(flagz, |acc, f| {
                 let player = Player::from(self.isWhite(f));
                 let piece = self.pieceOn(f);
-                acc ^ zobrist::ppfZobrist(player as u32, piece as u32, f as u32)
+                acc ^ zobrist::ppfZobrist(player as usize, piece as usize, f as usize)
             })
     }
 
@@ -1082,13 +1082,18 @@ impl Position {
 
     /// Apply an ordinary move. Used only by `apply`
     fn applyOrdinary(&self, mv: Move) -> Position {
+        let to = mv.to();
+        let from = mv.from();
         // construct the part of the flag that tells who's move it is
         let tomove = BitSet {
             bits: (self.flags * whiteToMove).bits ^ whiteToMove.bits,
         };
         // construct the counter part of the flags
         let plies = match mv.piece() {
-            PAWN if self.isEmpty(mv.to()) => BitSet {
+            PAWN if self.isEmpty(to) => BitSet {
+                bits: (self.flags * counterBits).bits + onePlyRootOnly,
+            },
+            _capture if !self.isEmpty(to) => BitSet {
                 bits: (self.flags * counterBits).bits + onePlyRootOnly,
             },
             _otherwise => BitSet {
@@ -1107,7 +1112,7 @@ impl Position {
         // the castling rights that are lost if this was a ROOK move
         // it suffices to check for the from positions, since the same rights
         // are also long lost if there is something else on the ROOK fields
-        let rookMoveLCR = match mv.from() {
+        let rookMoveLCR = match from {
             A8 => bit(C8),
             H8 => bit(G8),
             A1 => bit(C1),
@@ -1117,7 +1122,7 @@ impl Position {
         // the castling rights lost if the target of the move if an original
         // ROOK field Again, it matters not if the original ROOK is
         // standing there or not, the rights are lost anyway.
-        let rookCaptureLCR = match mv.to() {
+        let rookCaptureLCR = match to {
             A8 => bit(C8),
             H8 => bit(G8),
             A1 => bit(C1),
@@ -1132,8 +1137,8 @@ impl Position {
         let castlingRights = (self.flags * castlingBits) - lostCastlingRights;
         // en passant bit to set, if any
         let enPassantBit = match mv.piece() {
-            PAWN if mv.from().rank() == 2 && mv.to() as u8 == mv.from() as u8 + 16 => bit(Field::from(mv.from() as u8 + 8)),
-            PAWN if mv.from().rank() == 7 && mv.to() as u8 == mv.from() as u8 - 16 => bit(Field::from(mv.from() as u8 - 8)),
+            PAWN if from.rank() == 2 && to as u8 == from as u8 + 16 => bit(Field::from(from as u8 + 8)),
+            PAWN if from.rank() == 7 && to as u8 == from as u8 - 16 => bit(Field::from(from as u8 - 8)),
             _otherwise => BitSet::empty(),
         };
         // the new castled flag to set, if any
@@ -1158,31 +1163,31 @@ impl Position {
         // The new part of flags that tells who has castled already.
         let hasCastledFlags = self.flags * castlingDoneBits; // + gainedCastledBit;
                                                              // Fields that will be empty after this move.
-        let fromMask = bit(mv.from())
+        let fromMask = bit(from)
             + match mv.promote() {
                 // compute field of piece captured by en passant
-                PAWN if mv.player() == WHITE => bit(Field::from(mv.to() as u8 - 8)),
-                PAWN if mv.player() == BLACK => bit(Field::from(mv.to() as u8 + 8)),
+                PAWN if mv.player() == WHITE => bit(Field::from(to as u8 - 8)),
+                PAWN if mv.player() == BLACK => bit(Field::from(to as u8 + 8)),
                 _otherwise => BitSet::empty(),
             };
         // The following must be xor'ed out from the hash
-        let fromHash = zobrist::ppfZobrist(mv.player() as u32, mv.piece() as u32, mv.from() as u32)
+        let fromHash = zobrist::ppfZobrist(mv.player() as usize, mv.piece() as usize, from as usize)
             ^ match mv.promote() {
                 // compute zobrist of captured piece
                 PAWN if mv.player() == WHITE => {
-                    zobrist::ppfZobrist(mv.player().opponent() as u32, PAWN as u32, mv.to() as u32 - 8)
+                    zobrist::ppfZobrist(mv.player().opponent() as usize, PAWN as usize, to as usize - 8)
                 }
                 PAWN if mv.player() == BLACK => {
-                    zobrist::ppfZobrist(mv.player().opponent() as u32, PAWN as u32, mv.to() as u32 + 8)
+                    zobrist::ppfZobrist(mv.player().opponent() as usize, PAWN as usize, to as usize + 8)
                 }
                 _otherwise => 0,
             };
         // field that will be set after the move
-        let toMask = bit(mv.to());
+        let toMask = bit(to);
         // the value that must be xor'ed out of the hash
-        let toHash = match self.pieceOn(mv.to()) {
+        let toHash = match self.pieceOn(to) {
             EMPTY => 0,
-            p => zobrist::ppfZobrist(mv.player().opponent() as u32, p as u32, mv.to() as u32),
+            p => zobrist::ppfZobrist(mv.player().opponent() as usize, p as usize, to as usize),
         };
         // the piece to place on to
         let piece = match mv.piece() {
@@ -1211,25 +1216,25 @@ impl Position {
         };
         // current en passant hash value, if any, needs to get xor'ed out
         let currentEPHash = match self.flags * enPassantBits {
-            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as u32),
+            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as usize),
             _otherwise => 0,
         };
         // hash for new en passant bit, if any, needs to get xor'ed in
         let enPassantHash = match enPassantBit {
-            bits if bits.some() => zobrist::flagZobrist(fld(enPassantBit) as u32),
+            bits if bits.some() => zobrist::flagZobrist(fld(enPassantBit) as usize),
             _otherwise => 0,
         };
         // new hash
         let hash = self.hash
-            ^ flagZobristA1   // flip the A1 hash
-            ^ (boolMask((self.flags * lostCastlingRights).member(C1)) & flagZobristC1)
-            ^ (boolMask((self.flags * lostCastlingRights).member(G1)) & flagZobristG1)
-            ^ (boolMask((self.flags * lostCastlingRights).member(C8)) & flagZobristC8)
-            ^ (boolMask((self.flags * lostCastlingRights).member(G8)) & flagZobristG8)
+            ^ zobrist::flagZobrist(A1 as usize)   // flip the A1 hash
+            ^ (boolMask((self.flags * lostCastlingRights).member(C1)) & zobrist::flagZobrist(C1 as usize))
+            ^ (boolMask((self.flags * lostCastlingRights).member(G1)) & zobrist::flagZobrist(G1 as usize))
+            ^ (boolMask((self.flags * lostCastlingRights).member(C8)) & zobrist::flagZobrist(C8 as usize))
+            ^ (boolMask((self.flags * lostCastlingRights).member(G8)) & zobrist::flagZobrist(G8 as usize))
             ^ currentEPHash
             ^ enPassantHash
             ^ fromHash
-            ^ zobrist::ppfZobrist(mv.player() as u32, piece as u32, mv.to() as u32)
+            ^ zobrist::ppfZobrist(mv.player() as usize, piece as usize, mv.to() as usize)
             ^ toHash;
         Position {
             flags: tomove + castlingRights + hasCastledFlags + enPassantBit + plies,
@@ -1249,12 +1254,12 @@ impl Position {
     pub fn applyNull(&self) -> Position {
         // current en passant hash value, if any, needs to get xor'ed out
         let currentEPHash = match self.flags * enPassantBits {
-            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as u32),
+            currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as usize),
             _otherwise => 0,
         };
         Position {
             flags: BitSet { bits: (self.flags.bits ^ whiteToMove.bits) + onePlyRootOnly } - enPassantBits,
-            hash: self.hash ^ flagZobristA1 ^ currentEPHash,
+            hash: self.hash ^ zobrist::flagZobrist(A1 as usize) ^ currentEPHash,
             .. *self
         }
     } 
@@ -1307,8 +1312,11 @@ impl Position {
         let piece = self.pieceOn(from);
         let player = self.turn();
         let validTargets = pieceTargets(piece, player, from) - self.occupiedByActive();
+        let mut validTargets = validTargets.bits;
         
-        for to in validTargets {
+        while validTargets != 0 {
+            let to = Field::from(validTargets.trailing_zeros() as u8);
+            validTargets ^= 1 << to as u64;
             let mv = Move::new(player, piece, EMPTY, from, to);
             match piece {
                 PAWN => {
@@ -1322,33 +1330,43 @@ impl Position {
                                 &&     (self.occupiedBy(player.opponent()).member(to) 
                                     || (self.flags*enPassantBits).member(to));
                     if valid {
-                        if promotion {
-                            for p in [KNIGHT, BISHOP, ROOK, QUEEN].iter() {
-                                vec.push(Move::new(player, PAWN, *p, from, to));
+                        if promotion {                            
+                            let mv = Move::new(player, PAWN, QUEEN, from, to);
+                            if self.apply(mv).notInCheck() {
+                                vec.push(mv); 
+                                // we don't need to consiger not in check here
+                                // as it doesn't depend on what the promotion is
+                                vec.push(Move::new(player, PAWN, ROOK, from, to));
+                                vec.push(Move::new(player, PAWN, BISHOP, from, to));
+                                vec.push(Move::new(player, PAWN, KNIGHT, from, to));
                             }
                         }
                         else if es.null() && self.isEmpty(to) {  // capturing en-passant
-                            vec.push(Move::new(player, PAWN, PAWN, from, to));
+                            let mv = Move::new(player, PAWN, PAWN, from, to);
+                            if self.apply(mv).notInCheck() {vec.push(mv);}
                         }
                         else {
-                            vec.push(mv);
+                            if self.apply(mv).notInCheck() {vec.push(mv);}
                         }
                     };
                 },
-                BISHOP => if self.areEmpty(mdb::canBishop(from, to)) { vec.push(mv); },
-                ROOK   => if self.areEmpty(mdb::canRook(from, to))   { vec.push(mv); },
-                QUEEN  => if self.areEmpty(mdb::canBishop(from, to)) 
-                            || self.areEmpty(mdb::canRook(from, to)) { vec.push(mv); },
-                _other => vec.push(mv),
+                BISHOP => if self.areEmpty(mdb::canBishop(from, to)) 
+                            && self.apply(mv).notInCheck()  { vec.push(mv); },
+                ROOK   => if self.areEmpty(mdb::canRook(from, to)) 
+                            && self.apply(mv).notInCheck()  { vec.push(mv); },
+                QUEEN  => if (self.areEmpty(mdb::canBishop(from, to)) || self.areEmpty(mdb::canRook(from, to)))
+                            && self.apply(mv).notInCheck()  { vec.push(mv); },
+                _other => if self.apply(mv).notInCheck()    { vec.push(mv); },
             };
         }
     }
 
-    /// List of possible moves in a given position. Some moves may still
-    /// turn out to be illegal due to check.
+    /// List of possible non castling moves in a given position. 
     fn rawMoves(&self, vec: &mut Vec<Move>) {
-        // let mut vec = Vec::new();
-        for from in self.occupiedByActive() {
+        let mut occ = self.occupiedByActive().bits; 
+        while occ != 0 {
+            let from = Field::from(occ.trailing_zeros() as u8);
+            occ ^= 1 << from as u64;
             self.genMove(vec, from);
         }
     }
@@ -1359,7 +1377,8 @@ impl Position {
         let mut vec = Vec::with_capacity(64);
         self.castlingMoves(&mut vec);
         self.rawMoves(&mut vec);
-        vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
+        vec
+        // vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
     }
 
     /// Positions qualify as "in opening"  if there are 
@@ -1443,7 +1462,7 @@ impl Position {
     }
 
     /// compute the penalty for a hanging piece, at best 0 when piece is not in danger
-    pub fn penaltyForHangingPiece(&self, f: Field) -> i32 {
+    pub fn penaltyForHangingPiece(&self, f: Field, leastAttacker: Piece, leastDefender: Piece) -> i32 {
         let piece = self.pieceOn(f);
         match self.playerOn(f) {
             None => 0,  // wtf???
@@ -1451,8 +1470,8 @@ impl Position {
                 let active = player == self.turn();
                 let hanging = hangingPenalty(
                                 piece, 
-                                self.leastAttacker(f, player.opponent()), 
-                                self.isAttacked(f, player));
+                                leastAttacker, 
+                                leastDefender != EMPTY);
                 if active { percent(25, hanging) } else { hanging }
             }
         }
@@ -1463,10 +1482,10 @@ impl Position {
     /// that it is ok to have the QUEEN hanging when the other player has a ROOK and 4 PAWNs hanging.
     /// Instead, we slightly increase the maximum value to indicate that it is better to
     /// attack, say, a ROOK and a BISHOP than just a ROOK.
-    pub fn penalizeHanging(&self, player: Player) -> i32 {
+    pub fn penalizeHanging(&self, player: Player, byOther: &[Piece;64], bySelf:&[Piece;64]) -> i32 {
         let mut score = 0;
         for f in self.occupiedBy(player) {
-            let p = self.penaltyForHangingPiece(f);
+            let p = self.penaltyForHangingPiece(f, byOther[f as usize], bySelf[f as usize]);
             if p > 0 { 
                 if score > 0 {
                     score = percent(110, max(score,p));
@@ -1511,11 +1530,46 @@ impl Position {
         let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
         let check = self.inCheck(self.turn());
         let checkBonus = if check { 25 } else { 0 };
-        let playerMoves = self.moves().len() as i32;
-        let opponentMoves = self.applyNull().moves().len() as i32;
+        let pMoves = self.moves();
+        let playerMoves = pMoves.len() as i32;
+        let oMoves = self.applyNull().moves();
+        let opponentMoves = oMoves.len() as i32;
+        // gives for each field the least WHITE attacker
+        let mut attacksByWhite = [EMPTY; 64];
+        // gives for each field the least BLACK attacker
+        let mut attacksByBlack = [EMPTY; 64];
+        for m in pMoves {
+            let wo = m.to() as usize;
+            let was = m.piece();
+            if m.player() == WHITE {
+                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was {
+                    attacksByWhite[wo] = was;
+                }
+            }
+            else {
+                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was {
+                    attacksByBlack[wo] = was;
+                }
+            }
+        }
+        for m in oMoves {
+            let wo = m.to() as usize;
+            let was = m.piece();
+            if m.player() == WHITE {
+                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was {
+                    attacksByWhite[wo] = was;
+                }
+            }
+            else {
+                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was {
+                    attacksByBlack[wo] = was;
+                }
+            }
+        } 
         
         matRelation
-        - self.penalizeHanging(WHITE) + self.penalizeHanging(BLACK)
+        - self.penalizeHanging(WHITE, &attacksByBlack, &attacksByWhite) 
+        + self.penalizeHanging(BLACK, &attacksByWhite, &attacksByBlack)
         + self.turn().opponent().forP(checkBonus + 4*opponentMoves)
         + self.turn().forP(4*playerMoves)
         + self.scoreCastling(WHITE) - self.scoreCastling(BLACK)
@@ -1558,7 +1612,6 @@ impl Display for Position {
              rooks  {}  queens {} kings{}\n\
              eval={}  check={}\n\
              material       {}  {}\n\
-             hanging        {}  {}\n\
              moves          {}  {}\n\
              castling       {}  {}\n\
              covered king   {}  {}\n\
@@ -1573,7 +1626,7 @@ impl Display for Position {
             self.rooks(), self.queens(), self.kings(),
             self.eval(), self.inCheck(self.turn()),
             self.scoreMaterial(WHITE), - self.scoreMaterial(BLACK),
-            -self.penalizeHanging(WHITE), self.penalizeHanging(BLACK),
+            // -self.penalizeHanging(WHITE), self.penalizeHanging(BLACK),
             4 * wmoves.len() as i32, -4 * bmoves.len() as i32,
             self.scoreCastling(WHITE), - self.scoreCastling(BLACK),
             self.coveredKing(WHITE),   - self.coveredKing(BLACK),
@@ -1667,6 +1720,7 @@ impl Move {
     /// assert_eq!(Move::new(WHITE, PAWN, QUEEN, B7, C8).algebraic(), "b7c8q");
     /// ```
     pub fn algebraic(self) -> String {
+        if self == noMove { return "????".to_string(); }
         let p = if self.promote() >= KNIGHT && self.piece() == PAWN {
             self.promote().show().to_lowercase()
         } else {
