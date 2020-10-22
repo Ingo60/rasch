@@ -2,9 +2,11 @@
 
 use std::cmp::{max, min, Ordering};
 use std::collections::HashMap;
+use std::env::args;
 use std::io;
 use std::io::Write;
 use std::sync::MutexGuard;
+use std::time::Instant;
 
 use rasch::common;
 use rasch::common::GameState;
@@ -27,19 +29,35 @@ use rasch::position::Position;
 fn main() {
     mdb::initStatic();
     let mut gs = GameState::new();
-    gs.mainLoop(strategy_negamin);
-    // match fen::decodeFEN("r3kbnr/pppnpp1p/6p1/q7/3P4/2N1B2P/PPP1BPP1/
-    // R2QK2R w KQkq - 1 9") {     Err(s) => println!("decode FEN
-    // impossible {}", s),     Ok(p) => {
-    //         println!("posted position: {}", p);
-    //         let p1 = p.apply(position::whiteShortCastlingMove1);
-    //         println!("after Kf1:      {}", p1);
-    //         let p2 = p1.apply(position::whiteShortCastlingMove2);
-    //         println!("after Kg1:      {}", p2);
-    //         let p3 = p2.apply(position::whiteShortCastlingMove3);
-    //         println!("after Rf1:      {}", p3);
-    //     }
-    // }
+    let argv: Vec<String> = args().collect();
+    if argv.len() == 1 {
+        gs.mainLoop(strategy_negamin);
+        return;
+    }
+    match argv[1].as_str() {
+        "flamegraph" => flamegraph(gs),
+        "negamin" => gs.mainLoop(strategy_negamin),
+        other => {
+            eprintln!("Illegal command line argument: `{}´", other);
+            eprintln!("usage: {} [flamegraph|negamin]", argv[0]);
+        }
+    };
+}
+
+fn flamegraph(gs: GameState) {
+    let mut hist = vec![P::initialBoard()];
+    let hash = gs.trtable.lock().unwrap();
+    let before = Instant::now();
+    let (pv, _hash) = negaMax(&mut hist, hash, false, 10, P::whiteIsMate, P::blackIsMate);
+    let usedMillis = before.elapsed().as_millis();
+    println!(
+        " {} {} {} {} {}",
+        pv.depth,
+        pv.score,
+        (usedMillis + 5) / 10,
+        pv.nodes,
+        pv.showMoves()
+    );
 }
 
 type TransTable<'x> = MutexGuard<'x, HashMap<Position, Transp>>;
