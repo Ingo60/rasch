@@ -352,20 +352,10 @@ pub fn negaMax<'tt>(
                     }
                 }
 
-                x => {
-                    let alpha2 = if x == Ordering::Less {
-                        max(alpha, (te.score - 1) >> 2)
-                    } else {
-                        alpha
-                    };
-                    let beta2 = if x == Ordering::Greater {
-                        min(beta, (te.score + 1) >> 2)
-                    } else {
-                        beta
-                    };
-                    let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha2, beta2, &ordered);
+                _other => {
+                    let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha, beta, &ordered);
                     if !ext {
-                        let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha2, beta2);
+                        let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta);
                         (pv, hash3)
                     } else {
                         (pv, hash2)
