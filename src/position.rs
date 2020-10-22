@@ -669,8 +669,9 @@ impl Position {
         }
     }
 
-    /// subtract 2 from the plyCounters (conveniece for castlings)
-    pub fn correctPlyCounterForCastling(&self) -> Position { self.decrPlyCounters().decrPlyCounters() }
+    /// Subtract 2 from both plyCounters und set the ply counter to 0, as castling is irreversible, too
+    /// (conveniece for castlings)
+    pub fn correctPlyCounterForCastling(&self) -> Position { self.decrPlyCounters().decrPlyCounters().clearPlyCounter() }
 
     /// the set of occupied fields
     pub fn occupied(&self) -> BitSet { self.pawnSet + self.bishopSet + self.rookSet }
@@ -1088,13 +1089,13 @@ impl Position {
         let tomove = BitSet {
             bits: (self.flags * whiteToMove).bits ^ whiteToMove.bits,
         };
-        // construct the counter part of the flags
+        // Construct the counter part of the flags.
         let plies = match mv.piece() {
             PAWN if self.isEmpty(to) => BitSet {
-                bits: (self.flags * counterBits).bits + onePlyRootOnly,
+                bits: ((self.flags * counterBits) - plyCounterBits).bits + onePlyRootOnly,
             },
             _capture if !self.isEmpty(to) => BitSet {
-                bits: (self.flags * counterBits).bits + onePlyRootOnly,
+                bits: ((self.flags * counterBits) - plyCounterBits).bits + onePlyRootOnly,
             },
             _otherwise => BitSet {
                 bits: (self.flags * counterBits).bits + onePly,

@@ -538,12 +538,15 @@ impl GameState {
             }
             Some(pv) => {
                 assert!(pv.length > 0); // there must be moves
-                println!("move {}", pv.last().unwrap().algebraic());
-                let pos = self.current().apply(pv.last().unwrap());
+                let theMove = pv.last().unwrap();
+                println!("move {}", theMove.algebraic());
+                println!("# ply counter before move: {}", self.current().getPlyCounter());
+                let pos = self.current().apply(theMove);
+                println!("# ply counter after  move: {}", pos.getPlyCounter());
                 let ms = pos.moves();
                 let mate = ms.len() == 0 && pos.inCheck(pos.turn());
                 let stalemate = ms.len() == 0 && !mate;
-                let moves50 = !mate && !stalemate && pos.getPlyCounter() >= 100;
+                let moves50 = !mate && !stalemate && pos.getPlyCounter() > 100;
                 let repetition =
                     !mate && !stalemate && !moves50 && self.history.iter().filter(|&p| *p == pos).count() >= 3;
                 let finished = mate || stalemate || moves50;
