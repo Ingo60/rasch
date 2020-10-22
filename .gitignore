@@ -20,4 +20,5 @@ frech.jar
 flamegraph.svg
 perf.data
 perf.data.old
-data/
+data/opening-black
+data/opening-white
