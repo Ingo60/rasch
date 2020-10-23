@@ -1,0 +1,112 @@
+# Here is some opening knowledge for the rasch chess engine
+
+# This File's Format
+# ------------------
+#
+#     - Blank lines and lines starting with # are ignored.
+#     - An opening line is described simply by listing the moves, starting from the initial position
+#       The chess engine will read all opening lines and will figure out what moves are to be played.
+#       For example, suppose we have
+#           e2e4 e7e5 g1f3 d7d6
+#           e2e4 d7d5
+#           e2e4 g8f6
+#           d2d4 d7d5
+#       then in the initial position, 2 moves can be played, after e2e4 three, 
+#       but after e2e4 e7e5 g1f3, only d7d6 will be played.
+#       Note that it is irrelevant how a given position was reached. Had the game
+#       started with g1f3 e7e5 e2e3, it would nevertheless be the same position like
+#       in the first opening line, thus, if it is rasch's turn, it will play e7e6.
+#       
+#
+# Determination of moves to play
+# ------------------------------
+#
+# If there is only a single move for a position, this move will be played.
+# If there are multiple moves for a position, a random choice will be made among them.
+#
+# A move can be favored by appending 1 or more exclamation marks to it like: g8f6!!
+# The chance that this move is choosen, will thus increase. For example, if there is 
+# one other move available, the chance for g8f6 is 3 out of 4. If there are 7 others, the chance
+# is still 3 out of 10.
+#
+# "Forbidden" moves
+# -----------------
+#
+# You can prevent the engine to play certain moves by appending a question mark after the move,
+# and still be able to answer it correctly:
+#
+# For example: e2e4 e7e5 d1h5? b8c6
+#
+# Grouping moves
+# --------------
+#
+# Sometimes it is convenient to abbreviate opening lines, especially at the end:
+#
+# e2e4 e7e5  g1f3,d1h5? b8c6  b1c3,f1c4
+#
+# Here, the engines second move would be g1f3 (since d1h5 is forbidden). 
+# But if the engine plays black, it would answer either g1f3 or d1h5 with b8c6.
+# The opening line (or, more correctly, the 2 opening lines) end with 2 recommended moves.
+#
+# It is important to make sure that any given move is valid in all implied opening lines.
+# The engine will check this and warn about impossible moves. If an invalid move is encountered in any
+# line, the line will not get processed further (but alternative lines are).
+#
+# For example, the above one slightly modified:
+#
+# e2e4 e7e5  g1f3,d1h5? b8c6  d1c3,f1c4
+#
+# The ending move d1c3 would not be valid in the line e2e4 e7e5  d1h5 b8c6 since the queen stands on h5.
+# A warning will be given, and the following lines will be available:
+#
+# e2e4 e7e5  g1f3 b8c6  d1c3
+# e2e4 e7e5  g1f3 b8c6  f1c4
+# e2e4 e7e5  d1h5 b8c6  f1c4
+#
+# Contradictions
+# --------------
+#
+# Consider the following lines:
+#
+#   e2e4 e7e5  d1h5 g8f6
+#   e2e4 e7e5  d1h5? b8c6
+#
+# This will result in a warning, as a move cannot be both forbidden and recommended.
+# Also the line(s) where the move is allowed are discarded.
+# 
+
+
+e2e4 e7e5   d1h5?,d1f3?  b1c3
+e2e4 e7e5   g1f3 b8c6   f1b5 d1f3?
+
+
+# Queen pawn
+d2d4 d7d5
+d2d4 g7g6   e2e4 c7c6,g8f6   d1f3?
+
+
+# Scandinavian Defense
+e2e4 d7d5   e4d5 d8d5   b1c3 d5a5
+e2e4 d7d5   e4d5 d8d5   b1c3 d5a5   d2d4 c7c6   g1f3 g8f6   f1c4 c8f5,c8g4?     c1d2 e7e6   d1e2,e1g1
+e2e4 d7d5   e4d5 d8d5   b1c3 d5a5   g2g3 g8f6   f1g2 c7c6   g1f3
+e2e4 d7d5   e4d5 d8d5   b1c3 d5d8?  
+e2e4 d7d5   e4d5 d8d5   b1c3 d5d6?  d2d4,g1f3,g2g3
+e2e4 d7d5   e4d5 d8d5   b1c3 d5e5?  f1e2 c7c6   g1f3 e5c7   d2d4
+
+e2e4 d7d5   e4d5 d8d5   d2d4 b8c6   g1f3 c8g4
+e2e4 d7d5   e4d5 d8d5   d2d4 e7e5   d4e5 d5d1   e1d1 b8c6   f1b5 c8g4   f2f3 e8c8
+e2e4 d7d5   e4d5 d8d5   g1f3 c8g4   f1e2 b8c6   d2d4,e1g1
+
+# Sokolsky Opening
+b2b4 c7c5
+b2b4 c7c6    c1b2 a7a5  b4b5 c6b5 e2e4
+b2b4 d7d5!!! c1b2 c7c6  a2a4
+b2b4 d7d5    c1b2 d8d6! a2a3 e7e5  g1f3 e5e4  f3d4 g8f6  c2c4 d5c4  e2e3 f8e7  f1c4 e8g8  b1c3 
+b2b4 e7e5    a2a3
+b2b4 e7e5    c1b2 c7c5
+b2b4 e7e5    c1b2 f7f6  e2e4 f8b4
+b2b4 e7e5    c1b2 f7f6  e2e4 f8b4  f1c4 b8c6  f2f4 d8e7  f4f5 g7g6  
+b2b4 b8a6?
+b2b4 b8c6?
+b2b4 g8f6    c1b2 g7g6 g2g4
+

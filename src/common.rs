@@ -5,6 +5,7 @@
 
 use super::computing;
 use super::fen;
+use super::opening::{setupOpening, OpeningMap};
 use super::position as P;
 use super::position::Move;
 use super::position::Player;
@@ -219,6 +220,8 @@ pub struct StrategyState {
     pub plan:     Option<Variation>,
     /// Transposition table
     pub trtable:  Arc<Mutex<HashMap<Position, Transp>>>,
+    /// Opening map
+    pub openings: Arc<Mutex<OpeningMap>>,
 }
 
 impl StrategyState {
@@ -293,6 +296,8 @@ pub struct GameState {
     pub sid:         u32,
     /// Transposition table
     pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
+    /// Opening Map
+    pub openings:    Arc<Mutex<OpeningMap>>,
 }
 
 impl GameState {
@@ -320,6 +325,7 @@ impl GameState {
             oTime: Duration::new(0, 0),
             sid: 0,
             trtable: Arc::new(Mutex::new(HashMap::new())),
+            openings: Arc::new(Mutex::new(setupOpening())),
         }
     }
 
@@ -364,8 +370,51 @@ impl GameState {
                         // it's our turn, nevertheless, we make sure there is no other request
                         // at this time before starting the thread
                         match self.fromThreads.try_recv() {
+                            // there is still input, process it first
                             Ok(input) => self.processForced(&input),
-                            Err(mpsc::TryRecvError::Empty) => self.start(strategy),
+                            // nothing on input channel, let's do something
+                            Err(mpsc::TryRecvError::Empty) => {
+                                let pos = self.current();
+                                let omv = {
+                                    let openings = self.openings.lock().unwrap();
+                                    match openings.get(&pos) {
+                                        None => None,
+                                        Some(recs) => {
+                                            let mut choices = Vec::new();
+                                            for r in recs {
+                                                for _ in 0..r.ntimes {
+                                                    choices.push(r.mv);
+                                                }
+                                            }
+                                            if choices.len() > 0 {
+                                                println!(
+                                                    "# match from opening book, choices are {}",
+                                                    P::showMoves(&choices[..])
+                                                );
+                                                let choice = rand::thread_rng().gen::<usize>() % choices.len();
+                                                Some(choices[choice])
+                                            } else {
+                                                // only forbidden moves
+                                                None
+                                            }
+                                        }
+                                    }
+                                };
+                                // lock be gone!
+                                match omv {
+                                    None => self.start(strategy),
+                                    Some(mv) => {
+                                        self.best = Some(Variation {
+                                            moves:  [mv; VariationMoves],
+                                            length: 1,
+                                            nodes:  1,
+                                            depth:  1,
+                                            score:  0,
+                                        });
+                                        self.sendMove();
+                                    }
+                                };
+                            }
                             Err(mpsc::TryRecvError::Disconnected) => return,
                         }
                     } else {
@@ -511,6 +560,7 @@ impl GameState {
                 history:  self.history.clone(),
                 plan:     self.best,
                 trtable:  Arc::clone(&self.trtable),
+                openings: Arc::clone(&self.openings),
             };
             thread::spawn(move || strategy(state));
             self.state = THINKING(since);
@@ -614,6 +664,10 @@ impl GameState {
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
                 println!("feature sigint=0 analyze=1 variants=\"normal\" colors=0 nps=0");
                 println!("feature debug=1 memory=0 smp=1 done=1");
+                {
+                    let hash = self.openings.lock().unwrap();
+                    println!("# Opening table knows {} position.", hash.len());
+                }
             }
             Some("new") => {
                 self.history = vec![P::initialBoard()];
