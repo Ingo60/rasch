@@ -48,7 +48,7 @@ fn flamegraph(gs: GameState) {
     let mut hist = vec![P::initialBoard()];
     let hash = gs.trtable.lock().unwrap();
     let before = Instant::now();
-    let (pv, _hash) = negaMax(&mut hist, hash, false, 10, P::whiteIsMate, P::blackIsMate);
+    let (pv, _hash) = negaMax(&mut hist, hash, false, 9, P::whiteIsMate, P::blackIsMate);
     let usedMillis = before.elapsed().as_millis();
     println!(
         " {} {} {} {} {}",
