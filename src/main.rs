@@ -48,7 +48,7 @@ fn flamegraph(gs: GameState) {
     let mut hist = vec![P::initialBoard()];
     let hash = gs.trtable.lock().unwrap();
     let before = Instant::now();
-    let (pv, _hash) = negaMax(&mut hist, hash, false, 9, P::whiteIsMate, P::blackIsMate);
+    let (pv, _hash) = negaMax(&mut hist, hash, false, 7, P::whiteIsMate, P::blackIsMate);
     let usedMillis = before.elapsed().as_millis();
     println!(
         " {} {} {} {} {}",
@@ -143,19 +143,6 @@ pub fn correctMateDistance(var: &Variation) -> Variation {
     } else {
     }
     pv
-}
-
-pub fn insertTest(mut hash: TransTable) -> TransTable {
-    hash.insert(
-        P::initialBoard(),
-        Transp {
-            depth:    0,
-            score:    0,
-            posMoves: Vec::new(),
-            pvMoves:  Vec::new(),
-        },
-    );
-    hash
 }
 
 /// Find the bound of a score with integrated bounds.
@@ -417,7 +404,7 @@ pub fn negaMax<'tt>(
 /// Iterative deepening for negaMax
 pub fn negaSimple(state: StrategyState, depth: u32, alpha: i32, beta: i32) {
     let mut depth = depth;
-    println!("depth {}", depth);
+    println!("# negaSimple depth {}", depth);
     loop {
         if computing::thinkingFinished() {
             state.tellNoMore();
