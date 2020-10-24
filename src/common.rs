@@ -339,17 +339,30 @@ impl GameState {
         }
     }
 
-    /// Time for this move in milliseconds
-    /// If we are ahead in time, adds maximum of 3 seconds to the
-    /// remaining time, which is calculated to last another 25
-    /// moves, but at least 1 second. If we are behind in time,
-    /// subtracts 0,5 seconds from the remaining time.
+    /// Time for this move in milliseconds.
+    ///
+    /// The base for the time per move is the remaining time as told by
+    /// xboard through the "time" command divided by 20 so as to
+    /// last another 20 moves.
+    ///
+    /// If we are behind in time, that is, if the other player's time as
+    /// told by the "otime" command is greater than our's, we
+    /// decrease our time per move by an amount that leaves us at
+    /// least 3 seconds.
+    ///
+    /// If we are ahead on time, we allow a maximum of 3 seconds of the
+    /// excess time to be added to our base. In addition, if there
+    /// is an increment, that what exceeds 1 second will be added.
     pub fn timePerMove(&self) -> u64 {
-        let remaining = max(
-            -500,
-            min(3000, self.myTime.as_millis() as i32 - self.oTime.as_millis() as i32),
-        ) + (max(1000, self.myTime.as_millis() as i32 / 25));
-        assert!(remaining >= 500);
+        let ahead = self.myTime.as_millis() as i32 - self.oTime.as_millis() as i32;
+        let tpm = self.myTime.as_millis() as i32 / 20; // raw time per move
+        let incr = self.incrTime.as_millis() as i32;
+        let remaining = if ahead < 0 {
+            max(3000, tpm - 3000) // try to catch up 3s
+        } else {
+            tpm + min(3000, ahead) + max(0, incr - 1000)
+        };
+        assert!(remaining >= 1000);
         return remaining as u64;
     }
 
@@ -466,8 +479,9 @@ impl GameState {
                         Ok(MV(sid, var)) if sid == self.sid => {
                             let usedMillis = since.elapsed().as_millis() as u64;
                             // make sure the next depth is not tried if we have already used more
-                            // than the half of the assigned time
-                            let goOn = usedMillis < (2 * self.timePerMove() / 3);
+                            // than 1/3 of the time
+                            // TODO: make this work for strategies that send multiple moves
+                            let goOn = usedMillis < (1 * self.timePerMove() / 3);
                             self.nodes += var.nodes;
                             if let Some(sender) = &self.toStrategy {
                                 sender.send(goOn).unwrap();
@@ -657,8 +671,7 @@ impl GameState {
             None => return, // silently ignore empty line
             Some("quit") => self.state = TERMINATED,
             Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("hard") | Some("easy")
-            | Some("post") | Some("computer") | Some("cores") | Some("level") | Some("st") | Some("sd")
-            | Some("nps") => (), // ignored
+            | Some("post") | Some("computer") | Some("cores") | Some("st") | Some("sd") | Some("nps") => (), // ignored
             Some("protover") => {
                 println!("feature myname=\"rasch resign\"");
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
@@ -673,6 +686,9 @@ impl GameState {
                 self.history = vec![P::initialBoard()];
                 self.state = PLAYING;
                 self.player = BLACK;
+                // read the opening table again in case something has changed
+                let hash = setupOpening();
+                self.openings = Arc::new(Mutex::new(hash));
             }
             Some("force") => self.state = FORCED,
             Some("playother") => {
@@ -730,6 +746,22 @@ impl GameState {
                     self.history.pop();
                 }
             }
+            Some("level") => match iter.next() {
+                Some(_gamemoves) => match iter.next() {
+                    Some(_gametime) => match iter.next() {
+                        Some(incr) => match incr.parse::<u64>() {
+                            Ok(n) => {
+                                self.incrTime = Duration::from_millis(n * 1000);
+                                println!("# increment of {}ms per move", self.incrTime.as_millis());
+                            }
+                            Err(_) => (),
+                        },
+                        None => (),
+                    },
+                    None => (),
+                },
+                None => (),
+            },
             Some("time") => match iter.next() {
                 Some(number) => match number.parse::<u64>() {
                     Ok(t) => self.myTime = Duration::from_millis(10 * t),
