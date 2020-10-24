@@ -439,7 +439,7 @@ pub const fn playerCastledBits(p: Player) -> BitSet {
     }
 }
 
-#[rustfmt::skip]
+
 /// Bitmask to select the Bits that can be targets of an en-passant capture (rank 3 and rank 6).
 /// 
 /// If any of those is set in the position flags, an en passant capture is possible.
@@ -1308,7 +1308,9 @@ impl Position {
     }
 
     /// Given a position and a field, generate the possible moves for
-    /// the piece standing there
+    /// the piece standing there.
+    /// 
+    /// The generated moves may still be illegal because the expose the king for check!
     fn genMove(&self, vec: &mut Vec<Move>, from: Field) {
         let piece = self.pieceOn(from);
         let player = self.turn();
@@ -1332,37 +1334,36 @@ impl Position {
                                     || (self.flags*enPassantBits).member(to));
                     if valid {
                         if promotion {                            
-                            let mv = Move::new(player, PAWN, QUEEN, from, to);
-                            if self.apply(mv).notInCheck() {
-                                vec.push(mv); 
-                                // we don't need to consiger not in check here
-                                // as it doesn't depend on what the promotion is
-                                vec.push(Move::new(player, PAWN, ROOK, from, to));
-                                vec.push(Move::new(player, PAWN, BISHOP, from, to));
-                                vec.push(Move::new(player, PAWN, KNIGHT, from, to));
-                            }
+                            vec.push(Move::new(player, PAWN, QUEEN, from, to)); 
+                            vec.push(Move::new(player, PAWN, ROOK, from, to));
+                            vec.push(Move::new(player, PAWN, BISHOP, from, to));
+                            vec.push(Move::new(player, PAWN, KNIGHT, from, to));
                         }
                         else if es.null() && self.isEmpty(to) {  // capturing en-passant
                             let mv = Move::new(player, PAWN, PAWN, from, to);
-                            if self.apply(mv).notInCheck() {vec.push(mv);}
+                            vec.push(mv);
                         }
                         else {
-                            if self.apply(mv).notInCheck() {vec.push(mv);}
+                            vec.push(mv);
                         }
                     };
                 },
                 BISHOP => if self.areEmpty(mdb::canBishop(from, to)) 
-                            && self.apply(mv).notInCheck()  { vec.push(mv); },
+                              { vec.push(mv); },
                 ROOK   => if self.areEmpty(mdb::canRook(from, to)) 
-                            && self.apply(mv).notInCheck()  { vec.push(mv); },
-                QUEEN  => if (self.areEmpty(mdb::canBishop(from, to)) || self.areEmpty(mdb::canRook(from, to)))
-                            && self.apply(mv).notInCheck()  { vec.push(mv); },
-                _other => if self.apply(mv).notInCheck()    { vec.push(mv); },
+                              { vec.push(mv); },
+                QUEEN  => if   self.areEmpty(mdb::canBishop(from, to)) 
+                            || self.areEmpty(mdb::canRook(from, to))
+                              { vec.push(mv); },
+                _other => vec.push(mv),
             };
         }
     }
 
-    /// List of possible non castling moves in a given position. 
+    /// List of possible non castling moves in a given position.
+    /// 
+    /// **Note** Moves who are in fact invalid because they leave the king in check
+    ///  are not yet filtered out.
     fn rawMoves(&self, vec: &mut Vec<Move>) {
         let mut occ = self.occupiedByActive().bits; 
         while occ != 0 {
@@ -1378,8 +1379,8 @@ impl Position {
         let mut vec = Vec::with_capacity(64);
         self.castlingMoves(&mut vec);
         self.rawMoves(&mut vec);
-        vec
-        // vec.into_iter().filter(|m| self.apply(*m).notInCheck()).collect()
+        // vec
+        vec.into_iter().filter(|&m| self.apply(m).notInCheck()).collect()
     }
 
     /// Positions qualify as "in opening"  if there are 
@@ -1531,9 +1532,13 @@ impl Position {
         let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
         let check = self.inCheck(self.turn());
         let checkBonus = if check { 25 } else { 0 };
-        let pMoves = self.moves();
+        // the raw moves for player
+        let mut pMoves = Vec::with_capacity(64);
+        self.rawMoves(&mut pMoves);
         let playerMoves = pMoves.len() as i32;
-        let oMoves = self.applyNull().moves();
+        // the raw moves for opponent
+        let mut oMoves = Vec::with_capacity(64);
+        self.applyNull().rawMoves(&mut oMoves);
         let opponentMoves = oMoves.len() as i32;
         // gives for each field the least WHITE attacker
         let mut attacksByWhite = [EMPTY; 64];
