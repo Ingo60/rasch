@@ -1,4 +1,5 @@
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
+#![allow(non_upper_case_globals)]
 
 /*!
    Implement sets of fields using 64-bit integers
@@ -12,6 +13,28 @@ use std::ops::Mul;
 use std::ops::Not;
 use std::ops::Sub;
 use std::str::FromStr;
+
+#[rustfmt::skip]
+//                  Board Geometry
+//      8        7        6       5         4        3       2        1
+//  hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
+//  10101010 01010101 11001100 00110011 01100110 11001100 00110011 01100110
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zone {
+    EDGE, OUTER, INNER
+}
+pub use Zone::*;
+
+/// ```
+/// use rasch::fieldset as F;
+/// assert_eq!(F::edgeFields | F::innerFields | F::outerFields, !0u64);
+/// assert_eq!(F::edgeFields & F::innerFields & F::outerFields, 0u64);
+/// ```
+pub const edgeFields: u64 = 0xff81_8181_8181_81ff_u64;
+pub const outerFields: u64 = 0x007e_7e66_667e_7e00_u64;
+pub const innerFields: u64 = 0x0000_0018_1800_0000_u64;
 
 #[rustfmt::skip]
 #[repr(u8)]
@@ -62,6 +85,25 @@ impl Field {
     /// assert_eq!(H8.file(), 'h');
     /// ```
     pub fn file(self) -> char { (b'a' + (self as u8 & 7)) as char }
+    /// The zone the field is part of.
+    /// ```
+    /// use rasch::fieldset::Field::*;
+    /// use rasch::fieldset::Zone::*;
+    /// assert_eq!(A1.zone(), EDGE);
+    /// assert_eq!(D8.zone(), EDGE);
+    /// assert_eq!(B7.zone(), OUTER);
+    /// assert_eq!(E4.zone(), INNER);
+    /// ```
+    pub fn zone(self) -> Zone {
+        let bits = 1 << self as u64;
+        if bits & edgeFields != 0 {
+            EDGE
+        } else if bits & outerFields != 0 {
+            OUTER
+        } else {
+            INNER
+        }
+    }
     /// ```
     /// use rasch::fieldset::Field::*;
     ///

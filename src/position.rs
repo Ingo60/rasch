@@ -204,15 +204,9 @@ impl Piece {
 
         }
     }
+
 }
 
-// pub const EMPTY: Piece = Piece::EMPTY;
-// pub const PAWN: Piece = Piece::PAWN;
-// pub const BISHOP: Piece = Piece::BISHOP;
-// pub const KNIGHT: Piece = Piece::KNIGHT;
-// pub const ROOK: Piece = Piece::ROOK;
-// pub const QUEEN: Piece = Piece::QUEEN;
-// pub const KING: Piece = Piece::KING;
 pub use Piece::*;
 
 #[rustfmt::skip]
@@ -232,7 +226,6 @@ pub use Piece::*;
 /// state.
 
 #[derive(Clone, Copy, Debug)]
-
 pub struct Position {
     /// The flags bitset informs about castling rights, en passant
     /// position and who's turn it is. In addition, whether the
