@@ -219,7 +219,6 @@ impl Into<usize> for Field {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
 pub struct BitSet {
     pub bits: u64,
 }
