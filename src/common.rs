@@ -363,7 +363,8 @@ impl GameState {
         let remaining = if ahead < 0 {
             max(3000, tpm - 3000) // try to catch up 3s
         } else {
-            tpm + min(3000, ahead) + max(0, incr - 1000)
+            // if ahead = 0 and incr = 0, it's still 1000
+            max(1000, tpm) + min(3000, ahead) + max(0, incr - 1000)
         };
         assert!(remaining >= 1000);
         return remaining as u64;
