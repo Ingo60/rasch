@@ -251,8 +251,8 @@ pub struct Position {
     ///   while the "depth" parameter of said search functions gives the
     ///   distance to the horizon.
     ///
-    /// Note: the counter bits and the F1, D1, F8 and G8 bits are not
-    /// reflected in the hash key.
+    /// Note: only the bit A1, the en passant bits on ranks 3 and 6 and the 
+    /// bits encoding castling rights are considered in the zobrist hash and equality checks
     pub flags: BitSet,
 
     /// the fields occupied by WHITE pieces
@@ -1437,18 +1437,40 @@ impl Position {
 
     /// Compute penalty for lazy officers.
     /// In the opening, KNIGHTs and BISHOPs should be moved.
-    /// The penalty does not apply anymore once the player has castled.
+    /// An extra penalty hits for 3 or 4 lazy officers and a moved queen.
     pub fn penaltyLazyOfficers(&self, player: Player) -> i32 {
-        let castled = match player {
-            WHITE => self.flags * whiteHasCastledBits,
-            BLACK => self.flags * blackHasCastledBits
+        let mine = self.occupiedBy(player);
+        // let pawns = self.pawns() * mine;
+        let rooks = self.rooks() * mine;
+        let bishops = self.bishops() * mine;
+        let knights = self.knights() * mine;
+        let lazyOfficers = match player {
+            WHITE => {
+                let lazyLeftKnight  = rooks.member(A1) && knights.member(B1);
+                let lazyRightKnight = rooks.member(H1) && knights.member(G1);
+                let lazyLeftBishop  = rooks.member(A1) && bishops.member(C1);
+                let lazyRightBishop  = rooks.member(H1) && bishops.member(F1);
+                lazyLeftBishop as i32 
+                    + lazyLeftKnight as i32 + lazyRightBishop as i32 + lazyRightKnight as i32
+            },
+            BLACK => {
+                let lazyLeftKnight  = rooks.member(A8) && knights.member(B8);
+                let lazyRightKnight = rooks.member(H8) && knights.member(G8);
+                let lazyLeftBishop  = rooks.member(A8) && bishops.member(C8);
+                let lazyRightBishop  = rooks.member(H8) && bishops.member(F8);
+                lazyLeftBishop as i32 
+                    + lazyLeftKnight as i32 + lazyRightBishop as i32 + lazyRightKnight as i32
+            }
         };
-        if castled.some() { return 0; }
-        let officers = match player {
-            WHITE => whiteOfficers,
-            BLACK => blackOfficers
+        let busyQueen = match player {
+            WHITE => {
+                mine.member(D1) && self.pieceOn(D1) != QUEEN
+            }
+            BLACK => {
+                mine.member(D8) && self.pieceOn(D8) != QUEEN
+            }
         };
-        (officers * (self.bishops() + self.knights()) * self.occupiedBy(player)).card() as i32 * 17
+        if busyQueen && lazyOfficers > 2 { 125 } else { lazyOfficers * 25 }
     }
 
     /// Sum scores for material
@@ -1467,7 +1489,7 @@ impl Position {
                                 piece, 
                                 leastAttacker, 
                                 leastDefender != EMPTY);
-                if active { percent(25, hanging) } else { hanging }
+                if active { percent(33, hanging) } else { hanging }
             }
         }
     }
@@ -1524,7 +1546,7 @@ impl Position {
         // This should result in an unwillingness to exchange pieces by the weaker party
         let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
         let check = self.inCheck(self.turn());
-        let checkBonus = if check { 25 } else { 0 };
+        let checkBonus = if check { 20 } else { 0 };
         // the raw moves for player
         let mut pMoves = Vec::with_capacity(64);
         self.rawMoves(&mut pMoves);
