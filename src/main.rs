@@ -28,15 +28,21 @@ use rasch::position::Position;
 
 fn main() {
     mdb::initStatic();
-    let mut gs = GameState::new();
     let argv: Vec<String> = args().collect();
     if argv.len() == 1 {
+        let mut gs = GameState::new(String::from("negamin"));
         gs.mainLoop(strategy_negamin);
         return;
     }
     match argv[1].as_str() {
-        "flamegraph" => flamegraph(gs),
-        "negamin" => gs.mainLoop(strategy_negamin),
+        "flamegraph" => {
+            let gs = GameState::new(String::from("flamegraph"));
+            flamegraph(gs)
+        }
+        "negamin" => {
+            let mut gs = GameState::new(String::from("negamin"));
+            gs.mainLoop(strategy_negamin)
+        }
         other => {
             eprintln!("Illegal command line argument: `{}´", other);
             eprintln!("usage: {} [flamegraph|negamin]", argv[0]);
@@ -180,7 +186,7 @@ pub fn negaMaxGo<'tt>(
     let mut best = Variation {
         nodes: 0,
         length: 0,
-        moves: [P::noMove; VariationMoves],
+        moves: NONE,
         depth,
         score: -999_999_999,
     };
@@ -413,6 +419,7 @@ pub fn negaSimple(state: StrategyState, depth: u32, alpha: i32, beta: i32) {
         // acquire mutable access to the transposition table
         // the hash is locked during search
         let hash: TransTable = state.trtable.lock().unwrap();
+        println!("# hash size: {}", hash.len());
         let mut hist = state.history.clone();
         let (pv0, _) = negaMax(&mut hist, hash, false, depth, -beta, -alpha);
         let mut pv = correctMateDistance(&pv0);

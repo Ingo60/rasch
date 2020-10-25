@@ -260,6 +260,8 @@ impl StrategyState {
 
 /// State the protocol needs
 pub struct GameState {
+    /// The name of the strategy
+    pub name:        String,
     /// the internal state
     pub state:       State,
     /// The colour we are playing
@@ -302,13 +304,14 @@ pub struct GameState {
 
 impl GameState {
     /// initialize game and start the reader thread
-    pub fn new() -> GameState {
+    pub fn new(name: String) -> GameState {
         let (toMain, fromThreads) = mpsc::sync_channel(1);
         let (toReader, rdrRcv) = mpsc::sync_channel(1);
         // let (toStrategy, fromMain) = mpsc::sync_channel(1);
         let rdrSender = toMain.clone();
         thread::spawn(move || reader(rdrSender, rdrRcv));
         GameState {
+            name,
             state: FORCED,
             player: WHITE,
             best: None,
@@ -673,7 +676,7 @@ impl GameState {
             Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("hard") | Some("easy")
             | Some("post") | Some("computer") | Some("cores") | Some("st") | Some("sd") | Some("nps") => (), // ignored
             Some("protover") => {
-                println!("feature myname=\"rasch resign\"");
+                println!("feature myname=\"rasch 1.0 {}\"", self.name);
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
                 println!("feature sigint=0 analyze=1 variants=\"normal\" colors=0 nps=0");
                 println!("feature debug=1 memory=0 smp=1 done=1");
@@ -688,6 +691,7 @@ impl GameState {
                 self.player = BLACK;
                 // read the opening table again in case something has changed
                 let hash = setupOpening();
+                println!("# opening table size: {}", hash.len());
                 self.openings = Arc::new(Mutex::new(hash));
             }
             Some("force") => self.state = FORCED,
