@@ -677,7 +677,7 @@ impl GameState {
             Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("hard") | Some("easy")
             | Some("post") | Some("computer") | Some("cores") | Some("st") | Some("sd") | Some("nps") => (), // ignored
             Some("protover") => {
-                println!("feature myname=\"rasch 1.0 {}\"", self.name);
+                println!("feature myname=\"rasch 2.0 {}\"", self.name);
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
                 println!("feature sigint=0 analyze=1 variants=\"normal\" colors=0 nps=0");
                 println!("feature debug=1 memory=0 smp=1 done=1");

@@ -1475,7 +1475,40 @@ impl Position {
 
     /// Sum scores for material
     pub fn scoreMaterial(&self, player: Player) -> i32 {
-        self.occupiedBy(player).map(|f| self.pieceOn(f).score()).sum()
+        let mut bits = self.occupiedBy(player).bits;
+        let mut sum  = 0;
+        while bits != 0 {
+            let from = Field::from(bits.trailing_zeros() as u8);
+            bits ^= 1 << from as u64;
+            let piece = self.pieceOn(from);
+            sum += piece.score();
+            match piece {
+                ROOK | QUEEN | KING if self.inEndgame() => {
+                    // compensate for unwillingness to be behind own pawns
+                    let file = from.file();
+                    let prank = if player == WHITE { 8 } else { 1 };
+                    let pto = Field::fromFR(file, prank);
+                    let pawns = mdb::canRook(from, pto) * self.pawns() * self.occupiedBy(player);
+                    if pawns.some() && (mdb::canRook(from, pawns.bitIndex())*self.occupiedBy(player.opponent())).null() {
+                        // there are pawns "before" the rook, king or queen and no aliens in between
+                        sum += 50;
+                    }
+                }
+                PAWN => {
+                    // let rank = from.rank();
+                    let file = from.file();
+                    let prank = if player == WHITE { 8 } else { 1 };
+                    // let orank = if player == WHITE { 2 } else { 7 };
+                    let pto = Field::fromFR(file, prank);
+                    let togo = mdb::canRook(from, pto) + bit(pto);
+                    // the fewer steps to go, the more valuable
+                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 2 } else { 1 };
+                    sum += freeFactor * ((1 << (7 - togo.card())) - 2);
+                }
+                _other => (),
+            }
+        }
+        sum
     }
 
     /// compute the penalty for a hanging piece, at best 0 when piece is not in danger
