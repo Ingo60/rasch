@@ -194,7 +194,12 @@ pub fn negaMaxGo<'tt>(
     let mut alpha = alpha0;
     for m in moves.iter().copied() {
         let pos = current.apply(m);
-        let capture = !ext && depth == 1 && (!current.isEmpty(m.to()) || pos.inCheck(pos.turn()));
+        let capture = !ext
+            && depth <= 2
+            && (m.promote() != EMPTY
+                || current.inCheck(current.turn())
+                || !current.isEmpty(m.to())
+                || pos.inCheck(pos.turn()));
         let d = if capture { depth } else { depth - 1 };
         hist.push(pos);
         let (pv, h) = negaMax(hist, hash, capture, d, -beta, -alpha);
