@@ -1481,7 +1481,8 @@ impl Position {
             let from = Field::from(bits.trailing_zeros() as u8);
             bits ^= 1 << from as u64;
             let piece = self.pieceOn(from);
-            sum += piece.score();
+            // piece score + zone bonus
+            sum += piece.score() + (from.zone() as i32 + 1)*5;
             match piece {
                 ROOK | QUEEN | KING if self.inEndgame() => {
                     // compensate for unwillingness to be behind own pawns
@@ -1548,6 +1549,69 @@ impl Position {
         score
     }
 
+    /// Bonus for empty fields that are owned by a player.
+    /// A field counts as owned by player A, when the least piece of B
+    /// that could go there is more valuable than the least piece of A
+    /// that could go there or if B has no piece that could go there.
+    /// (Because **if** B goes there, A can capture with a win.)
+    ///
+    /// In goes without saying that a defended field can never get owned by a KING.
+    pub fn bonusOwned(&self, byWhite: &[Piece;64], byBlack: &[Piece;64]) -> i32 {
+        let mut unoccupied = (BitSet::all() - self.occupied()).bits;
+        let mut acc = 0;
+        while unoccupied != 0 {
+            let wo = Field::from(unoccupied.trailing_zeros() as u8);
+            unoccupied ^= 1 << wo as u64;
+
+            // skip the en passant field
+            if (self.flags * enPassantBits).member(wo) { continue; };
+            let bonus = (wo.zone() as i32 + 1) * 5;
+            let whitePawns = self.attackedByPawns(wo, WHITE).card() as i32;
+            let blackPawns = self.attackedByPawns(wo, BLACK).card() as i32;
+            let whitePiece = byWhite[wo as usize];
+            let blackPiece = byBlack[wo as usize];
+
+            // we must take care of pawns separately, as attacking moves on
+            // empty fields are not in the move list (except for en passant)
+            if whitePawns > blackPawns {
+                    acc += bonus;
+            }
+            else if blackPawns < whitePawns {
+                    acc -= bonus;
+            }
+            else {
+                match whitePiece {
+                    EMPTY => if blackPiece != EMPTY { acc -= bonus },
+                    PAWN => panic!("cannot happen: PAWN move in WHITE attack vector"),
+                    BISHOP | KNIGHT => match blackPiece {
+                        EMPTY | ROOK | QUEEN | KING => acc += bonus,
+                        BISHOP | KNIGHT => (),
+                        PAWN => panic!("cannot happen: PAWN move in BLACK attack vector"),
+                    }
+                    ROOK => match blackPiece {
+                        EMPTY | QUEEN | KING => acc += bonus,
+                        ROOK => (),
+                        BISHOP | KNIGHT => acc -= bonus,
+                        PAWN => panic!("cannot happen: PAWN move in BLACK attack vector"),
+                    }
+                    QUEEN => match blackPiece {
+                        EMPTY | KING => acc += bonus,
+                        QUEEN => (),
+                        ROOK | BISHOP | KNIGHT => acc -= bonus,
+                        PAWN => panic!("cannot happen: PAWN move in BLACK attack vector"),
+                    }
+                    KING => match blackPiece {
+                        EMPTY  => acc += bonus,
+                        KING => (),
+                        QUEEN | ROOK | BISHOP | KNIGHT => acc -= bonus,
+                        PAWN => panic!("cannot happen: PAWN move in BLACK attack vector"),
+                    }
+                }
+            }
+        };
+        acc
+    }
+
     /// Try to make castling attractive.
     /// Give a bonus of 25 if the player has castled.
     /// If the player hasn't castled yet, but has both castling rights, give a malus of -25.
@@ -1592,9 +1656,13 @@ impl Position {
         let mut attacksByWhite = [EMPTY; 64];
         // gives for each field the least BLACK attacker
         let mut attacksByBlack = [EMPTY; 64];
+        // compute least attackers once
         for m in pMoves {
             let wo = m.to() as usize;
             let was = m.piece();
+            if was == PAWN && self.isEmpty(m.to()) {
+                continue;
+            }
             if m.player() == WHITE {
                 if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was {
                     attacksByWhite[wo] = was;
@@ -1609,6 +1677,9 @@ impl Position {
         for m in oMoves {
             let wo = m.to() as usize;
             let was = m.piece();
+            if was == PAWN && self.isEmpty(m.to()) {
+                continue;
+            }
             if m.player() == WHITE {
                 if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was {
                     attacksByWhite[wo] = was;
@@ -1621,7 +1692,7 @@ impl Position {
             }
         } 
         
-        matRelation
+        matRelation // + self.bonusOwned(&attacksByWhite, &attacksByBlack)
         - self.penalizeHanging(WHITE, &attacksByBlack, &attacksByWhite) 
         + self.penalizeHanging(BLACK, &attacksByWhite, &attacksByBlack)
         + self.turn().opponent().forP(checkBonus + 4*opponentMoves)
