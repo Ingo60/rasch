@@ -161,5 +161,6 @@ b1c3 c7c5   g1f3 b8c6
 b1c3 e7e5   e2e4
 b1c3 g8f6   e2e4
 
-# Ammonia Opening (becaus Nh3 is ammonium and it stinks)
+# Ammonia Opening (becaus Nh3 is ammonium and it stinks) and other transpositions
 g1h3? e7e5,d7d5
+g1f3? d7d5,g8f6,b8c6
