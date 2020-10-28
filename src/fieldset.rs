@@ -23,7 +23,7 @@ use std::str::FromStr;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Zone {
-    EDGE, OUTER, INNER
+    EDGE, OUTER, CENTER
 }
 pub use Zone::*;
 
@@ -101,7 +101,7 @@ impl Field {
         } else if bits & outerFields != 0 {
             OUTER
         } else {
-            INNER
+            CENTER
         }
     }
     /// ```
