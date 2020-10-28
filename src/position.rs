@@ -46,12 +46,14 @@ pub const whiteIsMate: i32 = -blackIsMate;
 
 /// Compute the penalty for a hanging piece `hang` that is attacked by some piece `att`
 /// depending on whether the hanging piece is defended or not
+/// Gives a bonus of 10 percent of the piece value when it is not attacked, but defended
 pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
     let scoreh = hang.score();
     let scorea = att.score();
     match att {
-        EMPTY => 0,
+        EMPTY => if defended { percent(10, scoreh) } else { 0 },
         KING if defended => 0,
+        _hanging_king if hang == KING => 0,             // avoid extra bonus for check move
         _otherwise => match defended {
             false => percent(70, scoreh), 
             true if scoreh > scorea => percent(70, scoreh - scorea),
