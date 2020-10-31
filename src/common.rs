@@ -608,9 +608,10 @@ impl GameState {
                 assert!(pv.length > 0); // there must be moves
                 let theMove = pv.last().unwrap();
                 println!("move {}", theMove.algebraic());
-                println!("# ply counter before move: {}", self.current().getPlyCounter());
+                // println!("# ply counter before move: {}",
+                // self.current().getPlyCounter());
                 let pos = self.current().apply(theMove);
-                println!("# ply counter after  move: {}", pos.getPlyCounter());
+                // println!("# ply counter after  move: {}", pos.getPlyCounter());
                 let ms = pos.moves();
                 let mate = ms.len() == 0 && pos.inCheck(pos.turn());
                 let stalemate = ms.len() == 0 && !mate;
