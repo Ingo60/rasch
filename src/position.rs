@@ -1773,14 +1773,12 @@ impl Display for Position {
 /// promote may be KNIGHT, BISHOP, ROOK or QUEEN. If it's an en passant
 /// capturing, promote will be PAWN.
 ///
-/// We need 20 bits:
+/// We need 19 bits:
 ///
 /// ```text
-/// KPfffpppttttttssssss
+/// Pfffpppttttttssssss
 /// ```
 ///
-/// - [K] This bit indicates whether this move caused a cut and is thus
-///   a so called killer move.
 /// - [P] 1 bit for player where 0 means BLACK, 1 means WHITE
 /// - [fff] 3 bit encoding for moving Piece
 /// - [ppp] 3 bit for promotion piece
@@ -1801,12 +1799,6 @@ impl Move {
     /// `true` if and only if this is not `noMove`
     #[inline]
     pub fn isMove(self) -> bool { self != noMove }
-    /// Tell if this is a killer move
-    #[inline]
-    pub fn killer(self) -> bool { self.mv & 0b10_000_000_000000_000000u32 != 0 }
-
-    /// Make this a killer move
-    pub fn flagKiller(self) -> Move { Move { mv: self.mv | 0b10_000_000_000000_000000u32}}
 
     /// Which player is moving?
     #[inline]

@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use std::cmp::{max, min, Ordering};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env::args;
 use std::io;
 use std::io::Write;
@@ -54,7 +54,8 @@ fn flamegraph(gs: GameState) {
     let mut hist = vec![P::initialBoard()];
     let hash = gs.trtable.lock().unwrap();
     let before = Instant::now();
-    let (pv, _hash) = negaMax(&mut hist, hash, false, 7, P::whiteIsMate, P::blackIsMate);
+    let mut killers = HashSet::with_capacity(64);
+    let (pv, _hash) = negaMax(&mut hist, hash, &mut killers, false, 7, P::whiteIsMate, P::blackIsMate);
     let usedMillis = before.elapsed().as_millis();
     println!(
         " {} {} {} {} {}",
@@ -68,6 +69,7 @@ fn flamegraph(gs: GameState) {
 
 type TransTable<'x> = MutexGuard<'x, HashMap<Position, Transp>>;
 type Positions = Vec<Position>;
+type KillerSet = HashSet<Move>;
 
 pub fn strategy_resign(mut state: StrategyState) {
     state.sender.send(NoMore(state.sid)).unwrap();
@@ -104,15 +106,16 @@ pub fn strategy_best(mut state: StrategyState) {
 
 /// estimate a rating for a move
 #[rustfmt::skip]
-pub fn moveRating(pos: &Position, mv: Move) -> i32 {
+pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
     let rpos = pos.apply(mv);
     let before = pos.pieceOn(mv.from());
     let after = rpos.pieceOn(mv.to());
     let vt = pos.pieceOn(mv.to()).score();
-    let goodCapture = if mv.piece().score() < vt - 10             { 9 } else { 0 };
-    let badCapturing = if vt > 0                                  { 1 } else { 0 };
-    let castling = if mv.piece() == KING && mv.promote() != EMPTY { 3 } else { 0 };
-    let checking = if rpos.inCheck(rpos.turn())                   { 1 } else { 0 };
+    let killer = if killers.contains(&mv)                         { 11 } else { 0 };
+    let goodCapture = if mv.piece().score() < vt - 10             {  9 } else { 0 };
+    let badCapturing = if vt > 0                                  {  1 } else { 0 };
+    let castling = if mv.piece() == KING && mv.promote() != EMPTY {  3 } else { 0 };
+    let checking = if rpos.inCheck(rpos.turn())                   {  1 } else { 0 };
     
     let attacking_before = (P::pieceTargets(before, mv.player(), mv.from()) 
                             * pos.occupiedBy(mv.player().opponent())).card() as i32;
@@ -124,13 +127,13 @@ pub fn moveRating(pos: &Position, mv: Move) -> i32 {
                         if mv.promote() != EMPTY                  { 10 } else { 5 }
                     } else { 0 }; 
     
-    goodCapture + badCapturing + castling + checking + attacking + pawnMove
+    goodCapture + badCapturing + castling + checking + attacking + pawnMove + killer
 }
 
 /// order a bunch of moves so that the most useful one will processed
 /// first
-pub fn orderMoves(pos: &Position, moves: &[Move]) -> Vec<Move> {
-    let ratings = moves.iter().copied().map(|mv| moveRating(pos, mv));
+pub fn orderMoves(pos: &Position, killers: &mut KillerSet, moves: &[Move]) -> Vec<Move> {
+    let ratings = moves.iter().copied().map(|mv| moveRating(pos, killers, mv));
     let mut tuples = ratings.zip(moves.iter().copied()).collect::<Vec<_>>();
     tuples.sort_unstable_by(|(r1, _), (r2, _)| r2.cmp(r1)); // descending
 
@@ -177,6 +180,7 @@ pub fn exactScore(n: i32) -> i32 { 4 * n }
 pub fn negaMaxGo<'tt>(
     hist: &mut Positions,
     mut hash: TransTable<'tt>,
+    killers: &mut KillerSet,
     ext: bool,
     depth: u32,
     alpha0: i32,
@@ -195,23 +199,29 @@ pub fn negaMaxGo<'tt>(
     for m in moves.iter().copied() {
         let pos = current.apply(m);
         let capture = !ext
-            && depth <= 2
+            && depth == 1
             && (m.promote() != EMPTY
                 || current.inCheck(current.turn())
                 || !current.isEmpty(m.to())
                 || pos.inCheck(pos.turn()));
         let d = if capture { depth } else { depth - 1 };
         hist.push(pos);
-        let (pv, h) = negaMax(hist, hash, capture, d, -beta, -alpha);
+        let (pv, h) = negaMax(hist, hash, killers, capture, d, -beta, -alpha);
         hash = h;
         hist.pop();
         let score = -pv.score;
         if score > beta {
             // killer move
-            let killer = m.flagKiller();
+            let killer = m;
             let mut killerpv = pv.push(killer);
             killerpv.score = score;
             killerpv.nodes += best.nodes;
+            // eprintln!(
+            //     "inserting {} into killer hash of size {}",
+            //     killer.algebraic(),
+            //     killers.len()
+            // );
+            killers.insert(killer);
             return (killerpv, hash);
         }
         if score > alpha || score > best.score {
@@ -266,6 +276,7 @@ const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
 pub fn negaMax<'tt>(
     hist: &mut Positions,
     hash: TransTable<'tt>,
+    killers: &mut KillerSet,
     ext: bool,
     depth: u32,
     alpha: i32,
@@ -333,7 +344,7 @@ pub fn negaMax<'tt>(
                             hash,
                         )
                     } else {
-                        let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha2, beta, &ordered);
+                        let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
                         if depth >= te.depth && !ext {
                             let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha2, beta);
                             (pv, hash3)
@@ -358,7 +369,7 @@ pub fn negaMax<'tt>(
                             hash,
                         )
                     } else {
-                        let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha, beta2, &ordered);
+                        let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
                         if depth >= te.depth && !ext {
                             let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta2);
                             (pv, hash3)
@@ -369,7 +380,7 @@ pub fn negaMax<'tt>(
                 }
 
                 _other => {
-                    let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha, beta, &ordered);
+                    let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                     if !ext {
                         let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta);
                         (pv, hash3)
@@ -382,7 +393,7 @@ pub fn negaMax<'tt>(
         None => {
             let moves = pos.moves();
             let ordered = if depth > 1 {
-                orderMoves(&pos, &moves[..])
+                orderMoves(&pos, killers, &moves[..])
             } else {
                 pos.moves()
             };
@@ -393,7 +404,7 @@ pub fn negaMax<'tt>(
                     (draw, hash)
                 }
             } else {
-                let (pv, hash2) = negaMaxGo(hist, hash, ext, depth, alpha, beta, &ordered);
+                let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                 if !ext {
                     let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta);
                     (pv, hash3)
@@ -413,8 +424,9 @@ pub fn negaMax<'tt>(
 }
 
 /// Iterative deepening for negaMax
-pub fn negaSimple(state: StrategyState, depth: u32, alpha: i32, beta: i32) {
+pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alpha: i32, beta: i32) {
     let mut depth = depth;
+    // let mut killers = HashSet::with_capacity(64);
     println!("# negaSimple depth {}", depth);
     loop {
         if computing::thinkingFinished() {
@@ -425,8 +437,14 @@ pub fn negaSimple(state: StrategyState, depth: u32, alpha: i32, beta: i32) {
         // the hash is locked during search
         let hash: TransTable = state.trtable.lock().unwrap();
         println!("# hash size: {}", hash.len());
+        let kvec: Vec<Move> = killers.iter().copied().collect();
+        println!(
+            "# killer size: {} {}",
+            killers.len(),
+            P::showMoves(&kvec[0..min(8, killers.len())])
+        );
         let mut hist = state.history.clone();
-        let (pv0, _) = negaMax(&mut hist, hash, false, depth, -beta, -alpha);
+        let (pv0, _) = negaMax(&mut hist, hash, killers, false, depth, -beta, -alpha);
         let mut pv = correctMateDistance(&pv0);
         pv.score *= state.player().factor();
         pv.depth = depth;
@@ -449,7 +467,8 @@ pub fn negaSimple(state: StrategyState, depth: u32, alpha: i32, beta: i32) {
 
 /// search with the *negamin* algorithm
 pub fn strategy_negamin(state: StrategyState) {
-    let allMoves = orderMoves(&state.current(), &state.current().moves());
+    let mut killers = HashSet::with_capacity(2048);
+    let allMoves = orderMoves(&state.current(), &mut killers, &state.current().moves());
     println!(
         "# Started strategy negamin, we have {} moves to consider.",
         allMoves.len()
@@ -523,6 +542,7 @@ pub fn strategy_negamin(state: StrategyState) {
                 let (pv, _) = negaMax(
                     &mut hist,
                     hash,
+                    &mut killers,
                     false,
                     min(8, plan.length - 1),
                     P::whiteIsMate,
@@ -553,15 +573,15 @@ pub fn strategy_negamin(state: StrategyState) {
                     factor * plan.score
                 );
                 if cont {
-                    negaSimple(state, plan.length, P::whiteIsMate, P::blackIsMate);
+                    negaSimple(state, &mut killers, plan.length, P::whiteIsMate, P::blackIsMate);
                 }
             }
             io::stdout().flush().unwrap_or_default();
         }
         _ => {
-            println!("We do not have a plan.");
+            println!("# We do not have a plan.");
             io::stdout().flush().unwrap_or_default();
-            negaSimple(state, 3, P::whiteIsMate, P::blackIsMate);
+            negaSimple(state, &mut killers, 3, P::whiteIsMate, P::blackIsMate);
         }
     };
 }
