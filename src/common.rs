@@ -482,10 +482,10 @@ impl GameState {
                         Ok(Line(input)) => self.xboardCommand(input.trim()),
                         Ok(MV(sid, var)) if sid == self.sid => {
                             let usedMillis = since.elapsed().as_millis() as u64;
-                            // make sure the next depth is not tried if we have already used more
-                            // than 1/3 of the time
+                            // make sure the next one is not tried if we have already used more
+                            // than 90% of the time
                             // TODO: make this work for strategies that send multiple moves
-                            let goOn = usedMillis < (1 * self.timePerMove() / 3);
+                            let goOn = usedMillis < (90 * self.timePerMove()) / 100;
                             self.nodes += var.nodes;
                             if let Some(sender) = &self.toStrategy {
                                 sender.send(goOn).unwrap();
@@ -500,7 +500,7 @@ impl GameState {
                             println!(
                                 " {} {} {} {} {}",
                                 var.depth,
-                                self.player.factor() * var.score,
+                                var.score,
                                 (usedMillis + 5) / 10,
                                 self.nodes,
                                 var.showMoves()
@@ -509,23 +509,75 @@ impl GameState {
                             // TODO: compute best
                             let oracle: bool = rand::thread_rng().gen();
                             let best = match &self.best {
-                                None => var,
+                                None => {
+                                    println!(
+                                        "# taking first move {}({})",
+                                        var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                        var.score
+                                    );
+                                    var
+                                }
                                 Some(old) => {
-                                    if var.length > 0 && old.length > 0 && var.moves.last() == old.moves.last()
+                                    if var.length > 0 && old.length > 0 && var.last().unwrap() == old.last().unwrap()
                                         || var.depth > old.depth
                                     {
+                                        // println!("# var.length {} > 0  {}", var.length, var.length > 0);
+                                        // println!("# old.length {} > 0  {}", old.length, old.length > 0);
+                                        // println!(
+                                        //     "# var.moves.last {} == old.moves.last {}  {}",
+                                        //     var.last().unwrap(),
+                                        //     old.last().unwrap(),
+                                        //     var.last().unwrap() == old.last().unwrap()
+                                        // );
+                                        // println!(
+                                        //     "# var.depth {} > old.depth {}  {}",
+                                        //     var.depth,
+                                        //     old.depth,
+                                        //     var.depth > old.depth
+                                        // );
+                                        println!(
+                                            "# taking over deeper move {}({})",
+                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                            var.score
+                                        );
                                         var
                                     } else if (var.score - old.score).abs() <= 5 {
                                         if oracle {
+                                            println!(
+                                                "# replacing because oracle {}({}) with {}({})",
+                                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                                old.score,
+                                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                                var.score
+                                            );
                                             var
                                         } else {
+                                            println!(
+                                                "# keeping because oracle {}({}) with {}({})",
+                                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                                old.score,
+                                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                                var.score
+                                            );
                                             old.clone()
                                         }
-                                    } else if self.player == WHITE && var.score > old.score
-                                        || self.player == BLACK && var.score < old.score
-                                    {
+                                    } else if var.score > old.score {
+                                        println!(
+                                            "# replacing {}({}) with better {}({})",
+                                            old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                            old.score,
+                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                            var.score
+                                        );
                                         var
                                     } else {
+                                        println!(
+                                            "# keeping {}({}) instead worse {}({})",
+                                            old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                            old.score,
+                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                            var.score
+                                        );
                                         old.clone()
                                     }
                                 }
@@ -746,7 +798,7 @@ impl GameState {
                 }
             }
             Some("remove") => {
-                self.state = FORCED;
+                // self.state = FORCED;
                 if self.history.len() > 2 {
                     self.history.pop();
                     self.history.pop();
