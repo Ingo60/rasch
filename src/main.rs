@@ -609,6 +609,7 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
     let myPos = state.current();
     let myMoves = myPos.moves();
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
+    let mut nodes = 0;
     // for increasing depth
     'forever: loop {
         println!("# negaDeep depth {}", depth);
@@ -666,7 +667,7 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
                 //
                 // * myPos.turn().factor(),
                 depth: depth + 1,
-                nodes: pv1.nodes + 1,
+                nodes: pv1.nodes + nodes,
                 ..pv1
             }
             .push(m);
@@ -679,6 +680,9 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
                     println!("negaDeep is not allowed to continue.");
                     break 'forever;
                 }
+                nodes = 0;
+            } else {
+                nodes = pv.nodes;
             }
             alpha = max(pv.score, alpha);
             pvs.push(pv);

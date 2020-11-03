@@ -541,7 +541,9 @@ impl GameState {
                                             var.score
                                         );
                                         var
-                                    } else if (var.score - old.score).abs() <= 5 {
+                                    } else if var.score.abs() < P::blackIsMate - 1000
+                                        && (var.score - old.score).abs() <= 5
+                                    {
                                         if oracle {
                                             println!(
                                                 "# replacing because oracle {}({}) with {}({})",
