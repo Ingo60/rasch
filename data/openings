@@ -73,7 +73,11 @@
 #
 # This will result in a warning, as a move cannot be both forbidden and recommended.
 # Also the line(s) where the move is allowed are discarded.
-# 
+#
+
+# Openings prefered by "frech"
+e2e4 d7d6?  d2d4 h7h5?  b1c3
+b1c3 g8f6   g1f3 b8c6
 
 # Ruy Lopez, Morphy Defense
 e2e4 e7e5   g1f3 b8c6   f1b5 a7a6   b5c6 d7c6   b1c3 f7f6
