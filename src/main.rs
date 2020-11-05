@@ -446,31 +446,28 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
     // let mut killers = HashSet::with_capacity(64);
     println!("# negaSimple depth {}", depth);
     loop {
+        let mut hist = state.history.clone();
+        let (pv0, _) = {
+            // acquire mutable access to the transposition table
+            // the hash is locked during search
+            let hash: TransTable = state.trtable.lock().unwrap();
+            // println!("# hash size: {}", hash.len());
+            // let kvec: Vec<Move> = killers.iter().copied().collect();
+            // println!(
+            //     "# killer size: {} {}",
+            //     killers.len(),
+            //     P::showMoves(&kvec[0..min(8, killers.len())])
+            // );
+            negaMax(&mut hist, hash, killers, false, depth, -beta, -alpha)
+        };
         if computing::thinkingFinished() {
-            state.tellNoMore();
             break;
         }
-        // acquire mutable access to the transposition table
-        // the hash is locked during search
-        let hash: TransTable = state.trtable.lock().unwrap();
-        println!("# hash size: {}", hash.len());
-        let kvec: Vec<Move> = killers.iter().copied().collect();
-        println!(
-            "# killer size: {} {}",
-            killers.len(),
-            P::showMoves(&kvec[0..min(8, killers.len())])
-        );
-        let mut hist = state.history.clone();
-        let (pv0, _) = negaMax(&mut hist, hash, killers, false, depth, -beta, -alpha);
         let mut pv = correctMateDistance(&pv0);
         pv.score *= state.player().factor();
         pv.depth = depth;
         if state.talkPV(pv) {
-            if pv.length + 1 < depth
-                || pv.score <= P::whiteIsMate + 2
-                || pv.score >= P::blackIsMate - 2
-                || pv.score == 0
-            {
+            if pv.length + 1 < depth || pv.score >= P::blackIsMate - 2 || pv.score == 0 {
                 state.tellNoMore();
                 break;
             } else {
@@ -480,6 +477,7 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
             break;
         }
     }
+    state.tellNoMore();
 }
 
 /// search with the *negamin* algorithm
@@ -487,120 +485,30 @@ pub fn strategy_negamin(state: StrategyState) {
     let mut killers = HashSet::with_capacity(2048);
     let allMoves = orderMoves(&state.current(), &mut killers, &state.current().moves());
     println!(
-        "# Started strategy negamin, we have {} moves to consider.",
+        "# Started strategy negamin {}, we have {} moves to consider.",
+        state.sid,
         allMoves.len()
     );
     io::stdout().flush().unwrap_or_default();
 
-    // we need this all the time
-    let factor = state.player().factor();
-
     // if there's just 1 move left, we have no choice
+    if allMoves.len() == 0 {
+        // are you kidding?
+        state.tellNoMore();
+    }
     if allMoves.len() == 1 {
         if state.talkPV(Variation {
             depth:  1,
             nodes:  1,
-            score:  factor * (-9999),
+            score:  -9999,
             moves:  [allMoves[0]; VariationMoves as usize],
             length: 1,
         }) {
             state.tellNoMore();
         }
-        return;
-    };
-    // we do have more than 1 move at this point
-    match state.plan {
-        // If the plan promises a mate in a few moves, we unconditionally play it.
-        // Note that if this is so, the 50 moves rule doesn't get in the way.
-        Some(plan) if plan.length > 2 && plan.score * factor > P::blackIsMate - 100 => {
-            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
-            println!("# We have a mate plan: {}", P::showMoves(&thePlan[2..]));
-            io::stdout().flush().unwrap_or_default();
-            if state.talkPV(
-                Variation {
-                    depth: plan.depth - 2,
-                    nodes: 1,
-                    moves: [P::noMove; VariationMoves],
-                    ..plan
-                }
-                .from_iter(&mut thePlan.into_iter().skip(2)),
-            ) {
-                state.tellNoMore();
-            };
-            return;
-        }
-        // The plan should promise a win of at least 1/4 pawn.
-        Some(plan) if plan.length > 2 && plan.score * factor > 25 => {
-            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
-            let planmv = thePlan[2];
-            println!("# We have a plan: {}", P::showMoves(&thePlan[2..]));
-            io::stdout().flush().unwrap_or_default();
-            if !state.talkPV(
-                Variation {
-                    depth: plan.depth - 2,
-                    nodes: 1,
-                    moves: [P::noMove; VariationMoves],
-                    ..plan
-                }
-                .from_iter(&mut thePlan.into_iter().skip(2)),
-            ) {
-                // for some reason, we must stop
-                return;
-            };
-            // re-search the move
-            let pos = state.current().apply(planmv);
-            let mut hist = state.history.clone();
-            hist.push(pos);
-            let pv2 = {
-                // acquire mutable access to the transposition table
-                // the hash is locked during search
-                let hash: TransTable = state.trtable.lock().unwrap();
-
-                let (pv, _) = negaMax(
-                    &mut hist,
-                    hash,
-                    &mut killers,
-                    false,
-                    min(8, plan.length - 1),
-                    P::whiteIsMate,
-                    P::blackIsMate,
-                );
-                correctMateDistance(&pv)
-            };
-            let mut pv = pv2.push(planmv);
-            pv.score *= pos.turn().factor();
-            pv.depth = plan.depth;
-            println!("# Plan continuation: {}", pv.showMoves());
-            io::stdout().flush().unwrap_or_default();
-            let cont = state.talkPV(pv);
-            let newscore = factor * pv.score;
-            if newscore > P::percent(95, factor * plan.score)
-                && (newscore == P::blackIsMate || newscore <= P::blackIsMate - 100)
-            {
-                println!(
-                    "# Plan looks promising (new score is {}, promised was {}).",
-                    newscore,
-                    factor * plan.score
-                );
-                state.tellNoMore();
-            } else {
-                println!(
-                    "# We better look for another plan (new score is {}, promised was {}).",
-                    newscore,
-                    factor * plan.score
-                );
-                if cont {
-                    negaSimple(state, &mut killers, plan.length, P::whiteIsMate, P::blackIsMate);
-                }
-            }
-            io::stdout().flush().unwrap_or_default();
-        }
-        _ => {
-            println!("# We do not have a plan.");
-            io::stdout().flush().unwrap_or_default();
-            negaSimple(state, &mut killers, 3, P::whiteIsMate, P::blackIsMate);
-        }
-    };
+    } else {
+        negaSimple(state, &mut killers, 3, P::whiteIsMate, P::blackIsMate);
+    }
 }
 
 /// Iterative deepening for negaMax
@@ -611,8 +519,10 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
     let mut nodes = 0;
     // for increasing depth
-    'forever: loop {
-        println!("# negaDeep depth {}", depth);
+    loop
+    /* forever! */
+    {
+        println!("# negaDeep{} depth {}", state.sid, depth);
         let myOrderedMoves = if pvs.len() == 0 {
             // first iteration
             orderMoves(&myPos, killers, &myMoves[..])
@@ -625,29 +535,40 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
         };
         pvs.clear();
         println!(
-            "# negaDeep {} ordered moves {}",
+            "# negaDeep{} we have {} ordered moves {}",
+            state.sid,
             myOrderedMoves.len(),
             P::showMoves(&myOrderedMoves[..])
         );
+        if myOrderedMoves.len() == 0 {
+            state.tellNoMore();
+            return;
+        }
         let mut alpha = P::whiteIsMate;
         // for all moves
         for m in myOrderedMoves {
-            if computing::thinkingFinished() {
-                state.tellNoMore();
-                break 'forever;
-            }
             let opos = myPos.apply(m);
             let mut hist = state.history.clone();
             hist.push(opos);
+            let locking = Instant::now();
             let (pv0, _) = {
                 // acquire mutable access to the transposition table
                 // the hash is locked during search
                 let hash: TransTable = state.trtable.lock().unwrap();
-                println!("# hash size: {}", hash.len());
-                let kvec: Vec<Move> = killers.iter().copied().take(8).collect();
-                println!("# killer size: {} {}", killers.len(), P::showMoves(&kvec[..]));
+                // println!("# hash size: {}", hash.len());
+                // let kvec: Vec<Move> = killers.iter().copied().take(8).collect();
+                // println!("# killer size: {} {}", killers.len(),
+                // P::showMoves(&kvec[..]));
+                let dur = locking.elapsed().as_millis();
+                if dur > 1 {
+                    println!("# negaDeep{}: it took only {}ms to lock the hash.", state.sid, dur);
+                }
                 negaMax(&mut hist, hash, killers, false, depth, P::whiteIsMate, -alpha + 6)
             };
+            if computing::thinkingFinished() {
+                state.tellNoMore();
+                return;
+            }
             let pv1 = correctMateDistance(&pv0);
 
             // show the result of negamax
@@ -667,7 +588,7 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
                 //
                 // * myPos.turn().factor(),
                 depth: depth + 1,
-                nodes: pv1.nodes + nodes,
+                nodes: pv1.nodes + nodes + 1,
                 ..pv1
             }
             .push(m);
@@ -677,8 +598,9 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
             }
             if pv.score >= alpha - 5 {
                 if !state.talkPV(pv) {
-                    println!("negaDeep is not allowed to continue.");
-                    break 'forever;
+                    println!("# negaDeep{} is not allowed to continue.", state.sid);
+                    state.tellNoMore();
+                    return;
                 }
                 nodes = 0;
             } else {
@@ -696,115 +618,23 @@ pub fn strategy_negamax(state: StrategyState) {
     let mut killers = HashSet::with_capacity(2048);
     let allMoves = orderMoves(&state.current(), &mut killers, &state.current().moves());
     println!(
-        "# Started strategy negamax, we have {} moves to consider.",
+        "# Started strategy negamax {}, we have {} moves to consider.",
+        state.sid,
         allMoves.len()
     );
     io::stdout().flush().unwrap_or_default();
 
-    // we need this all the time
-    let factor = state.player().factor();
-
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
-        if state.talkPV(Variation {
+        state.talkPV(Variation {
             depth:  1,
             nodes:  1,
-            score:  factor * (-9999),
+            score:  -9999,
             moves:  [allMoves[0]; VariationMoves as usize],
             length: 1,
-        }) {
-            state.tellNoMore();
-        }
-        return;
-    };
-    // we do have more than 1 move at this point
-    match state.plan {
-        // If the plan promises a mate in a few moves, we unconditionally play it.
-        // Note that if this is so, the 50 moves rule doesn't get in the way.
-        Some(plan) if plan.length > 2 && plan.score > P::blackIsMate - 100 => {
-            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
-            println!("# We have a mate plan: {}", P::showMoves(&thePlan[2..]));
-            io::stdout().flush().unwrap_or_default();
-            if state.talkPV(
-                Variation {
-                    depth: plan.depth - 2,
-                    nodes: 1,
-                    moves: [P::noMove; VariationMoves],
-                    ..plan
-                }
-                .from_iter(&mut thePlan.into_iter().skip(2)),
-            ) {
-                state.tellNoMore();
-            };
-            return;
-        }
-        // The plan should promise a win of at least 1/4 pawn.
-        Some(plan) if plan.length > 2 && plan.score > 25 => {
-            let thePlan: Vec<Move> = plan.moves().into_iter().collect();
-            let planmv = thePlan[2];
-            println!("# We have a plan: {}", P::showMoves(&thePlan[2..]));
-            io::stdout().flush().unwrap_or_default();
-            if !state.talkPV(
-                Variation {
-                    depth: plan.depth - 2,
-                    nodes: 1,
-                    moves: [P::noMove; VariationMoves],
-                    ..plan
-                }
-                .from_iter(&mut thePlan.into_iter().skip(2)),
-            ) {
-                // for some reason, we must stop
-                return;
-            };
-            // re-search the move
-            let pos = state.current().apply(planmv);
-            let mut hist = state.history.clone();
-            hist.push(pos);
-            let pv2 = {
-                // acquire mutable access to the transposition table
-                // the hash is locked during search
-                let hash: TransTable = state.trtable.lock().unwrap();
-
-                let (pv, _) = negaMax(
-                    &mut hist,
-                    hash,
-                    &mut killers,
-                    false,
-                    min(8, plan.length - 1),
-                    P::whiteIsMate,
-                    P::blackIsMate,
-                );
-                correctMateDistance(&pv)
-            };
-            let mut pv = pv2.push(planmv);
-            pv.score = -pv2.score;
-            pv.depth = plan.depth;
-            println!("# Plan continuation: {}", pv.showMoves());
-            io::stdout().flush().unwrap_or_default();
-            let cont = state.talkPV(pv);
-            let newscore = pv.score;
-            if newscore > P::percent(95, plan.score) && (newscore == P::blackIsMate || newscore <= P::blackIsMate - 100)
-            {
-                println!(
-                    "# Plan looks promising (new score is {}, promised was {}).",
-                    newscore, plan.score
-                );
-                state.tellNoMore();
-            } else {
-                println!(
-                    "# We better look for another plan (new score is {}, promised was {}).",
-                    newscore, plan.score
-                );
-                if cont {
-                    negaDeep(state, &mut killers, 3);
-                }
-            }
-            io::stdout().flush().unwrap_or_default();
-        }
-        _ => {
-            println!("# We do not have a plan.");
-            io::stdout().flush().unwrap_or_default();
-            negaDeep(state, &mut killers, 3);
-        }
-    };
+        });
+        state.tellNoMore();
+    } else {
+        negaDeep(state, &mut killers, 3);
+    }
 }

@@ -16,6 +16,8 @@ use State::*;
 
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::io;
 use std::io::Write;
 use std::sync::mpsc;
@@ -194,8 +196,24 @@ pub enum Protocol {
 pub enum State {
     FORCED,
     PLAYING,
-    THINKING(Instant),
+    /// THINKING(x, None) is regular thinking
+    /// THINKING(x, Some(mv)) is pondering on move mv
+    THINKING(Instant, Option<Move>),
     TERMINATED,
+}
+
+impl Display for State {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            FORCED => write!(f, "FORCED"),
+            PLAYING => write!(f, "PLAYING"),
+            TERMINATED => write!(f, "TERMINATED"),
+            THINKING(since, Some(mv)) => {
+                write!(f, "PONDERING({}ms on {})", since.elapsed().as_millis(), mv.algebraic())
+            }
+            THINKING(since, None) => write!(f, "THINKING({}ms)", since.elapsed().as_millis()),
+        }
+    }
 }
 
 pub type Strategy = fn(StrategyState) -> ();
@@ -213,11 +231,6 @@ pub struct StrategyState {
     /// The game history. The last pushed position is the current one.
     /// There will be at least one position.
     pub history:  Vec<Position>,
-    /// If the user move matched the move we expected, the previously
-    /// computed variation is given back here. It may be sufficient
-    /// to analyze just our suggested move, which is at 3rd
-    /// position, if any.
-    pub plan:     Option<Variation>,
     /// Transposition table
     pub trtable:  Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening map
@@ -252,7 +265,7 @@ impl StrategyState {
     /// Send something to the protocol handler and don't wait for the
     /// answer This should be the last thing the strategy ever
     /// sends.
-    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.send(p).unwrap_or_default() }
+    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.try_send(p).unwrap_or_default() }
 
     /// send a final NoMore
     pub fn tellNoMore(&self) { self.tellDriver(NoMore(self.sid)) }
@@ -294,8 +307,18 @@ pub struct GameState {
     pub incrTime:    Duration,
     /// Number of moves for game, or 0 for incremental
     pub gameMoves:   i32,
-    /// identifier for strategy
+    /// True when pondering (thinking while it's the other users turn)
+    /// is allowed through GUI (xboard xommands "hard", "easy")
+    pub ponderMode:  bool,
+    /// True if PV output should be posted (xboard commands "post",
+    /// "nopost")
+    pub postMode:    bool,
+    /// Unique identifier supply for strategy, incremented with every
+    /// strategy start, thus no strategy ever has a sid of 0
     pub sid:         u32,
+    /// Unique identifier for actually running strategy thread or 0 for
+    /// none.
+    pub running:     u32,
     /// Transposition table
     pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening Map
@@ -327,8 +350,11 @@ impl GameState {
             myTime: Duration::new(0, 0),
             oTime: Duration::new(0, 0),
             sid: 0,
+            running: 0,
             trtable: Arc::new(Mutex::new(HashMap::new())),
             openings: Arc::new(Mutex::new(setupOpening())),
+            ponderMode: true,
+            postMode: false,
         }
     }
 
@@ -370,247 +396,329 @@ impl GameState {
         return remaining as u64;
     }
 
+    /// Sets the stop thinking flag and tries to send the thread a final
+    /// **false** command. This should end the thread after short time.
+    ///
+    /// It doesn't matter if there is no thread. The post-condition is:
+    ///
+    /// ```text
+    /// computing::thinkingFinished() && self.toStrategy == None
+    /// ```
+    ///
+    /// The `running` attribute is not reset by this method, it must be
+    /// reset in the command processing.
+    pub fn shutdownThread(&mut self) {
+        computing::finishThinking();
+        if let Some(sender) = &self.toStrategy {
+            sender.try_send(false).unwrap_or_default();
+            self.toStrategy = None;
+        }
+    }
+
+    /// Read a command from the threads and process it.
+    /// Waits indefinitely for the next input, so may not be used while
+    /// thinking.
+    pub fn nextCommand(&mut self) -> State {
+        let input = self.fromThreads.recv().unwrap();
+        self.processCommand(&input)
+    }
+
+    /// Handle the `PLAYING` state.
+    /// If it is our turn, we start a thread and change to `THINKING`
+    /// Otherwise, we wait for the next command.
+    pub fn playing(&mut self, strategy: Strategy) -> State {
+        if self.current().turn() == self.player {
+            // it's our turn, nevertheless, we make sure there is no other request
+            // at this time before starting the thread
+            match self.fromThreads.try_recv() {
+                // there is still input, process it first
+                Ok(input) => self.processCommand(&input),
+                // nothing on input channel, let's do something
+                Err(mpsc::TryRecvError::Empty) => {
+                    let pos = self.current();
+                    let omv = {
+                        let openings = self.openings.lock().unwrap();
+                        match openings.get(&pos) {
+                            None => None,
+                            Some(recs) => {
+                                let mut choices = Vec::new();
+                                for r in recs {
+                                    for _ in 0..r.ntimes {
+                                        choices.push(r.mv);
+                                    }
+                                }
+                                if choices.len() > 0 {
+                                    println!("# match from opening book, choices are {}", P::showMoves(&choices[..]));
+                                    let choice = rand::thread_rng().gen::<usize>() % choices.len();
+                                    Some(choices[choice])
+                                } else {
+                                    // only forbidden moves
+                                    None
+                                }
+                            }
+                        }
+                    };
+                    // lock be gone!
+                    match omv {
+                        None => {
+                            if self.running > 0 {
+                                println!(
+                                    "# Can't start thinking: Strategy{} is still running, waiting for more input.",
+                                    self.running
+                                );
+                                self.nextCommand()
+                            } else {
+                                self.start(strategy, None)
+                            }
+                        }
+                        Some(mv) => {
+                            self.best = Some(Variation {
+                                moves:  [mv; VariationMoves],
+                                length: 1,
+                                nodes:  1,
+                                depth:  1,
+                                score:  0,
+                            });
+                            self.sendMove()
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => TERMINATED,
+            }
+        } else {
+            match self.best {
+                // should we ponder?
+                Some(pv) if pv.length > 1 && self.ponderMode => {
+                    if self.running == 0 {
+                        let expected = Some(pv.moves[pv.length as usize - 2]);
+                        self.start(strategy, expected)
+                    } else {
+                        println!(
+                            "Can't start pondering: Strategy{} is still running, waiting for more input.",
+                            self.running
+                        );
+                        self.nextCommand()
+                    }
+                }
+                _other => self.nextCommand(),
+            }
+        }
+    }
+
+    /// Implements the thinking state
+    pub fn thinking(&mut self, since: Instant, mbMove: Option<Move>) -> State {
+        let pondering = if let Some(_) = mbMove { true } else { false };
+        let used = since.elapsed().as_millis() as u64;
+        let have = self.timePerMove();
+        let time = if have < used { 500 } else { max(500, have - used) };
+        let todo = if self.best.is_none() || pondering {
+            // when we have no move yet, wait for one, no matter what
+            // also, when we're pondering, we can just wait forever
+            match self.fromThreads.recv() {
+                Ok(x) => Ok(x),
+                Err(mpsc::RecvError) => Err(mpsc::RecvTimeoutError::Disconnected),
+            }
+        } else {
+            // wait between 500ms and the calculated millis per move
+            self.fromThreads.recv_timeout(Duration::from_millis(time))
+        };
+        // at this point, we have an answer, a timeout or a disconnect
+        // note that xboard may send commands even while we are thinking
+        match todo {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("should not happen - channel disconnected while thinking")
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                assert!(!pondering);
+                println!("# Thinking timed out.");
+                io::stdout().flush().unwrap_or_default();
+                self.sendMove()
+            }
+            Ok(EOF) => {
+                println!("# EOF on standard input while thinking!?");
+                TERMINATED
+            }
+            Ok(Line(input)) => self.xboardCommand(input.trim()),
+            Ok(MV(sid, var)) if sid == self.running => {
+                let usedMillis = since.elapsed().as_millis() as u64;
+                // make sure the next one is not tried if we have already used more
+                // than 75% of the time.
+                // In pondering, this will always be true
+                let goOn = pondering || usedMillis < (75 * self.timePerMove()) / 100;
+                self.nodes += var.nodes;
+                if let Some(sender) = &self.toStrategy {
+                    sender.send(goOn).unwrap();
+                };
+                println!(
+                    "# we have used {}ms of {}ms, continue={}",
+                    usedMillis,
+                    self.timePerMove(),
+                    goOn
+                );
+                // show the progress
+                let pv = match self.state {
+                    THINKING(_, Some(mv)) => var.push(mv),
+                    _other => var,
+                };
+                if self.postMode {
+                    println!(
+                        " {} {} {} {} {}",
+                        pv.depth,
+                        pv.score,
+                        (usedMillis + 5) / 10,
+                        self.nodes,
+                        pv.showMoves()
+                    );
+                }
+                io::stdout().flush().unwrap_or_default();
+                // TODO: compute best
+                let oracle: bool = rand::thread_rng().gen();
+                let best = match &self.best {
+                    None => {
+                        println!(
+                            "# taking first move {}({})",
+                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                            var.score
+                        );
+                        var
+                    }
+                    Some(old) => {
+                        if var.length > 0 && old.length > 0 && var.last().unwrap() == old.last().unwrap()
+                            || var.depth > old.depth
+                        {
+                            // println!("# var.length {} > 0  {}", var.length, var.length > 0);
+                            // println!("# old.length {} > 0  {}", old.length, old.length > 0);
+                            // println!(
+                            //     "# var.moves.last {} == old.moves.last {}  {}",
+                            //     var.last().unwrap(),
+                            //     old.last().unwrap(),
+                            //     var.last().unwrap() == old.last().unwrap()
+                            // );
+                            // println!(
+                            //     "# var.depth {} > old.depth {}  {}",
+                            //     var.depth,
+                            //     old.depth,
+                            //     var.depth > old.depth
+                            // );
+                            println!(
+                                "# taking over deeper move {}({})",
+                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                var.score
+                            );
+                            var
+                        } else if var.score.abs() < P::blackIsMate - 1000 && (var.score - old.score).abs() <= 5 {
+                            if oracle {
+                                println!(
+                                    "# replacing because oracle {}({}) with {}({})",
+                                    old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                    old.score,
+                                    var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                    var.score
+                                );
+                                var
+                            } else {
+                                println!(
+                                    "# keeping because oracle {}({}) with {}({})",
+                                    old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                    old.score,
+                                    var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                    var.score
+                                );
+                                old.clone()
+                            }
+                        } else if var.score > old.score {
+                            println!(
+                                "# replacing {}({}) with better {}({})",
+                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                old.score,
+                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                var.score
+                            );
+                            var
+                        } else {
+                            println!(
+                                "# keeping {}({}) instead worse {}({})",
+                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                old.score,
+                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                                var.score
+                            );
+                            old.clone()
+                        }
+                    }
+                };
+                self.best = Some(best);
+                if goOn {
+                    self.state
+                } else {
+                    self.sendMove()
+                }
+            }
+            Ok(NoMore(id)) if id == self.running && pondering => {
+                println!("# Pondering strategy{} has ended unexpectedly.", self.running);
+                self.shutdownThread();
+                self.running = 0;
+                self.state
+            }
+            Ok(NoMore(id)) if id == self.running && !pondering => {
+                println!("# No more moves.");
+                self.running = 0;
+                self.sendMove()
+            }
+            Ok(NoMore(u)) => {
+                println!("# WHOA! Should not happen: ignoring an unexpected NoMore from {}.", u);
+                self.state
+            }
+            Ok(MV(u, mv)) => {
+                println!(
+                    "# WHOA! SHould not happen: ignoring an unexpected move sequence ({}) from {}.",
+                    mv.showMoves(),
+                    u
+                );
+                self.state
+            }
+        }
+    }
+
     /// This is the main loop of the protocol handler
     pub fn mainLoop(&mut self, strategy: Strategy)
     // where
     //    S: 'static + Strategy + Clone + Send,
     {
-        loop {
-            match self.state {
-                TERMINATED => return,
-                FORCED => {
-                    let input = self.fromThreads.recv().unwrap();
-                    self.processForced(&input);
-                }
-                PLAYING => {
-                    if self.current().turn() == self.player {
-                        // it's our turn, nevertheless, we make sure there is no other request
-                        // at this time before starting the thread
-                        match self.fromThreads.try_recv() {
-                            // there is still input, process it first
-                            Ok(input) => self.processForced(&input),
-                            // nothing on input channel, let's do something
-                            Err(mpsc::TryRecvError::Empty) => {
-                                let pos = self.current();
-                                let omv = {
-                                    let openings = self.openings.lock().unwrap();
-                                    match openings.get(&pos) {
-                                        None => None,
-                                        Some(recs) => {
-                                            let mut choices = Vec::new();
-                                            for r in recs {
-                                                for _ in 0..r.ntimes {
-                                                    choices.push(r.mv);
-                                                }
-                                            }
-                                            if choices.len() > 0 {
-                                                println!(
-                                                    "# match from opening book, choices are {}",
-                                                    P::showMoves(&choices[..])
-                                                );
-                                                let choice = rand::thread_rng().gen::<usize>() % choices.len();
-                                                Some(choices[choice])
-                                            } else {
-                                                // only forbidden moves
-                                                None
-                                            }
-                                        }
-                                    }
-                                };
-                                // lock be gone!
-                                match omv {
-                                    None => self.start(strategy),
-                                    Some(mv) => {
-                                        self.best = Some(Variation {
-                                            moves:  [mv; VariationMoves],
-                                            length: 1,
-                                            nodes:  1,
-                                            depth:  1,
-                                            score:  0,
-                                        });
-                                        self.sendMove();
-                                    }
-                                };
-                            }
-                            Err(mpsc::TryRecvError::Disconnected) => return,
-                        }
-                    } else {
-                        let input = self.fromThreads.recv().unwrap();
-                        self.processForced(&input);
-                    }
-                }
-                THINKING(since) => {
-                    let used = since.elapsed().as_millis() as u64;
-                    let have = self.timePerMove();
-                    let time = if have < used { 500 } else { max(500, have - used) };
-                    let todo = if let None = self.best {
-                        // when we have no move yet, wait for one, no matter what
-                        match self.fromThreads.recv() {
-                            Ok(x) => Ok(x),
-                            Err(mpsc::RecvError) => Err(mpsc::RecvTimeoutError::Disconnected),
-                        }
-                    } else {
-                        // wait between 500ms and the calculated millis per move
-                        self.fromThreads.recv_timeout(Duration::from_millis(time))
-                    };
-                    // at this point, we have an answer, a timeout or a disconnect
-                    // note that xboard may send commands even while we are thinking
-                    match todo {
-                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            panic!("should not happen - channel disconnected while thinking")
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            println!("# Thinking timed out.");
-                            io::stdout().flush().unwrap_or_default();
-                            if let Some(sender) = &self.toStrategy {
-                                // ask strategy to finish if it is still listening
-                                sender.try_send(false).unwrap_or_default();
-                            }
-                            computing::finishThinking();
-                            self.sendMove();
-                        }
-                        Ok(EOF) => {
-                            println!("# EOF on standard input while thinking!?");
-                            io::stdout().flush().unwrap_or_default();
-                            if let Some(sender) = &self.toStrategy {
-                                // ask strategy to finish if it is still listening
-                                sender.try_send(false).unwrap_or_default();
-                            }
-                            computing::finishThinking();
-                            self.state = TERMINATED;
-                        }
-                        Ok(Line(input)) => self.xboardCommand(input.trim()),
-                        Ok(MV(sid, var)) if sid == self.sid => {
-                            let usedMillis = since.elapsed().as_millis() as u64;
-                            // make sure the next one is not tried if we have already used more
-                            // than 90% of the time
-                            // TODO: make this work for strategies that send multiple moves
-                            let goOn = usedMillis < (90 * self.timePerMove()) / 100;
-                            self.nodes += var.nodes;
-                            if let Some(sender) = &self.toStrategy {
-                                sender.send(goOn).unwrap();
-                            };
-                            println!(
-                                "# we have used {}ms of {}ms, continue={}",
-                                usedMillis,
-                                self.timePerMove(),
-                                goOn
-                            );
-                            // show the progress
-                            println!(
-                                " {} {} {} {} {}",
-                                var.depth,
-                                var.score,
-                                (usedMillis + 5) / 10,
-                                self.nodes,
-                                var.showMoves()
-                            );
-                            io::stdout().flush().unwrap_or_default();
-                            // TODO: compute best
-                            let oracle: bool = rand::thread_rng().gen();
-                            let best = match &self.best {
-                                None => {
-                                    println!(
-                                        "# taking first move {}({})",
-                                        var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                        var.score
-                                    );
-                                    var
-                                }
-                                Some(old) => {
-                                    if var.length > 0 && old.length > 0 && var.last().unwrap() == old.last().unwrap()
-                                        || var.depth > old.depth
-                                    {
-                                        // println!("# var.length {} > 0  {}", var.length, var.length > 0);
-                                        // println!("# old.length {} > 0  {}", old.length, old.length > 0);
-                                        // println!(
-                                        //     "# var.moves.last {} == old.moves.last {}  {}",
-                                        //     var.last().unwrap(),
-                                        //     old.last().unwrap(),
-                                        //     var.last().unwrap() == old.last().unwrap()
-                                        // );
-                                        // println!(
-                                        //     "# var.depth {} > old.depth {}  {}",
-                                        //     var.depth,
-                                        //     old.depth,
-                                        //     var.depth > old.depth
-                                        // );
-                                        println!(
-                                            "# taking over deeper move {}({})",
-                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                            var.score
-                                        );
-                                        var
-                                    } else if var.score.abs() < P::blackIsMate - 1000
-                                        && (var.score - old.score).abs() <= 5
-                                    {
-                                        if oracle {
-                                            println!(
-                                                "# replacing because oracle {}({}) with {}({})",
-                                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                                old.score,
-                                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                                var.score
-                                            );
-                                            var
-                                        } else {
-                                            println!(
-                                                "# keeping because oracle {}({}) with {}({})",
-                                                old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                                old.score,
-                                                var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                                var.score
-                                            );
-                                            old.clone()
-                                        }
-                                    } else if var.score > old.score {
-                                        println!(
-                                            "# replacing {}({}) with better {}({})",
-                                            old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                            old.score,
-                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                            var.score
-                                        );
-                                        var
-                                    } else {
-                                        println!(
-                                            "# keeping {}({}) instead worse {}({})",
-                                            old.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                            old.score,
-                                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
-                                            var.score
-                                        );
-                                        old.clone()
-                                    }
-                                }
-                            };
-                            self.best = Some(best);
-                            if !goOn {
-                                self.nodes = 0;
-                                self.sendMove();
-                            }
-                        }
-                        Ok(MV(_, _)) => {
-                            println!("# ignoring move from previous strategy instance.");
-                            io::stdout().flush().unwrap_or_default();
-                        }
-                        Ok(NoMore(id)) if id == self.sid => {
-                            println!("# No more moves.");
-                            self.nodes = 0;
-                            self.sendMove();
-                        }
-                        Ok(NoMore(_)) => {
-                            println!("# ignoring NoMore from previous strategy instance.");
-                            io::stdout().flush().unwrap_or_default();
-                        }
-                    }
-                }
+        while self.state != TERMINATED {
+            let newstate = match self.state {
+                TERMINATED => TERMINATED,
+                FORCED => self.nextCommand(),
+                PLAYING => self.playing(strategy),
+                THINKING(since, mbMove) => self.thinking(since, mbMove),
             };
+            match (self.state, newstate) {
+                (TERMINATED, _) => (),
+                (FORCED, _) => (),
+                (PLAYING, FORCED) => {
+                    self.best = None;
+                    self.nodes = 0;
+                }
+                (PLAYING, _) => (),
+                (THINKING(_, _), THINKING(_, _)) => (),
+                (THINKING(_, _), PLAYING) => {
+                    self.shutdownThread();
+                }
+                (THINKING(_, _), _) => {
+                    self.shutdownThread();
+                    self.best = None;
+                    self.nodes = 0;
+                } // _other => (),
+            }
+            if self.state != newstate {
+                println!("# state changed from {} to {}", self.state, newstate);
+            }
+            self.state = newstate;
         }
     }
 
     /// Start a new thread that'll figure out a move
-    pub fn start(&mut self, strategy: Strategy) {
+    pub fn start(&mut self, strategy: Strategy, expected: Option<Move>) -> State {
         let mvs = self.current().moves();
         let mate = mvs.len() == 0 && self.current().inCheck(self.current().turn());
         let stalemate = mvs.len() == 0 && !mate;
@@ -618,45 +726,44 @@ impl GameState {
         if mate || stalemate {
             println!("# thinking finds game that has ended");
             io::stdout().flush().unwrap_or_default();
-            self.state = FORCED;
-            self.best = None;
-            self.nodes = 0;
+            FORCED
         } else {
+            self.sid = self.sid + 1;
             let since = Instant::now();
             let (snd, rcv) = mpsc::sync_channel(1);
+            let mut history = self.history.clone();
+            if let Some(mv) = expected {
+                // pretend the user already moved
+                history.push(self.current().apply(mv));
+                println!("Hint: {}", mv)
+            }
             computing::beginThinking();
             let state = StrategyState {
-                sid:      self.sid,
-                sender:   self.toMain.clone(),
+                sid: self.sid,
+                sender: self.toMain.clone(),
                 receiver: rcv,
-                history:  self.history.clone(),
-                plan:     self.best,
-                trtable:  Arc::clone(&self.trtable),
+                history,
+                trtable: Arc::clone(&self.trtable),
                 openings: Arc::clone(&self.openings),
             };
-            thread::spawn(move || strategy(state));
-            self.state = THINKING(since);
+            self.running = self.sid;
             self.best = None;
             self.nodes = 0;
             self.toStrategy = Some(snd);
+            thread::spawn(move || strategy(state));
+            println!("Strategy {} spawned.", self.running);
+            THINKING(since, expected)
         }
     }
 
     /// Send the best move, if any
-    pub fn sendMove(&mut self) {
-        match &self.best {
+    pub fn sendMove(&mut self) -> State {
+        match self.best {
             None => {
                 println!("# strategy busy, but no move found yet!");
                 println!("resign");
                 io::stdout().flush().unwrap_or_default();
-                self.state = FORCED;
-                self.nodes = 0;
-                computing::finishThinking();
-                if let Some(sender) = &self.toStrategy {
-                    sender.try_send(false).unwrap_or_default();
-                    self.toStrategy = None;
-                }
-                self.sid += 1;
+                FORCED
             }
             Some(pv) => {
                 assert!(pv.length > 0); // there must be moves
@@ -690,47 +797,52 @@ impl GameState {
                 }
                 io::stdout().flush().unwrap_or_default();
                 self.history.push(pos.clearRootPlyCounter());
-                self.sid += 1;
-                self.nodes = 0;
                 if finished {
-                    self.state = FORCED;
-                    self.best = None;
+                    FORCED
                 } else {
-                    self.state = PLAYING
+                    PLAYING
                 }
             }
         }
     }
 
     /// Processing of protocol commands
-    pub fn processForced(&mut self, input: &Protocol) {
+    pub fn processCommand(&mut self, input: &Protocol) -> State {
         match input {
-            EOF => {
-                if let Some(sender) = &self.toStrategy {
-                    let _ = sender.try_send(false);
-                }
-                self.state = TERMINATED;
-                return;
-            }
-            NoMore(u) => println!("# ignoring an unexpected NoMore from {}.", u),
-            MV(u, _) => println!("# ignoring an unexpected move from {}.", u),
+            EOF => TERMINATED,
             Line(line) => self.xboardCommand(line.trim()),
-        };
+            NoMore(u) => {
+                if self.running == *u {
+                    println!("# Strategy{} finally ended, it seems.", self.running);
+                    self.running = 0;
+                    self.state
+                } else {
+                    println!("# WHOA! should not happen: ignoring an unexpected NoMore from {}.", u);
+                    self.state
+                }
+            }
+            MV(u, mv) => {
+                println!(
+                    "# WHOA! should not happen: ignoring an unexpected move sequence ({}) from {}.",
+                    mv.showMoves(),
+                    u
+                );
+                self.state
+            }
+        }
     }
 
     /// Processing input from xboard
-    pub fn xboardCommand(&mut self, cmd: &str) {
+    pub fn xboardCommand(&mut self, cmd: &str) -> State {
         // tell the reader to continue unless we got the quit command
         self.toReader.send(cmd != "quit").unwrap_or_default();
-        // note the current state
-        let wasThinking = if let THINKING(_) = self.state { true } else { false };
 
         let mut iter = cmd.split_whitespace();
-        match iter.next() {
-            None => return, // silently ignore empty line
-            Some("quit") => self.state = TERMINATED,
-            Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("hard") | Some("easy")
-            | Some("post") | Some("computer") | Some("cores") | Some("st") | Some("sd") | Some("nps") => (), // ignored
+        let newstate = match iter.next() {
+            None => self.state, // silently ignore empty line
+            Some("quit") => TERMINATED,
+            Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("computer")
+            | Some("cores") | Some("st") | Some("sd") | Some("nps") => self.state, // ignored
             Some("protover") => {
                 println!("feature myname=\"rasch latest {}\"", self.name);
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
@@ -740,129 +852,190 @@ impl GameState {
                     let hash = self.openings.lock().unwrap();
                     println!("# Opening table knows {} position.", hash.len());
                 }
+                self.state
             }
             Some("new") => {
                 self.history = vec![P::initialBoard()];
-                self.state = PLAYING;
                 self.player = BLACK;
                 // read the opening table again in case something has changed
                 let hash = setupOpening();
                 println!("# opening table size: {}", hash.len());
                 self.openings = Arc::new(Mutex::new(hash));
+                PLAYING
             }
-            Some("force") => self.state = FORCED,
             Some("playother") => {
-                self.state = PLAYING;
                 self.player = self.current().turn().opponent();
+                PLAYING
             }
             Some("go") => {
-                self.state = PLAYING;
                 self.player = self.current().turn();
+                PLAYING
             }
+            Some("force") => FORCED,
             Some("setboard") => {
-                self.state = FORCED;
                 let rest: Vec<_> = iter.collect();
                 match fen::decodeFEN(&rest[..].join(" ")) {
                     Err(s) => println!("Error ({})", s),
                     Ok(p) => {
                         self.history = vec![p];
-                        self.best = None;
                     }
                 }
+                FORCED
             }
             Some("usermove") => match iter.next() {
                 Some(alg) => match Move::unAlgebraic(&self.current().moves(), alg) {
                     Ok(mv) => {
                         self.history.push(self.current().apply(mv).clearRootPlyCounter());
-                        self.sid += 1;
-                        if let Some(plan) = self.best {
-                            if self.state == PLAYING && plan.length > 2 && mv == plan.moves[plan.length as usize - 2] {
-                                println!(
-                                    "# user played expected move {} our answer may be {}",
-                                    mv.algebraic(),
-                                    plan.moves[plan.length as usize - 3]
-                                );
-                            } else {
-                                self.best = None;
-                                println!("# not PLAYING, variation too short or unexpected user move - no plan");
+                        match self.state {
+                            PLAYING => {
+                                println!("# no pondering today?");
+                                PLAYING
+                            }
+                            THINKING(since, Some(expected)) => {
+                                if mv == expected {
+                                    println!("# user played expected move");
+                                    // pondering complete?
+                                    if self.toStrategy.is_none() {
+                                        println!("# pondering already complete");
+                                        self.sendMove()
+                                    } else {
+                                        THINKING(since, None) // continue regular thinking
+                                    }
+                                } else {
+                                    PLAYING
+                                }
+                            }
+                            _other => {
+                                println!("Error (command not legal now): usermove");
+                                PLAYING
                             }
                         }
                     }
-                    Err(_) => println!("Illegal move: {}", alg),
+                    Err(_) => {
+                        println!("Illegal move: {}", alg);
+                        FORCED
+                    }
                 },
-                None => println!("Illegal move: "),
+                None => {
+                    println!("Illegal move: ");
+                    FORCED
+                }
             },
-            Some("result") => self.state = FORCED,
+            Some("result") => FORCED,
             Some("undo") => {
-                self.state = FORCED;
                 if self.history.len() > 1 {
                     self.history.pop();
                 }
+                FORCED
             }
+            // TODO: what happens when we are pondering?
             Some("remove") => {
-                // self.state = FORCED;
                 if self.history.len() > 2 {
                     self.history.pop();
                     self.history.pop();
                 }
+                self.state
             }
-            Some("level") => match iter.next() {
-                Some(_gamemoves) => match iter.next() {
-                    Some(_gametime) => match iter.next() {
-                        Some(incr) => match incr.parse::<u64>() {
-                            Ok(n) => {
-                                self.incrTime = Duration::from_millis(n * 1000);
-                                println!("# increment of {}ms per move", self.incrTime.as_millis());
-                            }
-                            Err(_) => (),
+            Some("level") => {
+                match iter.next() {
+                    Some(_gamemoves) => match iter.next() {
+                        Some(_gametime) => match iter.next() {
+                            Some(incr) => match incr.parse::<u64>() {
+                                Ok(n) => {
+                                    self.incrTime = Duration::from_millis(n * 1000);
+                                    println!("# increment of {}ms per move", self.incrTime.as_millis());
+                                }
+                                Err(_) => (),
+                            },
+                            None => (),
                         },
                         None => (),
                     },
                     None => (),
-                },
-                None => (),
-            },
-            Some("time") => match iter.next() {
-                Some(number) => match number.parse::<u64>() {
-                    Ok(t) => self.myTime = Duration::from_millis(10 * t),
-                    Err(_) => println!("Error (time not numeric)"),
-                },
-                None => println!("Error (number missing after time)"),
-            },
-            Some("otim") => match iter.next() {
-                Some(number) => match number.parse::<u64>() {
-                    Ok(t) => self.oTime = Duration::from_millis(10 * t),
-                    Err(_) => println!("Error (time not numeric)"),
-                },
-                None => println!("Error (number missing after otim)"),
-            },
+                }
+                self.state
+            }
+            Some("time") => {
+                match iter.next() {
+                    Some(number) => match number.parse::<u64>() {
+                        Ok(t) => self.myTime = Duration::from_millis(10 * t),
+                        Err(_) => println!("Error (time not numeric)"),
+                    },
+                    None => println!("Error (number missing after time)"),
+                }
+                self.state
+            }
+            Some("otim") => {
+                match iter.next() {
+                    Some(number) => match number.parse::<u64>() {
+                        Ok(t) => self.oTime = Duration::from_millis(10 * t),
+                        Err(_) => println!("Error (time not numeric)"),
+                    },
+                    None => println!("Error (number missing after otim)"),
+                }
+                self.state
+            }
             // "move now" command only in THINKING mode, but gets ignored if we haven't any move yet
-            Some("?") if wasThinking => {
-                if let Some(_) = self.best {
-                    self.sendMove();
+            Some("?") => {
+                if let THINKING(_, None) = self.state {
+                    if let Some(_) = self.best {
+                        self.sendMove()
+                    } else {
+                        println!("# cannot honour '?' command, I have no move yet.");
+                        self.state
+                    }
                 } else {
-                    println!("# cannot honour '?' command, I have no move yet.");
+                    println!("Error (command not legal now): ?");
+                    self.state
                 }
             }
-            Some("?") => println!("Error (command not legal now): ?"),
-            Some(unknown) => println!("Error (unknown command): {}", unknown),
+            Some("hint") => match self.state {
+                THINKING(_, Some(mv)) => {
+                    println!("Hint: {}", mv);
+                    self.state
+                }
+                THINKING(_, None) if self.best.is_some() => {
+                    match self.best {
+                        Some(pv) if pv.length > 1 => {
+                            println!("Hint: {}", pv.moves[pv.length as usize - 2]);
+                        }
+                        _other => println!("Hint: e2e4"),
+                    }
+                    self.state
+                }
+                _other => {
+                    println!("Error (command not legal now): hint");
+                    self.state
+                }
+            },
+            Some("post") => {
+                self.postMode = true;
+                self.state
+            }
+            Some("nopost") => {
+                self.postMode = false;
+                self.state
+            }
+            Some("hard") => {
+                self.ponderMode = true;
+                self.state
+            }
+            Some("easy") => {
+                self.ponderMode = false;
+                if let THINKING(_, Some(_)) = self.state {
+                    PLAYING
+                } else {
+                    self.state
+                }
+            }
+            Some(unknown) => {
+                println!("Error (unknown command): {}", unknown);
+                self.state
+            }
         };
         // flush the output stream
         io::stdout().flush().unwrap_or_default();
-
-        // try to shut down thinking thread gracefully
-        if wasThinking {
-            match self.state {
-                THINKING(_) => (),
-                _other => {
-                    computing::finishThinking();
-                    if let Some(sender) = &self.toStrategy {
-                        sender.try_send(false).unwrap_or_default();
-                        self.toStrategy = None;
-                    }
-                }
-            }
-        };
+        newstate
     }
 }
 
