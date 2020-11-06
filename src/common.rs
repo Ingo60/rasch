@@ -425,7 +425,8 @@ impl GameState {
 
     /// Handle the `PLAYING` state.
     /// If it is our turn, we start a thread and change to `THINKING`
-    /// Otherwise, we wait for the next command.
+    /// Otherwise, if pondering is allowed and makes sense, we start
+    /// pondering. Otherwise we wait for the next command.
     pub fn playing(&mut self, strategy: Strategy) -> State {
         if self.current().turn() == self.player {
             // it's our turn, nevertheless, we make sure there is no other request
@@ -489,9 +490,16 @@ impl GameState {
             match self.best {
                 // should we ponder?
                 Some(pv) if pv.length > 1 && self.ponderMode => {
+                    let emove = pv.moves[pv.length as usize - 2];
+                    let nextpos = self.current().apply(emove);
+                    let nextmoves = nextpos.moves();
                     if self.running == 0 {
-                        let expected = Some(pv.moves[pv.length as usize - 2]);
-                        self.start(strategy, expected)
+                        // does it make sense?
+                        if nextmoves.len() > 1 {
+                            self.start(strategy, Some(emove))
+                        } else {
+                            self.nextCommand()
+                        }
                     } else {
                         println!(
                             "Can't start pondering: Strategy{} is still running, waiting for more input.",
@@ -661,17 +669,21 @@ impl GameState {
                 self.state
             }
             Ok(NoMore(id)) if id == self.running && !pondering => {
-                println!("# No more moves.");
+                println!("# Strategy{} has no more moves.", id);
                 self.running = 0;
                 self.sendMove()
             }
             Ok(NoMore(u)) => {
-                println!("# WHOA! Should not happen: ignoring an unexpected NoMore from {}.", u);
+                println!(
+                    "# WHOA! Should not happen while {}: ignoring an unexpected NoMore from {}.",
+                    self.state, u
+                );
                 self.state
             }
             Ok(MV(u, mv)) => {
                 println!(
-                    "# WHOA! SHould not happen: ignoring an unexpected move sequence ({}) from {}.",
+                    "# WHOA! SHould not happen while {}: ignoring an unexpected move sequence ({}) from {}.",
+                    self.state,
                     mv.showMoves(),
                     u
                 );
@@ -817,13 +829,17 @@ impl GameState {
                     self.running = 0;
                     self.state
                 } else {
-                    println!("# WHOA! should not happen: ignoring an unexpected NoMore from {}.", u);
+                    println!(
+                        "# WHOA! should not happen while {}: ignoring an unexpected NoMore from {}.",
+                        self.state, u
+                    );
                     self.state
                 }
             }
             MV(u, mv) => {
                 println!(
-                    "# WHOA! should not happen: ignoring an unexpected move sequence ({}) from {}.",
+                    "# WHOA! should not happen while {}: ignoring an unexpected move sequence ({}) from {}.",
+                    self.state,
                     mv.showMoves(),
                     u
                 );
@@ -887,15 +903,15 @@ impl GameState {
                     Ok(mv) => {
                         self.history.push(self.current().apply(mv).clearRootPlyCounter());
                         match self.state {
-                            PLAYING => {
+                            PLAYING | FORCED => {
                                 println!("# no pondering today?");
-                                PLAYING
+                                self.state
                             }
                             THINKING(since, Some(expected)) => {
                                 if mv == expected {
-                                    println!("# user played expected move");
+                                    println!("# user played expected move {}", mv);
                                     // pondering complete?
-                                    if self.toStrategy.is_none() {
+                                    if self.running == 0 {
                                         println!("# pondering already complete");
                                         self.sendMove()
                                     } else {
@@ -907,6 +923,7 @@ impl GameState {
                             }
                             _other => {
                                 println!("Error (command not legal now): usermove");
+                                println!("# got usermove in status {}", self.state);
                                 PLAYING
                             }
                         }
