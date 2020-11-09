@@ -57,7 +57,8 @@ fn main() {
         }
         other => {
             eprintln!("Illegal command line argument: `{}´", other);
-            eprintln!("usage: {} [flamegraph N|negamin|negamax]", argv[0]);
+            eprintln!("Usage: {} [flamegraph [N]|negamin|negamax]", argv[0]);
+            eprintln!("The default is `negamin´");
         }
     };
 }
@@ -289,6 +290,8 @@ pub fn insertPV<'tt>(
 
 const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
 
+pub type Search<'x> = fn(&mut Positions, hash: TransTable<'x>, &mut KillerSet, bool, u32, u32, u32);
+
 /// Move searching with NegaMax
 pub fn negaMax<'tt>(
     hist: &mut Positions,
@@ -444,7 +447,7 @@ pub fn negaMax<'tt>(
 pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alpha: i32, beta: i32) {
     let mut depth = depth;
     // let mut killers = HashSet::with_capacity(64);
-    println!("# negaSimple depth {}", depth);
+    println!("# negaSimple{} depth {}", state.sid, depth);
     loop {
         let mut hist = state.history.clone();
         let (pv0, _) = {
@@ -468,7 +471,6 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
         pv.depth = depth;
         if state.talkPV(pv) {
             if pv.length + 1 < depth || pv.score >= P::blackIsMate - 2 || pv.score == 0 {
-                state.tellNoMore();
                 break;
             } else {
                 depth += 1;

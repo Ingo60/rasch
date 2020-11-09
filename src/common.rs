@@ -156,8 +156,12 @@ impl Variation {
         pv
     }
 
-    /// Give the moves in algebraic notation, separated by spaces
+    /// Give the moves in coordinate notation, separated by spaces
     pub fn showMoves(&self) -> String { P::showMoves(&self.moves()[..]) }
+
+    /// Give the moves in standard algebraic notation, separated by
+    /// spaces
+    pub fn showMovesSAN(&self, pos: Position) -> String { P::showMovesSAN(&self.moves()[..], pos) }
 }
 
 /// Data structure to be found in the transposition table
@@ -564,19 +568,25 @@ impl GameState {
                     goOn
                 );
                 // show the progress
-                let pv = match self.state {
-                    THINKING(_, Some(mv)) => var.push(mv),
-                    _other => var,
-                };
                 if self.postMode {
-                    println!(
-                        " {} {} {} {} {}",
-                        pv.depth,
-                        pv.score,
-                        (usedMillis + 5) / 10,
-                        self.nodes,
-                        pv.showMoves()
-                    );
+                    match mbMove {
+                        Some(mv) => println!(
+                            " {} {} {} {} {}",
+                            var.depth,
+                            var.score,
+                            (usedMillis + 5) / 10,
+                            self.nodes,
+                            var.push(mv).showMovesSAN(self.current())
+                        ),
+                        None => println!(
+                            " {} {} {} {} {}",
+                            var.depth,
+                            var.score,
+                            (usedMillis + 5) / 10,
+                            self.nodes,
+                            var.showMoves()
+                        ),
+                    }
                 }
                 io::stdout().flush().unwrap_or_default();
                 // TODO: compute best
@@ -860,7 +870,7 @@ impl GameState {
             Some("accepted") | Some("rejected") | Some("xboard") | Some("random") | Some("computer")
             | Some("cores") | Some("st") | Some("sd") | Some("nps") => self.state, // ignored
             Some("protover") => {
-                println!("feature myname=\"rasch latest {}\"", self.name);
+                println!("feature myname=\"rasch {}\"", self.name);
                 println!("feature ping=0 setboard=1 playother=1 usermove=1 draw=0");
                 println!("feature sigint=0 analyze=1 variants=\"normal\" colors=0 nps=0");
                 println!("feature debug=1 memory=0 smp=1 done=1");

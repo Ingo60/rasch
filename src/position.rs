@@ -1865,6 +1865,41 @@ impl Move {
         let vs: Vec<_> = list.iter().map(|x| x.algebraic()).collect();
         Err(format!("Move {} does not appear in [{}]", src, &vs[..].join(", ")))
     }
+
+    /// Show a move in standard algebraic notation (SAN)
+    pub fn showSAN(self, pos: Position) -> String {
+        // handle castling first
+        if self.piece() == KING && self.promote() != EMPTY {
+            if self.promote() == KING { return "O-O".into(); }
+            else { return "O-O-O".into(); }
+        }
+        // no castling
+        let moves = pos.moves();
+        let mut san = if self.piece() != PAWN { self.piece().show() } else {"".into()};
+        let capture = !pos.isEmpty(self.to()) || self.promote() == PAWN;
+        let file = moves.iter().any(
+            |m|    m.from()   != self.from()
+                && m.to()     == self.to()
+                && m.player() == self.player() 
+                && m.piece()  == self.piece() 
+                && m.from().rank() == self.from().rank())
+                || (self.piece() == PAWN && capture);
+        let rank = moves.iter().any(
+            |m|    m.from()   != self.from()
+                && m.to()     == self.to()
+                && m.player() == self.player() 
+                && m.piece()  == self.piece()
+                && m.from().file() == self.from().file());
+        let prom = if self.promote() > PAWN {
+                "=".to_string() + &self.promote().show() 
+        } else { "".to_string() };
+        if file { san.push(self.from().file()); }
+        if rank { san += &format!("{}", self.from().rank()); }
+        if capture { san.push('x'); }
+        san += &self.to().show();
+        san += &prom;
+        san
+    }
 }
 
 impl Display for Move {
@@ -1874,6 +1909,16 @@ impl Display for Move {
 
 pub fn showMoves(moves: &[Move]) -> String {
     moves.iter().map(|x| x.algebraic()).collect::<Vec<_>>().join(" ")
+}
+
+pub fn showMovesSAN(moves: &[Move], start: Position) -> String {
+    let mut sans = vec![];
+    let mut pos  = start;
+    for m in moves {
+        sans.push(m.showSAN(pos));
+        pos = pos.apply(*m);
+    }
+    sans.join(" ")
 }
 
 /// An empty board where it is WHITE's turn and all castling rights are set.
