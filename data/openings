@@ -78,6 +78,8 @@
 # Openings prefered by "frech"
 e2e4 d7d6?  d2d4 h7h5?  b1c3
 b1c3 g8f6   g1f3 b8c6
+b1c3 d7d6?  d2d4
+b1c3 e7e5   e2e3 d7d5
 
 # Ruy Lopez, Morphy Defense
 e2e4 e7e5   g1f3 b8c6   f1b5 a7a6   b5c6 d7c6   b1c3 f7f6
@@ -107,6 +109,7 @@ e2e3? e7e5  f1c4 d7d5   c4b3 g8f6   d2d3 b8c6   c2c4 d5c4   b3c4 f8b4   b1d2 d8e
 d2d4 d7d5   b1c3 g8f6   c1g5 b8d7,e7e6,c8f5,c7c6,c7c5   
 d2d4 g8f6   c2c4 g7g6   b1c3 d7d5
 d2d4 g8f6   c2c4 e7e6   b1c3 f8b4
+d2d4 g8f6   f2f3 
 
 # Modern semi opened
 d2d4 g7g6   e2e4 c7c6   g1f3,b1c3
@@ -170,6 +173,7 @@ b1c3 c7c5   g1f3  b8c6
 b1c3 c7c5   g1f3  e7e6?  e2e4
 b1c3 e7e5   e2e4
 b1c3 g8f6   e2e4
+b1c3 g8f6   g1f3 b8c6   e2e4 e7e5
 
 # Ammonia Opening (becaus Nh3 is ammonium and it stinks) and other transpositions
 g1h3? e7e5,d7d5
