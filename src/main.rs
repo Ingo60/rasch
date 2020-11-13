@@ -6,6 +6,7 @@ use std::env::args;
 use std::io;
 use std::io::Write;
 use std::sync::MutexGuard;
+// use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rasch::common;
@@ -55,9 +56,13 @@ fn main() {
             let mut gs = GameState::new(String::from("negamax"));
             gs.mainLoop(strategy_negamax)
         }
+        "pvs" => {
+            let mut gs = GameState::new(String::from("PVS"));
+            gs.mainLoop(strategy_pvs)
+        }
         other => {
             eprintln!("Illegal command line argument: `{}´", other);
-            eprintln!("Usage: {} [flamegraph [N]|negamin|negamax]", argv[0]);
+            eprintln!("Usage: {} [flamegraph [N]|negamin|negamax|pvs]", argv[0]);
             eprintln!("The default is `negamin´");
         }
     };
@@ -65,12 +70,12 @@ fn main() {
 
 fn flamegraph(gs: GameState, depth: u32) {
     let mut hist = vec![P::initialBoard()];
-    let hash = gs.trtable.lock().unwrap();
-    let before = Instant::now();
+    let mut hash = gs.trtable.lock().unwrap();
     let mut killers = HashSet::with_capacity(64);
-    let (pv, _hash) = negaMax(
+    let before = Instant::now();
+    let pv = negaMax(
         &mut hist,
-        hash,
+        &mut hash,
         &mut killers,
         false,
         depth,
@@ -84,7 +89,28 @@ fn flamegraph(gs: GameState, depth: u32) {
         pv.score,
         (usedMillis + 5) / 10,
         pv.nodes,
-        pv.showMoves()
+        pv.showMovesSAN(P::initialBoard())
+    );
+    hash.clear();
+    killers.clear();
+    let before = Instant::now();
+    let pv = pvsSearch(
+        &mut hist,
+        &mut hash,
+        &mut killers,
+        false,
+        depth,
+        P::whiteIsMate,
+        P::blackIsMate,
+    );
+    let usedMillis = before.elapsed().as_millis();
+    println!(
+        " {} {} {} {} {}",
+        pv.depth,
+        pv.score,
+        (usedMillis + 5) / 10,
+        pv.nodes,
+        pv.showMovesSAN(P::initialBoard())
     );
 }
 
@@ -135,7 +161,7 @@ pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
     let vt = pos.pieceOn(mv.to()).score();
     let killer = if killers.contains(&mv)                         { 11 } else { 0 };
     let goodCapture = if mv.piece().score() < vt - 10             {  9 } else { 0 };
-    let badCapturing = if vt > 0                                  {  1 } else { 0 };
+    let badCapturing = if vt > 0                                  {  2 } else { 0 };
     let castling = if mv.piece() == KING && mv.promote() != EMPTY {  3 } else { 0 };
     let checking = if rpos.inCheck(rpos.turn())                   {  1 } else { 0 };
     
@@ -199,16 +225,17 @@ pub fn lowerBound(n: i32) -> i32 { 4 * n + 1 }
 /// Create an exact score.
 pub fn exactScore(n: i32) -> i32 { 4 * n }
 
-pub fn negaMaxGo<'tt>(
+/// Helper functin for negaMax
+pub fn negaMaxGo(
     hist: &mut Positions,
-    mut hash: TransTable<'tt>,
+    hash: &mut TransTable,
     killers: &mut KillerSet,
     ext: bool,
     depth: u32,
     alpha0: i32,
     beta: i32,
     moves: &Vec<Move>,
-) -> (Variation, TransTable<'tt>) {
+) -> Variation {
     let mut best = Variation {
         nodes: 0,
         length: 0,
@@ -228,8 +255,7 @@ pub fn negaMaxGo<'tt>(
                 || pos.inCheck(pos.turn()));
         let d = if capture { depth } else { depth - 1 };
         hist.push(pos);
-        let (pv, h) = negaMax(hist, hash, killers, capture, d, -beta, -alpha);
-        hash = h;
+        let pv = negaMax(hist, hash, killers, capture, d, -beta, -alpha);
         hist.pop();
         let score = -pv.score;
         if let Some(killer) = pv.last() {
@@ -240,7 +266,7 @@ pub fn negaMaxGo<'tt>(
             let mut killerpv = pv.push(m);
             killerpv.score = score;
             killerpv.nodes += best.nodes;
-            return (killerpv, hash);
+            return killerpv;
         }
         if score > alpha || score > best.score {
             best = Variation {
@@ -254,21 +280,94 @@ pub fn negaMaxGo<'tt>(
         }
         alpha = max(score, alpha);
     }
-    (best, hash)
+    best
+}
+
+/// Helper function for PVS
+pub fn pvsGo(
+    hist: &mut Positions,
+    hash: &mut TransTable,
+    killers: &mut KillerSet,
+    ext: bool,
+    depth: u32,
+    alpha0: i32,
+    beta: i32,
+    moves: &[Move],
+) -> Variation {
+    let mut best = Variation {
+        nodes: 0,
+        length: 0,
+        moves: NONE,
+        depth,
+        score: -999_999_999,
+    };
+    let current = *hist.last().unwrap();
+    let mut alpha = alpha0;
+    for &m in moves.iter() {
+        let first = best.score == -999_999_999;
+        let nullWindow = !ext && !first && depth > 3;
+        let pos = current.apply(m);
+        let capture = !ext
+            && depth == 1
+            && (m.promote() != EMPTY
+                || current.inCheck(current.turn())
+                || !current.isEmpty(m.to())
+                || pos.inCheck(pos.turn()));
+        let d = if capture { depth } else { depth - 1 };
+        hist.push(pos);
+        let pv = if nullWindow {
+            let pvx = pvsSearch(hist, hash, killers, capture, d, -alpha, 1 - alpha);
+            if -pvx.score > best.score {
+                best.nodes += pvx.nodes;
+                pvsSearch(hist, hash, killers, capture, d, -beta, -alpha)
+            } else {
+                pvx
+            }
+        } else {
+            pvsSearch(hist, hash, killers, capture, d, -beta, -alpha)
+        };
+        hist.pop();
+
+        let score = -pv.score;
+
+        if score > beta {
+            // killer move
+            let mut killerpv = pv.push(m);
+            killerpv.score = score;
+            killerpv.nodes += best.nodes;
+            return killerpv;
+        }
+
+        if score > alpha || score > best.score {
+            if let Some(killer) = pv.last() {
+                killers.insert(killer);
+            }
+            best = Variation {
+                nodes: best.nodes + pv.nodes,
+                score,
+                ..pv
+            }
+            .push(m);
+        } else {
+            best.nodes += pv.nodes;
+        }
+        alpha = max(score, alpha);
+    }
+    best
 }
 
 /// Helper function to insert a Variation into the hash
 /// It is guaranteed that only variations with at least one move are
 /// collected.
-pub fn insertPV<'tt>(
-    mut hash: TransTable<'tt>,
+pub fn insertPV(
+    hash: &mut TransTable,
     pos: Position,
     pv: Variation,
     moves: Vec<Move>,
     depth: u32,
     alpha: i32,
     beta: i32,
-) -> TransTable<'tt> {
+) {
     if pv.score != 0 && pv.length > 0 && depth > 2 {
         let bound = if pv.score >= beta {
             lowerBound(pv.score)
@@ -284,24 +383,23 @@ pub fn insertPV<'tt>(
             posMoves: moves,
         };
         hash.insert(pos, tr);
-    }
-    hash
+    };
 }
 
 const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
 
-pub type Search<'x> = fn(&mut Positions, hash: TransTable<'x>, &mut KillerSet, bool, u32, u32, u32);
+pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool, u32, i32, i32) -> Variation;
 
 /// Move searching with NegaMax
-pub fn negaMax<'tt>(
+pub fn negaMax(
     hist: &mut Positions,
-    hash: TransTable<'tt>,
+    hash: &mut TransTable,
     killers: &mut KillerSet,
     ext: bool,
     depth: u32,
     alpha: i32,
     beta: i32,
-) -> (Variation, TransTable<'tt>) {
+) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
                                      // let none = [P::noMove; VariationMoves];
     #[rustfmt::skip]
@@ -313,7 +411,7 @@ pub fn negaMax<'tt>(
         ..draw
     };
     if depth > 2 && computing::thinkingFinished() {
-        return (draw, hash);
+        return draw;
     }
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
@@ -322,7 +420,7 @@ pub fn negaMax<'tt>(
             score: pos.turn().factor() * pos.eval(),
             ..draw
         };
-        return (epv, hash);
+        return epv;
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
@@ -330,7 +428,7 @@ pub fn negaMax<'tt>(
         Some(te) => Some(te.clone()),
         None => None,
     };
-    let (rpv, rhash) = match maybe {
+    let rpv = match maybe {
         Some(te) => {
             let hashmove = te.pvMoves[0];
             let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
@@ -346,67 +444,55 @@ pub fn negaMax<'tt>(
                         depth,
                     }
                     .from_iter(&mut te.pvMoves.into_iter());
-                    (found, hash)
+                    found
                 }
 
                 Ordering::Less if te.depth >= depth => {
                     let alpha2 = max(alpha, (te.score - 1) >> 2);
                     if alpha2 > beta {
-                        (
-                            Variation {
-                                length: 0,
-                                moves: NONE,
-                                score: alpha2,
-                                nodes: 1,
-                                depth,
-                            }
-                            .from_iter(&mut te.pvMoves.into_iter()),
-                            hash,
-                        )
-                    } else {
-                        let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
-                        if depth >= te.depth && !ext {
-                            let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha2, beta);
-                            (pv, hash3)
-                        } else {
-                            (pv, hash2)
+                        Variation {
+                            length: 0,
+                            moves: NONE,
+                            score: alpha2,
+                            nodes: 1,
+                            depth,
                         }
+                        .from_iter(&mut te.pvMoves.into_iter())
+                    } else {
+                        let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
+                        if depth >= te.depth && !ext {
+                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta);
+                        };
+                        pv
                     }
                 }
 
                 Ordering::Greater if te.depth >= depth => {
                     let beta2 = min(beta, (te.score + 1) >> 2);
                     if alpha >= beta2 {
-                        (
-                            Variation {
-                                length: 0,
-                                moves: NONE,
-                                score: beta2,
-                                nodes: 1,
-                                depth,
-                            }
-                            .from_iter(&mut te.pvMoves.into_iter()),
-                            hash,
-                        )
-                    } else {
-                        let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
-                        if depth >= te.depth && !ext {
-                            let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta2);
-                            (pv, hash3)
-                        } else {
-                            (pv, hash2)
+                        Variation {
+                            length: 0,
+                            moves: NONE,
+                            score: beta2,
+                            nodes: 1,
+                            depth,
                         }
+                        .from_iter(&mut te.pvMoves.into_iter())
+                    } else {
+                        let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
+                        if depth >= te.depth && !ext {
+                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2);
+                        };
+                        pv
                     }
                 }
 
                 _other => {
-                    let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                     if !ext {
-                        let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta);
-                        (pv, hash3)
-                    } else {
-                        (pv, hash2)
-                    }
+                        insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                    };
+                    pv
                 }
             }
         }
@@ -419,27 +505,25 @@ pub fn negaMax<'tt>(
             };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    (mate, hash)
+                    mate
                 } else {
-                    (draw, hash)
+                    draw
                 }
             } else {
-                let (pv, hash2) = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                 if !ext {
-                    let hash3 = insertPV(hash2, pos, pv, ordered, depth, alpha, beta);
-                    (pv, hash3)
-                } else {
-                    (pv, hash2)
-                }
+                    insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                };
+                pv
             }
         }
     };
     // overwrite the evaluated score with zero if it is repetition or 50
     // moves rule
     if pos.getPlyCounter() >= 100 || hist[0..hist.len() - 1].contains(&pos) {
-        (Variation { score: 0, ..rpv }, rhash)
+        Variation { score: 0, ..rpv }
     } else {
-        (rpv, rhash)
+        rpv
     }
 }
 
@@ -450,10 +534,10 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
     println!("# negaSimple{} depth {}", state.sid, depth);
     loop {
         let mut hist = state.history.clone();
-        let (pv0, _) = {
+        let pv0 = {
             // acquire mutable access to the transposition table
             // the hash is locked during search
-            let hash: TransTable = state.trtable.lock().unwrap();
+            let mut hash: TransTable = state.trtable.lock().unwrap();
             // println!("# hash size: {}", hash.len());
             // let kvec: Vec<Move> = killers.iter().copied().collect();
             // println!(
@@ -461,7 +545,7 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
             //     killers.len(),
             //     P::showMoves(&kvec[0..min(8, killers.len())])
             // );
-            negaMax(&mut hist, hash, killers, false, depth, -beta, -alpha)
+            negaMax(&mut hist, &mut hash, killers, false, depth, -beta, -alpha)
         };
         if computing::thinkingFinished() {
             break;
@@ -513,9 +597,146 @@ pub fn strategy_negamin(state: StrategyState) {
     }
 }
 
-/// Iterative deepening for negaMax
-pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
+/// Principal Variation Search
+pub fn pvsSearch(
+    hist: &mut Positions,
+    hash: &mut TransTable,
+    killers: &mut KillerSet,
+    ext: bool,
+    depth: u32,
+    alpha: i32,
+    beta: i32,
+) -> Variation {
+    let pos = *hist.last().unwrap(); // the history must not be empty
+                                     // let none = [P::noMove; VariationMoves];
+    #[rustfmt::skip]
+    let draw = Variation {
+        score: 0, nodes: 1, depth, length: 0, moves: NONE,
+    };
+    let mate = Variation {
+        score: P::whiteIsMate,
+        ..draw
+    };
+    if depth > 2 && computing::thinkingFinished() {
+        return draw;
+    }
+    // This is the only point where we ever evaluate a position.
+    // Nevertheless, it happens often, as this is at depth 0
+    if depth == 0 {
+        let epv = Variation {
+            score: pos.turn().factor() * pos.eval(),
+            ..draw
+        };
+        return epv;
+    }
+    // the follwoing is needed because else there is an immutable reference
+    // to the hash
+    let maybe: Option<common::Transp> = match hash.get(&pos) {
+        Some(te) => Some(te.clone()),
+        None => None,
+    };
+    let rpv = match maybe {
+        Some(te) => {
+            let hashmove = te.pvMoves[0];
+            let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
+            ordered.push(hashmove);
+            ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
+            match checkBound(te.score) {
+                Ordering::Equal if te.depth >= depth => {
+                    let found = Variation {
+                        length: 0,
+                        moves: NONE,
+                        score: te.score >> 2,
+                        nodes: 1,
+                        depth,
+                    }
+                    .from_iter(&mut te.pvMoves.into_iter());
+                    found
+                }
+
+                Ordering::Less if te.depth >= depth => {
+                    let alpha2 = max(alpha, (te.score - 1) >> 2);
+                    if alpha2 > beta {
+                        Variation {
+                            length: 0,
+                            moves: NONE,
+                            score: alpha2,
+                            nodes: 1,
+                            depth,
+                        }
+                        .from_iter(&mut te.pvMoves.into_iter())
+                    } else {
+                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
+                        if depth >= te.depth && !ext {
+                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta);
+                        };
+                        pv
+                    }
+                }
+
+                Ordering::Greater if te.depth >= depth => {
+                    let beta2 = min(beta, (te.score + 1) >> 2);
+                    if alpha >= beta2 {
+                        Variation {
+                            length: 0,
+                            moves: NONE,
+                            score: beta2,
+                            nodes: 1,
+                            depth,
+                        }
+                        .from_iter(&mut te.pvMoves.into_iter())
+                    } else {
+                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
+                        if depth >= te.depth && !ext {
+                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2);
+                        };
+                        pv
+                    }
+                }
+
+                _other => {
+                    let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                    if !ext {
+                        insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                    };
+                    pv
+                }
+            }
+        }
+        None => {
+            let moves = pos.moves();
+            let ordered = if depth > 1 {
+                orderMoves(&pos, killers, &moves[..])
+            } else {
+                moves
+            };
+            if ordered.len() == 0 {
+                if pos.inCheck(pos.turn()) {
+                    mate
+                } else {
+                    draw
+                }
+            } else {
+                let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                if !ext {
+                    insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                };
+                pv
+            }
+        }
+    };
+    // overwrite the evaluated score with zero if it is repetition or 50
+    // moves rule
+    if pos.getPlyCounter() >= 100 || hist[0..hist.len() - 1].contains(&pos) {
+        Variation { score: 0, ..rpv }
+    } else {
+        rpv
+    }
+}
+
+pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     let mut depth = depth;
+    let mut killers = HashSet::with_capacity(4096);
     let myPos = state.current();
     let myMoves = myPos.moves();
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
@@ -524,10 +745,10 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
     loop
     /* forever! */
     {
-        println!("# negaDeep{} depth {}", state.sid, depth);
+        println!("# iterDeep{} depth {}", state.sid, depth);
         let myOrderedMoves = if pvs.len() == 0 {
             // first iteration
-            orderMoves(&myPos, killers, &myMoves[..])
+            orderMoves(&myPos, &mut killers, &myMoves[..])
         } else {
             // subsequent iterations, order the PVs by decreasing score and extract
             // our moves
@@ -537,7 +758,7 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
         };
         pvs.clear();
         println!(
-            "# negaDeep{} we have {} ordered moves {}",
+            "# iterDeep{} we have {} ordered moves {}",
             state.sid,
             myOrderedMoves.len(),
             P::showMoves(&myOrderedMoves[..])
@@ -553,10 +774,10 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
             let mut hist = state.history.clone();
             hist.push(opos);
             let locking = Instant::now();
-            let (pv0, _) = {
+            let pv0 = {
                 // acquire mutable access to the transposition table
                 // the hash is locked during search
-                let hash: TransTable = state.trtable.lock().unwrap();
+                let mut hash: TransTable = state.trtable.lock().unwrap();
                 // println!("# hash size: {}", hash.len());
                 // let kvec: Vec<Move> = killers.iter().copied().take(8).collect();
                 // println!("# killer size: {} {}", killers.len(),
@@ -565,7 +786,15 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
                 if dur > 1 {
                     println!("# negaDeep{}: it took only {}ms to lock the hash.", state.sid, dur);
                 }
-                negaMax(&mut hist, hash, killers, false, depth, P::whiteIsMate, -alpha + 6)
+                search(
+                    &mut hist,
+                    &mut hash,
+                    &mut killers,
+                    false,
+                    depth,
+                    P::whiteIsMate,
+                    -alpha + 6,
+                )
             };
             if computing::thinkingFinished() {
                 state.tellNoMore();
@@ -573,9 +802,9 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
             }
             let pv1 = correctMateDistance(&pv0);
 
-            // show the result of negamax
+            // show the result of the search
             // println!(
-            //     "# after {}, negaMax answers with depth:{} score:{} nodes:{} {}",
+            //     "# after {}, search answers with depth:{} score:{} nodes:{} {}",
             //     m,
             //     pv0.depth,
             //     pv0.score,
@@ -586,21 +815,21 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
             let pv = Variation {
-                score: -pv1.score, //
-                //
-                // * myPos.turn().factor(),
+                score: -pv1.score,
                 depth: depth + 1,
                 nodes: pv1.nodes + nodes + 1,
                 ..pv1
             }
             .push(m);
-            // make sure counter moves are treated as killers
+            // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
-                killers.insert(killer);
+                if pv.score < alpha || pvs.len() == 0 {
+                    killers.insert(killer);
+                }
             }
             if pv.score >= alpha - 5 {
                 if !state.talkPV(pv) {
-                    println!("# negaDeep{} is not allowed to continue.", state.sid);
+                    println!("# iterDeep{} was asked to finish.", state.sid);
                     state.tellNoMore();
                     return;
                 }
@@ -615,12 +844,161 @@ pub fn negaDeep(state: StrategyState, killers: &mut KillerSet, depth: u32) {
     }
 }
 
+pub fn iterPVS(state: StrategyState, depth: u32) {
+    let mut depth = depth;
+    let mut killers = HashSet::with_capacity(4096);
+    let myPos = state.current();
+    let myMoves = myPos.moves();
+    let mut pvs: Variations = Vec::with_capacity(myMoves.len());
+    let mut best = Variation {
+        depth:  0,
+        length: 0,
+        moves:  NONE,
+        nodes:  0,
+        score:  P::whiteIsMate,
+    };
+    let mut nodes = 0;
+    // for increasing depth
+    loop
+    /* forever! */
+    {
+        println!("# iterPVS{} depth {}", state.sid, depth);
+        let myOrderedMoves = if pvs.len() == 0 {
+            // first iteration
+            orderMoves(&myPos, &mut killers, &myMoves[..])
+        } else {
+            // subsequent iterations, order the PVs by decreasing score and extract
+            // our moves
+            pvs.sort_unstable_by(|p1, p2| p2.score.cmp(&p1.score));
+            // the unwrap should be safe as we pushed our move into the PV before
+            pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
+        };
+        pvs.clear();
+        println!(
+            "# iterPVS{} we have {} ordered moves {}",
+            state.sid,
+            myOrderedMoves.len(),
+            P::showMoves(&myOrderedMoves[..])
+        );
+        if myOrderedMoves.len() == 0 {
+            state.tellNoMore();
+            return;
+        }
+        let mut alpha = P::whiteIsMate;
+        // for all moves
+        for m in myOrderedMoves {
+            let opos = myPos.apply(m);
+            let mut hist = state.history.clone();
+            hist.push(opos);
+            let locking = Instant::now();
+            let pv0 = {
+                // acquire mutable access to the transposition table
+                // the hash is locked during search
+                let mut hash: TransTable = state.trtable.lock().unwrap();
+                // println!("# hash size: {}", hash.len());
+                // let kvec: Vec<Move> = killers.iter().copied().take(8).collect();
+                // println!("# killer size: {} {}", killers.len(),
+                // P::showMoves(&kvec[..]));
+                let dur = locking.elapsed().as_millis();
+                if dur > 1 {
+                    println!("# iterPVS{}: it took only {}ms to lock the hash.", state.sid, dur);
+                }
+                if pvs.len() == 0 {
+                    // full width search
+
+                    pvsSearch(
+                        &mut hist,
+                        &mut hash,
+                        &mut killers,
+                        false,
+                        depth,
+                        P::whiteIsMate,
+                        P::blackIsMate,
+                    )
+                } else {
+                    let pvx = pvsSearch(&mut hist, &mut hash, &mut killers, false, depth, -alpha, 1 - alpha);
+                    if computing::thinkingFinished() {
+                        state.tellNoMore();
+                        return;
+                    }
+                    if -pvx.score > alpha {
+                        // re-search
+                        // show the result of the search
+                        println!(
+                            "# iterPVS best so far {} {} {}  {}",
+                            best.depth,
+                            best.score,
+                            best.nodes,
+                            best.showMovesSAN(myPos)
+                        );
+                        println!(
+                            "# iterPVS re-search   {} {} {}  {} {}",
+                            pvx.depth,
+                            -pvx.score,
+                            pvx.nodes,
+                            m.showSAN(myPos),
+                            pvx.showMovesSAN(opos)
+                        );
+                        io::stdout().flush().unwrap_or_default();
+                        nodes += pvx.nodes;
+                        pvsSearch(
+                            &mut hist,
+                            &mut hash,
+                            &mut killers,
+                            false,
+                            depth,
+                            -(alpha + 6),
+                            P::blackIsMate,
+                        )
+                    } else {
+                        pvx
+                    }
+                }
+            };
+            if computing::thinkingFinished() {
+                state.tellNoMore();
+                return;
+            }
+            let pv1 = correctMateDistance(&pv0);
+
+            // the final version with our move pushed onto the end
+            let pv = Variation {
+                score: -pv1.score,
+                depth: depth + 1,
+                nodes: pv1.nodes + nodes + 1,
+                ..pv1
+            }
+            .push(m);
+
+            // make sure good counter moves are treated as killers
+            if let Some(killer) = pv1.last() {
+                if pv.score < alpha || pvs.len() == 0 {
+                    killers.insert(killer);
+                }
+            }
+            if pvs.len() == 0 || pv.score > alpha {
+                if !state.talkPV(pv) {
+                    println!("# iterDeep{} was asked to finish.", state.sid);
+                    state.tellNoMore();
+                    return;
+                }
+                nodes = 0;
+                best = pv;
+            } else {
+                nodes = pv.nodes;
+            }
+            alpha = max(pv.score, alpha);
+            pvs.push(pv);
+        }
+        depth += 1;
+    }
+}
+
 /// search with the *negamax* algorithm
 pub fn strategy_negamax(state: StrategyState) {
-    let mut killers = HashSet::with_capacity(2048);
-    let allMoves = orderMoves(&state.current(), &mut killers, &state.current().moves());
+    let allMoves = state.current().moves();
     println!(
-        "# Started strategy negamax {}, we have {} moves to consider.",
+        "# Started strategy{} negamax, we have {} moves to consider.",
         state.sid,
         allMoves.len()
     );
@@ -637,6 +1015,31 @@ pub fn strategy_negamax(state: StrategyState) {
         });
         state.tellNoMore();
     } else {
-        negaDeep(state, &mut killers, 3);
+        iterDeep(state, 3, negaMax);
+    }
+}
+
+/// apply pribcipal variation search
+pub fn strategy_pvs(state: StrategyState) {
+    let allMoves = state.current().moves();
+    println!(
+        "# Started strategy{} PVS, we have {} moves to consider.",
+        state.sid,
+        allMoves.len()
+    );
+    io::stdout().flush().unwrap_or_default();
+
+    // if there's just 1 move left, we have no choice
+    if allMoves.len() == 1 {
+        state.talkPV(Variation {
+            depth:  1,
+            nodes:  1,
+            score:  -9999,
+            moves:  [allMoves[0]; VariationMoves as usize],
+            length: 1,
+        });
+        state.tellNoMore();
+    } else {
+        iterPVS(state, 3);
     }
 }

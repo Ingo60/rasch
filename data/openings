@@ -120,6 +120,9 @@ d2d4 g7g6   e2e4 d7d6   b1c3 g8f6   g1f3 f8g7
 d2d4 d7d5   e2e3 g8f6   g1f3
 d2d4 d7d5   e2e3 e7e6   g1f3
 
+# Queen's Pawn Opening
+d2d4 e7e6? c2c4,b1f3,e2e4
+
 # Mieses Opening
 d2d3? d7d5,e7e5
 

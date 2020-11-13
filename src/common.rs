@@ -419,6 +419,14 @@ impl GameState {
         }
     }
 
+    /// Check if the Mutex for the Transposition Table is locked
+    pub fn ttIsLocked(&self) -> bool {
+        match self.trtable.try_lock() {
+            Ok(_) => false,
+            Err(_) => true,
+        }
+    }
+
     /// Read a command from the threads and process it.
     /// Waits indefinitely for the next input, so may not be used while
     /// thinking.
@@ -506,7 +514,7 @@ impl GameState {
                         }
                     } else {
                         println!(
-                            "Can't start pondering: Strategy{} is still running, waiting for more input.",
+                            "# Can't start pondering: Strategy{} is still running, waiting for more input.",
                             self.running
                         );
                         self.nextCommand()
@@ -555,8 +563,11 @@ impl GameState {
                 let usedMillis = since.elapsed().as_millis() as u64;
                 // make sure the next one is not tried if we have already used more
                 // than 75% of the time.
-                // In pondering, this will always be true
-                let goOn = pondering || usedMillis < (75 * self.timePerMove()) / 100;
+                let timeOK = usedMillis <= (50 * self.timePerMove()) / 100;
+                // stop strategy when we have a mate
+                let mateIn1 = var.length == 1 && var.score == P::blackIsMate;
+                // should we go on?
+                let goOn = pondering || timeOK && !mateIn1;
                 self.nodes += var.nodes;
                 if let Some(sender) = &self.toStrategy {
                     sender.send(goOn).unwrap();
@@ -773,7 +784,7 @@ impl GameState {
             self.nodes = 0;
             self.toStrategy = Some(snd);
             thread::spawn(move || strategy(state));
-            println!("Strategy {} spawned.", self.running);
+            println!("# Strategy{} spawned.", self.running);
             THINKING(since, expected)
         }
     }
