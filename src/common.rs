@@ -269,7 +269,7 @@ impl StrategyState {
     /// Send something to the protocol handler and don't wait for the
     /// answer This should be the last thing the strategy ever
     /// sends.
-    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.try_send(p).unwrap_or_default() }
+    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.send(p).unwrap_or_default() }
 
     /// send a final NoMore
     pub fn tellNoMore(&self) { self.tellDriver(NoMore(self.sid)) }
