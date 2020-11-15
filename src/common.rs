@@ -323,10 +323,19 @@ pub struct GameState {
     /// Unique identifier for actually running strategy thread or 0 for
     /// none.
     pub running:     u32,
-    /// Transposition table
+    /// transposition table
     pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening Map
     pub openings:    Arc<Mutex<OpeningMap>>,
+    /// Indicator that the Transposition table may need a cleanup.
+    /// This must be done when no strategy threads are running.
+    /// The flag is set when the thinking decides that there is not
+    /// enough time for a next iteration and at least 500ms are left
+    /// over. But at this time, the strategy is most likely still
+    /// active, as the shutdown occurs only when the state changes
+    /// from THINKING to PLAYING (or FORCED). Hence we actually want
+    /// to run this when we got a NoMore from a strategy.
+    pub ttCleanup:   bool,
 }
 
 impl GameState {
@@ -359,6 +368,7 @@ impl GameState {
             openings: Arc::new(Mutex::new(setupOpening())),
             ponderMode: true,
             postMode: false,
+            ttCleanup: false,
         }
     }
 
@@ -424,6 +434,31 @@ impl GameState {
         match self.trtable.try_lock() {
             Ok(_) => false,
             Err(_) => true,
+        }
+    }
+
+    /// Collect garbage. The obejctive is to keep the hash
+    /// between 2 and 3 million entries.
+    pub fn ttGarbage(&mut self) {
+        match self.trtable.try_lock() {
+            Ok(mut hash) => {
+                let size = hash.len();
+                println!("# transposition table size is {}", size);
+                if size <= 2_000_000 {
+                    println!("# no need for cleanup of transposition table");
+                    return;
+                }
+                // remove a ceratain portion, such that an equilibrium can establish
+                // itself after some time
+                let n = (75 * size) / 1000;
+                let keys: Vec<_> = hash.keys().take(n).copied().collect();
+                for k in keys {
+                    hash.remove(&k);
+                }
+                self.ttCleanup = false;
+                println!("# removed {} positions from transposition table", n);
+            }
+            Err(_) => println!("# Can't lock the transposition table right now for cleanup."),
         }
     }
 
@@ -551,7 +586,6 @@ impl GameState {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 assert!(!pondering);
                 println!("# Thinking timed out.");
-                io::stdout().flush().unwrap_or_default();
                 self.sendMove()
             }
             Ok(EOF) => {
@@ -680,6 +714,7 @@ impl GameState {
                 if goOn {
                     self.state
                 } else {
+                    self.ttCleanup |= usedMillis + 500 < self.timePerMove();
                     self.sendMove()
                 }
             }
@@ -768,7 +803,7 @@ impl GameState {
             if let Some(mv) = expected {
                 // pretend the user already moved
                 history.push(self.current().apply(mv));
-                println!("Hint: {}", mv)
+                println!("Hint: {}", mv.showSAN(self.current()));
             }
             computing::beginThinking();
             let state = StrategyState {
@@ -848,12 +883,17 @@ impl GameState {
                 if self.running == *u {
                     println!("# Strategy{} finally ended, it seems.", self.running);
                     self.running = 0;
+                    if self.ttCleanup {
+                        self.ttGarbage()
+                    }
+                    io::stdout().flush().unwrap_or_default();
                     self.state
                 } else {
                     println!(
                         "# WHOA! should not happen while {}: ignoring an unexpected NoMore from {}.",
                         self.state, u
                     );
+                    io::stdout().flush().unwrap_or_default();
                     self.state
                 }
             }
@@ -864,6 +904,7 @@ impl GameState {
                     mv.showMoves(),
                     u
                 );
+                io::stdout().flush().unwrap_or_default();
                 self.state
             }
         }
