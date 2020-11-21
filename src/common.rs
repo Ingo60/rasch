@@ -15,7 +15,7 @@ use Protocol::*;
 use State::*;
 
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io;
@@ -167,6 +167,11 @@ impl Variation {
 /// Data structure to be found in the transposition table
 #[derive(Clone, Debug)]
 pub struct Transp {
+    /// To what half-move does this correspond, or is it an permanent
+    /// entry? Used in hash cleaning, only entries that relate to
+    /// positions reached earlier are removed. Also, if the value is
+    /// the maximum value, it is permanent and never removed.
+    pub halfmove: u32,
     /// At what depth was this transposition made?
     pub depth:    u32,
     /// Score with integrated bounds.
@@ -437,26 +442,24 @@ impl GameState {
         }
     }
 
-    /// Collect garbage. The obejctive is to keep the hash
-    /// between 2 and 3 million entries.
-    pub fn ttGarbage(&mut self) {
+    /// Collect garbage. Remove all entries where halfmoves < limit,
+    /// except when they are members of the history
+    pub fn ttGarbage(&mut self, limit: u32) {
         match self.trtable.try_lock() {
             Ok(mut hash) => {
                 let size = hash.len();
-                println!("# transposition table size is {}", size);
-                if size <= 2_000_000 {
-                    println!("# no need for cleanup of transposition table");
-                    return;
+                let mut hist = HashSet::with_capacity(self.history.len());
+                for p in &self.history {
+                    hist.insert(p);
                 }
-                // remove a ceratain portion, such that an equilibrium can establish
-                // itself after some time
-                let n = (75 * size) / 1000;
-                let keys: Vec<_> = hash.keys().take(n).copied().collect();
-                for k in keys {
-                    hash.remove(&k);
-                }
+                hash.retain(|p, t| hist.contains(p) || t.halfmove >= limit);
                 self.ttCleanup = false;
-                println!("# removed {} positions from transposition table", n);
+                let size2 = hash.len();
+                println!(
+                    "# removed {} positions from transposition table with size {}",
+                    size - size2,
+                    size
+                );
             }
             Err(_) => println!("# Can't lock the transposition table right now for cleanup."),
         }
@@ -884,7 +887,7 @@ impl GameState {
                     println!("# Strategy{} finally ended, it seems.", self.running);
                     self.running = 0;
                     if self.ttCleanup {
-                        self.ttGarbage()
+                        self.ttGarbage(self.history.len() as u32);
                     }
                     io::stdout().flush().unwrap_or_default();
                     self.state
