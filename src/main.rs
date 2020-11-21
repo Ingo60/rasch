@@ -35,36 +35,27 @@ fn main() {
         gs.mainLoop(strategy_negamin);
         return;
     }
-    match argv[1].as_str() {
-        "flamegraph" => {
-            let n = if argv.len() >= 3 {
-                match argv[2].parse::<u32>() {
-                    Ok(k) => k,
-                    Err(_) => 7,
-                }
-            } else {
-                7
-            };
-            let gs = GameState::new(String::from("flamegraph"));
-            flamegraph(gs, n)
-        }
-        "negamin" => {
-            let mut gs = GameState::new(String::from("negamin"));
-            gs.mainLoop(strategy_negamin)
-        }
-        "negamax" => {
-            let mut gs = GameState::new(String::from("negamax"));
-            gs.mainLoop(strategy_negamax)
-        }
-        "pvs" => {
-            let mut gs = GameState::new(String::from("PVS"));
-            gs.mainLoop(strategy_pvs)
-        }
-        other => {
-            eprintln!("Illegal command line argument: `{}´", other);
-            eprintln!("Usage: {} [flamegraph [N]|negamin|negamax|pvs]", argv[0]);
-            eprintln!("The default is `negamin´");
-        }
+    let mut gs = GameState::new(String::from(argv[1].clone()));
+    if argv[1].starts_with("flamegraph") {
+        let n = if argv.len() >= 3 {
+            match argv[2].parse::<u32>() {
+                Ok(k) => k,
+                Err(_) => 7,
+            }
+        } else {
+            7
+        };
+        flamegraph(gs, n)
+    } else if argv[1].starts_with("negamin") {
+        gs.mainLoop(strategy_negamin)
+    } else if argv[1].starts_with("negamax") {
+        gs.mainLoop(strategy_negamax)
+    } else if argv[1].starts_with("pvs") {
+        gs.mainLoop(strategy_pvs)
+    } else {
+        eprintln!("Illegal command line argument: `{}´", argv[1]);
+        eprintln!("Usage: {} [flamegraph [N]|negamin|negamax|pvs]", argv[0]);
+        eprintln!("The default is `negamin´");
     };
 }
 
@@ -190,7 +181,7 @@ pub fn orderMoves(pos: &Position, killers: &mut KillerSet, moves: &[Move]) -> Ve
 
 /// Correct a variation score of mate to slightly smaller value
 /// so that shorter ways to mate have a better score than longer ones.
-pub fn correctMateDistance(var: &Variation) -> Variation {
+pub fn correctMateDistanceNo(var: &Variation) -> Variation {
     let dist = var.length as i32 * 2;
     let mut pv = *var;
     if pv.score == P::whiteIsMate {
@@ -328,7 +319,7 @@ pub fn pvsGo(
         };
         hist.pop();
 
-        let score = -pv.score;
+        let score = -pv.score; // shorter ways are better
 
         if score > beta {
             // killer move
@@ -367,6 +358,7 @@ pub fn insertPV(
     depth: u32,
     alpha: i32,
     beta: i32,
+    halfmove: u32,
 ) {
     if pv.score != 0 && pv.length > 0 && depth > 2 {
         let bound = if pv.score >= beta {
@@ -377,6 +369,7 @@ pub fn insertPV(
             upperBound(pv.score)
         };
         let tr = common::Transp {
+            halfmove,
             depth,
             score: bound,
             pvMoves: pv.moves(),
@@ -401,14 +394,10 @@ pub fn negaMax(
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
-                                     // let none = [P::noMove; VariationMoves];
+    let halfmoves = hist.len() as u32;
     #[rustfmt::skip]
     let draw = Variation {
         score: 0, nodes: 1, depth, length: 0, moves: NONE,
-    };
-    let mate = Variation {
-        score: P::whiteIsMate,
-        ..draw
     };
     if depth > 2 && computing::thinkingFinished() {
         return draw;
@@ -461,7 +450,7 @@ pub fn negaMax(
                     } else {
                         let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta);
+                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta, halfmoves);
                         };
                         pv
                     }
@@ -481,7 +470,7 @@ pub fn negaMax(
                     } else {
                         let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2);
+                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2, halfmoves);
                         };
                         pv
                     }
@@ -490,7 +479,7 @@ pub fn negaMax(
                 _other => {
                     let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                     if !ext {
-                        insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                        insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
                     };
                     pv
                 }
@@ -505,6 +494,10 @@ pub fn negaMax(
             };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
+                    let mate = Variation {
+                        score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
+                        ..draw
+                    };
                     mate
                 } else {
                     draw
@@ -512,7 +505,7 @@ pub fn negaMax(
             } else {
                 let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                 if !ext {
-                    insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                    insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
                 };
                 pv
             }
@@ -534,7 +527,7 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
     println!("# negaSimple{} depth {}", state.sid, depth);
     loop {
         let mut hist = state.history.clone();
-        let pv0 = {
+        let mut pv = {
             // acquire mutable access to the transposition table
             // the hash is locked during search
             let mut hash: TransTable = state.trtable.lock().unwrap();
@@ -550,7 +543,6 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
         if computing::thinkingFinished() {
             break;
         }
-        let mut pv = correctMateDistance(&pv0);
         pv.score *= state.player().factor();
         pv.depth = depth;
         if state.talkPV(pv) {
@@ -608,14 +600,10 @@ pub fn pvsSearch(
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
-                                     // let none = [P::noMove; VariationMoves];
+    let halfmoves = hist.len() as u32;
     #[rustfmt::skip]
     let draw = Variation {
         score: 0, nodes: 1, depth, length: 0, moves: NONE,
-    };
-    let mate = Variation {
-        score: P::whiteIsMate,
-        ..draw
     };
     if depth > 2 && computing::thinkingFinished() {
         return draw;
@@ -668,7 +656,7 @@ pub fn pvsSearch(
                     } else {
                         let pv = pvsGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta);
+                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta, halfmoves);
                         };
                         pv
                     }
@@ -688,7 +676,7 @@ pub fn pvsSearch(
                     } else {
                         let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2);
+                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2, halfmoves);
                         };
                         pv
                     }
@@ -697,7 +685,7 @@ pub fn pvsSearch(
                 _other => {
                     let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                     if !ext {
-                        insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                        insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
                     };
                     pv
                 }
@@ -712,6 +700,10 @@ pub fn pvsSearch(
             };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
+                    let mate = Variation {
+                        score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
+                        ..draw
+                    };
                     mate
                 } else {
                     draw
@@ -719,7 +711,7 @@ pub fn pvsSearch(
             } else {
                 let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
                 if !ext {
-                    insertPV(hash, pos, pv, ordered, depth, alpha, beta);
+                    insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
                 };
                 pv
             }
@@ -774,7 +766,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
             let mut hist = state.history.clone();
             hist.push(opos);
             let locking = Instant::now();
-            let pv0 = {
+            let pv1 = {
                 // acquire mutable access to the transposition table
                 // the hash is locked during search
                 let mut hash: TransTable = state.trtable.lock().unwrap();
@@ -800,7 +792,6 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
                 state.tellNoMore();
                 return;
             }
-            let pv1 = correctMateDistance(&pv0);
 
             // show the result of the search
             // println!(
@@ -891,7 +882,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             let mut hist = state.history.clone();
             hist.push(opos);
             let locking = Instant::now();
-            let pv0 = {
+            let pv1 = {
                 // acquire mutable access to the transposition table
                 // the hash is locked during search
                 let mut hash: TransTable = state.trtable.lock().unwrap();
@@ -959,7 +950,6 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
                 state.tellNoMore();
                 return;
             }
-            let pv1 = correctMateDistance(&pv0);
 
             // the final version with our move pushed onto the end
             let pv = Variation {
@@ -1021,7 +1011,8 @@ pub fn strategy_negamax(state: StrategyState) {
 
 /// apply pribcipal variation search
 pub fn strategy_pvs(state: StrategyState) {
-    let allMoves = state.current().moves();
+    let current = state.current();
+    let allMoves = current.moves();
     println!(
         "# Started strategy{} PVS, we have {} moves to consider.",
         state.sid,
@@ -1040,6 +1031,43 @@ pub fn strategy_pvs(state: StrategyState) {
         });
         state.tellNoMore();
     } else {
+        if state.history.len() > 2 && !current.inEndgame() {
+            // users position before his move
+            let usrPos = state.history[state.history.len() - 2];
+            match usrPos.moves().iter().copied().find(|m| usrPos.apply(*m) == current) {
+                Some(userMv) => match state.trtable.try_lock() {
+                    Ok(hash) => match hash.get(&usrPos) {
+                        Some(tr)
+                            if tr.halfmove < u32::MAX && tr.pvMoves.len() > 0 && userMv != tr.pvMoves[0]
+                                || tr.posMoves.iter().all(|m| userMv != *m) =>
+                        {
+                            if tr.halfmove < u32::MAX {
+                                println!(
+                                    "# learning: user moved {} instead of hash move {}",
+                                    userMv.showSAN(usrPos),
+                                    tr.pvMoves[0].showSAN(usrPos)
+                                );
+                            } else {
+                                println!("# learning: user moved new variant {}", userMv.showSAN(usrPos));
+                            }
+                        }
+                        Some(_) => {
+                            println!(
+                                "# learning: We knew already that {} may be played here.",
+                                userMv.showSAN(usrPos)
+                            );
+                        }
+                        None => {
+                            println!("# learning: unknown position");
+                        }
+                    },
+                    Err(_) => println!("# learning: Can't lock transposition table now."),
+                },
+                None => {
+                    println!("# learning: position must have been edited");
+                }
+            };
+        }
         iterPVS(state, 3);
     }
 }
