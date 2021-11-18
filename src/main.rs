@@ -360,7 +360,7 @@ pub fn insertPV(
     beta: i32,
     halfmove: u32,
 ) {
-    if pv.score != 0 && pv.length > 0 && depth > 2 {
+    if pv.score != 0 && pv.length > 0 && depth > 2 && pv.score < P::blackIsMate - 30 && pv.score > P::whiteIsMate + 30 {
         let bound = if pv.score >= beta {
             lowerBound(pv.score)
         } else if pv.score >= alpha {
@@ -979,6 +979,20 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             }
             alpha = max(pv.score, alpha);
             pvs.push(pv);
+        }
+        // don't go deeper if this is reasonably good
+        if best.score > P::blackIsMate - 30 {
+            // let mut hash: TransTable = state.trtable.lock().unwrap();
+            // let size = hash.len();
+            // hash.retain(|_, t| t.score >= exactScore(P::blackIsMate - 30));
+            // let size2 = hash.len();
+            // println!(
+            //     "# removed {} high score positions from transposition table with
+            // size {}",     size - size2,
+            //     size
+            // );
+            state.tellNoMore();
+            return;
         }
         depth += 1;
     }
