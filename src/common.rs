@@ -443,7 +443,8 @@ impl GameState {
     }
 
     /// Collect garbage. Remove all entries where halfmoves < limit,
-    /// except when they are members of the history
+    /// except when they are members of the history or opening moves
+    /// (first ten moves)
     pub fn ttGarbage(&mut self, limit: u32) {
         match self.trtable.try_lock() {
             Ok(mut hash) => {
@@ -452,7 +453,7 @@ impl GameState {
                 for p in &self.history {
                     hist.insert(p);
                 }
-                hash.retain(|p, t| hist.contains(p) || t.halfmove >= limit);
+                hash.retain(|p, t| hist.contains(p) || t.halfmove >= limit && t.halfmove < 20);
                 self.ttCleanup = false;
                 let size2 = hash.len();
                 println!(
