@@ -14,19 +14,19 @@ use super::position::Position;
 use Protocol::*;
 use State::*;
 
+use rand::Rng;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io;
 use std::io::Write;
+use std::ops::Sub;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-
-use rand::Rng;
 
 // pub static mut trtable: Arc<Mutex<HashMap<i32, String>>> =
 // Arc::new(Mutex::new(HashMap::new()));
@@ -227,6 +227,10 @@ impl Display for State {
 
 pub type Strategy = fn(StrategyState) -> ();
 
+/// In the simplest form, a transposition table degenerates into a
+/// single move
+pub type SimpleTranspositionHash = HashMap<Position, Move>;
+
 #[derive(Debug)]
 pub struct StrategyState {
     /// unique identifier for this instance
@@ -244,6 +248,8 @@ pub struct StrategyState {
     pub trtable:  Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening map
     pub openings: Arc<Mutex<OpeningMap>>,
+    /// Simple transposition table
+    pub strtab:   Arc<Mutex<SimpleTranspositionHash>>,
 }
 
 impl StrategyState {
@@ -332,6 +338,8 @@ pub struct GameState {
     pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening Map
     pub openings:    Arc<Mutex<OpeningMap>>,
+    /// Simple transposition table
+    pub strtab:      Arc<Mutex<SimpleTranspositionHash>>,
     /// Indicator that the Transposition table may need a cleanup.
     /// This must be done when no strategy threads are running.
     /// The flag is set when the thinking decides that there is not
@@ -371,6 +379,7 @@ impl GameState {
             running: 0,
             trtable: Arc::new(Mutex::new(HashMap::new())),
             openings: Arc::new(Mutex::new(setupOpening())),
+            strtab: Arc::new(Mutex::new(HashMap::new())),
             ponderMode: true,
             postMode: false,
             ttCleanup: false,
@@ -390,7 +399,7 @@ impl GameState {
     /// Time for this move in milliseconds.
     ///
     /// The base for the time per move is the remaining time as told by
-    /// xboard through the "time" command divided by 20 so as to
+    /// xboard through the "time" command divided by 24 so as to
     /// last another 20 moves.
     ///
     /// If we are behind in time, that is, if the other player's time as
@@ -398,18 +407,21 @@ impl GameState {
     /// decrease our time per move by an amount that leaves us at
     /// least 3 seconds.
     ///
-    /// If we are ahead on time, we allow a maximum of 3 seconds of the
-    /// excess time to be added to our base. In addition, if there
+    /// If we are ahead on time, we consume 2/3 of it.
+    /// In addition, if there
     /// is an increment, that what exceeds 1 second will be added.
     pub fn timePerMove(&self) -> u64 {
         let ahead = self.myTime.as_millis() as i32 - self.oTime.as_millis() as i32;
-        let tpm = self.myTime.as_millis() as i32 / 20; // raw time per move
+        let tpm = self.myTime.as_millis() as i32 / 24; // raw time per move
         let incr = self.incrTime.as_millis() as i32;
-        let remaining = if ahead < 0 {
-            max(3000, tpm - 3000) // try to catch up 3s
+        let remaining = if tpm < 4500 {
+            2000 // it's getting tight, only 45s left
+        } else if ahead < 0 {
+            max(3000, tpm - 3000) + max(0, incr - 1000) // try to catch
+                                                        // up 3s
         } else {
             // if ahead = 0 and incr = 0, it's still 1000
-            max(1000, tpm) + min(3000, ahead) + max(0, incr - 1000)
+            max(1000, tpm) + 2 * ahead / 3 + max(0, incr - 1000)
         };
         assert!(remaining >= 1000);
         return remaining as u64;
@@ -600,8 +612,8 @@ impl GameState {
             Ok(MV(sid, var)) if sid == self.running => {
                 let usedMillis = since.elapsed().as_millis() as u64;
                 // make sure the next one is not tried if we have already used more
-                // than 75% of the time.
-                let timeOK = usedMillis <= (50 * self.timePerMove()) / 100;
+                // than 3/4 of the time.
+                let timeOK = usedMillis <= (75 * self.timePerMove()) / 100;
                 // stop strategy when we have a mate
                 let mateIn1 = var.length == 1 && var.score == P::blackIsMate;
                 // should we go on?
@@ -817,6 +829,7 @@ impl GameState {
                 history,
                 trtable: Arc::clone(&self.trtable),
                 openings: Arc::clone(&self.openings),
+                strtab: Arc::clone(&self.strtab),
             };
             self.running = self.sid;
             self.best = None;
@@ -973,15 +986,24 @@ impl GameState {
                                 println!("# no pondering today?");
                                 self.state
                             }
-                            THINKING(since, Some(expected)) => {
+                            THINKING(_, Some(expected)) => {
                                 if mv == expected {
                                     println!("# user played expected move {}", mv);
                                     // pondering complete?
                                     if self.running == 0 {
                                         println!("# pondering already complete");
                                         self.sendMove()
+                                    } else if self.myTime.as_millis() < 4500 && self.best.is_some() {
+                                        println!("# It's about time, take whatever we pondered so far!");
+                                        self.sendMove()
                                     } else {
-                                        THINKING(since, None) // continue regular thinking
+                                        // continue regular thinking
+                                        // make it appear as if we just consumed 2/3 of our time
+                                        THINKING(
+                                            Instant::now()
+                                                .sub(Duration::from_millis(2 * self.timePerMove() as u64 / 3)),
+                                            None,
+                                        )
                                     }
                                 } else {
                                     PLAYING
