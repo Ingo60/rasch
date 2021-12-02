@@ -92,7 +92,7 @@ impl Field {
     /// assert_eq!(A1.zone(), EDGE);
     /// assert_eq!(D8.zone(), EDGE);
     /// assert_eq!(B7.zone(), OUTER);
-    /// assert_eq!(E4.zone(), INNER);
+    /// assert_eq!(E4.zone(), CENTER);
     /// ```
     pub fn zone(self) -> Zone {
         let bits = 1 << self as u64;

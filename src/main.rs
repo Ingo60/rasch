@@ -84,7 +84,7 @@ fn flamegraph(gs: GameState, depth: u32) {
         pv.nodes,
         pv.showMovesSAN(P::initialBoard())
     );
-    hash.clear();
+    // hash.clear();
     killers.clear();
     let before = Instant::now();
     let pv = simpleMax(
@@ -153,11 +153,13 @@ pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
     let before = pos.pieceOn(mv.from());
     let after = rpos.pieceOn(mv.to());
     let vt = pos.pieceOn(mv.to()).score();
-    let killer = if killers.contains(&mv)                         { 11 } else { 0 };
-    let goodCapture = if mv.piece().score() < vt - 10             {  9 } else { 0 };
-    let badCapturing = if vt > 0                                  {  2 } else { 0 };
-    let castling = if mv.piece() == KING && mv.promote() != EMPTY {  3 } else { 0 };
-    let checking = if rpos.inCheck(rpos.turn())                   {  1 } else { 0 };
+    let killer = if killers.contains(&mv)                                   { 11 } else { 0 };
+    let goodCapture = if mv.piece().score() < vt - 10                       {  9 } else { 0 };
+    let badCapturing = if vt > 0                                            {  2 } else { 0 };
+    let castling = if mv.piece() == KING && mv.promote() != EMPTY           {  3 } else { 0 };
+    let checking = if rpos.inCheck(rpos.turn())                             {  1 } else { 0 };
+    let attacked = if rpos.isAttacked(mv.to(), rpos.turn())                 { -2 } else { 0 };
+    let hanging  = if rpos.isAttacked(mv.to(), pos.turn()) && attacked != 0 { -5 } else { 0 };
     
     let attacking_before = (P::pieceTargets(before, mv.player(), mv.from()) 
                             * pos.occupiedBy(mv.player().opponent())).card() as i32;
@@ -169,7 +171,7 @@ pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
                         if mv.promote() != EMPTY                  { 10 } else { 5 }
                     } else { 0 }; 
     
-    goodCapture + badCapturing + castling + checking + attacking + pawnMove + killer
+    goodCapture + badCapturing + castling + checking + attacking + pawnMove + killer + attacked + hanging
 }
 
 /// order a bunch of moves so that the most useful one will processed
@@ -383,6 +385,13 @@ pub fn insertPV(
 }
 
 const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
+const DRAW: Variation = Variation {
+    score:  0,
+    nodes:  1,
+    depth:  0,
+    length: 0,
+    moves:  NONE,
+};
 
 pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool, u32, i32, i32) -> Variation;
 
@@ -398,19 +407,15 @@ pub fn negaMax(
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
     let halfmoves = hist.len() as u32;
-    #[rustfmt::skip]
-    let draw = Variation {
-        score: 0, nodes: 1, depth, length: 0, moves: NONE,
-    };
     if depth > 2 && computing::thinkingFinished() {
-        return draw;
+        return DRAW;
     }
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
         let epv = Variation {
             score: pos.turn().factor() * pos.eval(),
-            ..draw
+            ..DRAW
         };
         return epv;
     }
@@ -499,11 +504,11 @@ pub fn negaMax(
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
                         score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
-                        ..draw
+                        ..DRAW
                     };
                     mate
                 } else {
-                    draw
+                    DRAW
                 }
             } else {
                 let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
@@ -604,19 +609,15 @@ pub fn pvsSearch(
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
     let halfmoves = hist.len() as u32;
-    #[rustfmt::skip]
-    let draw = Variation {
-        score: 0, nodes: 1, depth, length: 0, moves: NONE,
-    };
     if depth > 2 && computing::thinkingFinished() {
-        return draw;
+        return DRAW;
     }
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
         let epv = Variation {
             score: pos.turn().factor() * pos.eval(),
-            ..draw
+            ..DRAW
         };
         return epv;
     }
@@ -705,11 +706,11 @@ pub fn pvsSearch(
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
                         score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
-                        ..draw
+                        ..DRAW
                     };
                     mate
                 } else {
-                    draw
+                    DRAW
                 }
             } else {
                 let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
@@ -1111,7 +1112,7 @@ pub fn strategy_simple(state: StrategyState) {
         });
         state.tellNoMore();
     } else {
-        iterDeep(state, 3, negaMax);
+        iterSimple(state, 3);
     }
 }
 
@@ -1165,17 +1166,14 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
                 // P::showMoves(&kvec[..]));
                 let dur = locking.elapsed().as_millis();
                 if dur > 1 {
-                    println!("# negaSimple{}: it took only {}ms to lock the hash.", state.sid, dur);
+                    println!("# iterSimple{}: it took only {}ms to lock the hash.", state.sid, dur);
                 }
-                simpleMax(
-                    &mut hist,
-                    &mut hash,
-                    &mut killers,
-                    false,
-                    depth,
-                    P::whiteIsMate,
-                    -alpha + 6,
-                )
+                if pvs.len() == 0 {
+                    hash.retain(|p, t| {
+                        hist.contains(p) || t.halfmove >= (state.history.len() as u32) || t.halfmove < 20
+                    });
+                }
+                simpleMax(&mut hist, &mut hash, &mut killers, false, depth, alpha - 6, -alpha + 6)
             };
             if computing::thinkingFinished() {
                 state.tellNoMore();
@@ -1209,7 +1207,7 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             }
             if pv.score >= alpha - 5 {
                 if !state.talkPV(pv) {
-                    println!("# iterDeep{} was asked to finish.", state.sid);
+                    println!("# iterSimple{} was asked to finish.", state.sid);
                     state.tellNoMore();
                     return;
                 }
@@ -1220,27 +1218,70 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             alpha = max(pv.score, alpha);
             pvs.push(pv);
         }
+        if alpha > P::blackIsMate - 10 {
+            println!("# iterSimple{} opponent almost mated.", state.sid);
+            state.tellNoMore();
+        }
         depth += 1;
     }
 }
 
-pub fn simpleLookup(pos: Position, hash: &SimpleTransTable) -> Variation {
-    match hash.get(&pos) {
-        None => Variation {
-            score:  pos.turn().factor() * pos.eval(),
-            nodes:  1,
-            depth:  0,
-            length: 0,
-            moves:  NONE,
-        },
-        Some(&mv) => {
-            let mut pv = simpleLookup(pos.apply(mv), hash).push(mv);
-            pv.score = -pv.score;
-            pv.depth += 1;
-            pv
+/* pub fn simpleLookup(pos: Position, hash: &SimpleTransTable) -> Variation {
+    let mut hist: HashSet<Position> = HashSet::new();
+    let mut moves: Vec<Move> = Vec::with_capacity(VariationMoves);
+    let mut pv = Variation {
+        length: 0,
+        moves:  NONE,
+        score:  0,
+        nodes:  1,
+        depth:  0,
+    };
+    let mut current = pos;
+    loop {
+        if hist.contains(&current) {
+            // without this, we face the danger to loop forever, especially in
+            // endgames
+            pv.score = pos.turn().factor() * current.eval();
+            break;
+        }
+        match hash.get(&current) {
+            None => {
+                pv.score = pos.turn().factor() * current.eval();
+                break;
+            }
+            Some(te) => {
+                // if let Some(mv) = te.mv {
+                hist.insert(current);
+                current = current.apply(te.mv);
+                pv.depth += 1;
+                if moves.len() < VariationMoves {
+                    moves.push(te.mv)
+                }
+                // } else {
+                //     pv.score = pos.turn().factor() * te.score;
+                //     pv.score = if pv.score >= 0 {
+                //         pv.score - 3 * pv.depth as i32
+                //     } else {
+                //         pv.score + 3 * pv.depth as i32
+                //     };
+                //     break;
+                // }
+            }
         }
     }
+    // copy moves from vector into pv
+    let mut dst: usize = 0;
+    let mut src: usize = min(VariationMoves, moves.len());
+    while src > 0 {
+        src -= 1;
+        pv.moves[dst] = moves[src];
+        dst += 1;
+    }
+    pv.length = dst as u32;
+    pv
+    // pv.from_iter(&mut moves.into_iter())
 }
+*/
 
 /// Move searching with SimpleTransTable
 pub fn simpleMax(
@@ -1253,93 +1294,120 @@ pub fn simpleMax(
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
-                                     // let halfmoves = hist.len() as u32;
-    #[rustfmt::skip]
-    let draw = Variation {
-        score: 0, nodes: 1, depth, length: 0, moves: NONE,
-    };
     if depth > 2 && computing::thinkingFinished() {
-        return draw;
+        return DRAW;
     }
-    let hashpv = simpleLookup(pos, hash);
-    if hashpv.depth >= depth {
-        return hashpv;
-    } // this is especially true when depth == 0
-    if hashpv.length > 1 {
-        killers.insert(hashpv.moves[(hashpv.length - 2) as usize]);
-    }
+    let maybeTE = hash.get(&pos);
+    let ordered = match maybeTE {
+        Some(te) => {
+            let hashmove = te.pv.last().unwrap();
+            let mut aux: Vec<Move> = Vec::with_capacity(te.moves.len());
+            aux.push(hashmove);
+            aux.extend(te.moves.iter().copied().filter(|&m| m != hashmove));
+            // if we have a match, insert the answer to the proposed move as killer
+            if te.pv.length > 1 {
+                killers.insert(te.pv.moves[(te.pv.length - 2) as usize]);
+            }
+            aux
+        }
+        None => {
+            let moves = pos.moves();
+            if depth > 1 {
+                orderMoves(&pos, killers, &moves[..])
+            } else {
+                moves
+            }
+        }
+    };
 
-    // at this point, there is no precomputed move or it is too short
-    let mut best = Variation {
-        nodes: 0,
-        length: 0,
-        moves: NONE,
-        depth,
-        score: -999_999_999,
-    };
-    let current = pos;
-    let mut alpha = alpha0;
-    let moves = current.moves();
-    let ordered = if depth > 1 {
-        orderMoves(&current, killers, &moves[..])
-    } else {
-        moves
-    };
+    // mate or draw checking
     if ordered.len() == 0 {
         if pos.inCheck(pos.turn()) {
             let mate = Variation {
-                score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
-                ..draw
+                score: P::whiteIsMate + (pos.getRootDistance() as i32),
+                ..DRAW
             };
             return mate;
         } else {
-            return draw;
+            return DRAW;
         }
     }
-    for m in ordered.iter().copied() {
-        let pos = current.apply(m);
-        let capture = !ext
-            && depth == 1
-            && (m.promote() != EMPTY
-                || current.inCheck(current.turn())
-                || !current.isEmpty(m.to())
-                || pos.inCheck(pos.turn()));
-        let d = if capture { depth } else { depth - 1 };
-        hist.push(pos);
-        let pv = simpleMax(hist, hash, killers, capture, d, -beta, -alpha);
-        hist.pop();
-        let score = -pv.score;
-        if let Some(killer) = pv.last() {
-            killers.insert(killer);
+
+    let mut best = match maybeTE {
+        Some(te) if false && te.pv.depth >= depth && te.pv.score - (te.pv.depth as i32) * 3 > alpha0 => Variation {
+            nodes: 1,
+            score: te.pv.score - (te.pv.depth as i32) * 3,
+            ..te.pv
+        },
+        _other => Variation {
+            nodes:  0,
+            length: 0,
+            moves:  NONE,
+            depth:  0,
+            score:  -999_999_999,
+        },
+    };
+
+    if depth == 0 {
+        Variation {
+            score: pos.eval_have_moves(&ordered) * pos.turn().factor(),
+            ..DRAW
         }
-        if score > beta {
-            // killer move
-            let mut killerpv = pv.push(m);
-            killerpv.score = score;
-            killerpv.nodes += best.nodes;
-            return killerpv;
-        }
-        if score > alpha || score > best.score {
-            best = Variation {
-                nodes: best.nodes + pv.nodes,
-                score,
-                ..pv
-            }
-            .push(m);
-        } else {
-            best.nodes += pv.nodes;
-        }
-        alpha = max(score, alpha);
-    }
-    // if we have found a move, record it in the hash table
-    if let Some(bestmove) = best.last() {
-        hash.insert(current, bestmove);
-    }
-    // overwrite the evaluated score with zero if it is repetition or 50
-    // moves rule
-    if pos.getPlyCounter() >= 100 || hist[0..hist.len() - 1].contains(&pos) {
-        Variation { score: 0, ..best }
     } else {
+        let current = pos;
+        let mut alpha = max(alpha0, best.score);
+
+        for m in ordered.iter().copied() {
+            let pos = current.apply(m);
+            let capture = !ext
+                && depth == 1
+                && (m.promote() != EMPTY
+                    || current.inCheck(current.turn())
+                    || !current.isEmpty(m.to())
+                    || pos.inCheck(pos.turn()));
+            let d = if capture { depth } else { depth - 1 };
+            hist.push(pos);
+            let pv = simpleMax(hist, hash, killers, capture, d, -beta, -alpha);
+            hist.pop();
+            // farther away moves are less worth, prefer the shorter variant
+            let score = -pv.score;
+            if let Some(killer) = pv.last() {
+                killers.insert(killer);
+            }
+            if score > beta || score > alpha || score > best.score {
+                best = Variation {
+                    nodes: best.nodes + pv.nodes,
+                    depth: pv.depth + 1,
+                    score,
+                    ..pv
+                }
+                .push(m);
+                if score > beta {
+                    break;
+                }
+            } else {
+                best.nodes += pv.nodes;
+            }
+            alpha = max(score, alpha);
+        }
+        // overwrite the evaluated score with zero if it is repetition or 50
+        // moves rule
+        // if we have found a move, record it in the hash table
+        if let Some(bestmove) = best.last() {
+            let npos = pos.apply(bestmove);
+            if npos.getPlyCounter() > 100 || hist[0..hist.len() - 1].contains(&npos) {
+                best.score = 0;
+            } else if depth > 2 && best.depth > 0 && best.length > 0 && best.score != 0 {
+                hash.insert(
+                    current,
+                    SimpleTransp {
+                        halfmove: hist.len() as u32,
+                        moves:    ordered,
+                        pv:       Variation { nodes: 1, ..best },
+                    },
+                );
+            };
+        }
         best
     }
 }

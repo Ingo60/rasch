@@ -1375,7 +1375,11 @@ impl Position {
         self.castlingMoves(&mut vec);
         self.rawMoves(&mut vec);
         // vec
-        vec.into_iter().filter(|&m| self.apply(m).notInCheck()).collect()
+        let mut result = Vec::with_capacity(64);
+        for m in vec {
+            if self.apply(m).notInCheck() { result.push(m); }
+        }
+        result
     }
 
     /// Positions qualify as "in opening"  if there are 
@@ -1472,7 +1476,7 @@ impl Position {
                 mine.member(D8) && self.pieceOn(D8) != QUEEN
             }
         };
-        if busyQueen && lazyOfficers > 2 { 125 } else { lazyOfficers * 25 }
+        if busyQueen && lazyOfficers > 2 { 150 } else { lazyOfficers * 30 }
     }
 
     /// Sum scores for material
@@ -1505,7 +1509,7 @@ impl Position {
                     let pto = Field::fromFR(file, prank);
                     let togo = mdb::canRook(from, pto) + bit(pto);
                     // the fewer steps to go, the more valuable
-                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 2 } else { 1 };
+                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 3 } else { 1 };
                     sum += freeFactor * ((1 << (7 - togo.card())) - 2);
                 }
                 _other => (),
@@ -1638,6 +1642,14 @@ impl Position {
     /// This function does **not** detect mate, stalemate, 
     /// draw by repetition or draw by the 50 moves rule.
     pub fn eval(&self) -> i32 {
+        // the raw moves for player
+        let mut pMoves = Vec::with_capacity(64);
+        self.rawMoves(&mut pMoves);
+        self.eval_have_moves(&pMoves)
+    }
+
+    /// A faster version of eval that is given the current moves
+    pub fn eval_have_moves(&self, pMoves: &Vec<Move>) -> i32 {
         let matWhite = self.scoreMaterial(WHITE);
         let matBlack = self.scoreMaterial(BLACK);
         let matDelta = matWhite - matBlack;
@@ -1646,9 +1658,6 @@ impl Position {
         let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
         let check = self.inCheck(self.turn());
         let checkBonus = if check { 20 } else { 0 };
-        // the raw moves for player
-        let mut pMoves = Vec::with_capacity(64);
-        self.rawMoves(&mut pMoves);
         let playerMoves = pMoves.len() as i32;
         // the raw moves for opponent
         let mut oMoves = Vec::with_capacity(64);

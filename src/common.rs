@@ -144,14 +144,16 @@ impl Variation {
             pv.length += 1;
         }
         // reverse
-        let mut i: usize = 0;
-        let mut j: usize = pv.length as usize - 1;
-        while i < j {
-            let m = pv.moves[i];
-            pv.moves[i] = pv.moves[j];
-            pv.moves[j] = m;
-            i += 1;
-            j -= 1;
+        if pv.length > 1 {
+            let mut i: usize = 0;
+            let mut j: usize = pv.length as usize - 1;
+            while i < j {
+                let m = pv.moves[i];
+                pv.moves[i] = pv.moves[j];
+                pv.moves[j] = m;
+                i += 1;
+                j -= 1;
+            }
         }
         pv
     }
@@ -185,6 +187,21 @@ pub struct Transp {
     pub pvMoves:  Vec<Move>,
     /// (ordered) moves of the associated position
     pub posMoves: Vec<Move>,
+}
+
+/// Data structure for simple transposition table
+#[derive(Clone, Debug)]
+pub struct SimpleTransp {
+    /// To what half-move does this correspond, or is it an permanent
+    /// entry? Used in hash cleaning, only entries that relate to
+    /// positions reached earlier are removed. Also, if the value is
+    /// the maximum value, it is permanent and never removed.
+    pub halfmove: u32,
+    /// The variation computed for a position, depth is exact and
+    /// pv.depth and pv.length > 0
+    pub pv:       Variation,
+    /// The (ordered) moves in this position
+    pub moves:    Vec<Move>,
 }
 
 /// Data structure to be sent over the Protocol Channel
@@ -229,7 +246,7 @@ pub type Strategy = fn(StrategyState) -> ();
 
 /// In the simplest form, a transposition table degenerates into a
 /// single move
-pub type SimpleTranspositionHash = HashMap<Position, Move>;
+pub type SimpleTranspositionHash = HashMap<Position, SimpleTransp>;
 
 #[derive(Debug)]
 pub struct StrategyState {
@@ -998,10 +1015,9 @@ impl GameState {
                                         self.sendMove()
                                     } else {
                                         // continue regular thinking
-                                        // make it appear as if we just consumed 2/3 of our time
+                                        // make it appear as if we just consumed 1/2 of our time
                                         THINKING(
-                                            Instant::now()
-                                                .sub(Duration::from_millis(2 * self.timePerMove() as u64 / 3)),
+                                            Instant::now().sub(Duration::from_millis(self.timePerMove() as u64 / 2)),
                                             None,
                                         )
                                     }
