@@ -54,6 +54,8 @@ fn main() {
         gs.mainLoop(strategy_pvs)
     } else if argv[1].starts_with("simple") {
         gs.mainLoop(strategy_simple)
+    } else if argv[1].starts_with("bns") {
+        gs.mainLoop(strategy_bns)
     } else {
         eprintln!("Illegal command line argument: `{}´", argv[1]);
         eprintln!("Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple]", argv[0]);
@@ -1173,7 +1175,15 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
                         hist.contains(p) || t.halfmove >= (state.history.len() as u32) || t.halfmove < 20
                     });
                 }
-                simpleMax(&mut hist, &mut hash, &mut killers, false, depth, alpha - 6, -alpha + 6)
+                simpleMax(
+                    &mut hist,
+                    &mut hash,
+                    &mut killers,
+                    false,
+                    depth,
+                    P::whiteIsMate,
+                    P::blackIsMate,
+                )
             };
             if computing::thinkingFinished() {
                 state.tellNoMore();
@@ -1334,9 +1344,9 @@ pub fn simpleMax(
     }
 
     let mut best = match maybeTE {
-        Some(te) if false && te.pv.depth >= depth && te.pv.score - (te.pv.depth as i32) * 3 > alpha0 => Variation {
+        Some(te) if te.pv.depth >= depth => Variation {
             nodes: 1,
-            score: te.pv.score - (te.pv.depth as i32) * 3,
+            score: te.pv.score,
             ..te.pv
         },
         _other => Variation {
@@ -1410,4 +1420,188 @@ pub fn simpleMax(
         }
         best
     }
+}
+
+/// best node search strategy
+/// https://www.bjmc.lu.lv/fileadmin/user_upload/lu_portal/projekti/bjmc/Contents/770_7.pdf
+pub fn strategy_bns(state: StrategyState) {
+    let pos = state.current();
+    let allMoves = pos.moves();
+    println!(
+        "# Started strategyBNS{}, we have {} moves to consider.",
+        state.sid,
+        allMoves.len()
+    );
+    io::stdout().flush().unwrap_or_default();
+
+    // if there's just 1 move left, we have no choice
+    if allMoves.len() == 1 {
+        state.talkPV(Variation {
+            depth:  1,
+            nodes:  1,
+            score:  -9999,
+            moves:  [allMoves[0]; VariationMoves as usize],
+            length: 1,
+        });
+        state.tellNoMore();
+    } else if allMoves.len() == 0 {
+        state.tellNoMore();
+    } else {
+        iterBNS(state);
+    }
+}
+
+pub fn iterBNS(state: StrategyState) {
+    let mut depth = 4;
+    let mut killers = HashSet::with_capacity(4096);
+    let pos = state.current();
+    let score0 = pos.eval() * pos.turn().factor();
+    let mut beta;
+    let mut alpha;
+    let mut guess = ((12 * score0 / 10) + (7 * score0 / 10)) / 2;
+    let moves = pos.moves();
+    let mut pvs: Vec<Variation> = Vec::with_capacity(moves.len());
+    // for increasing depth
+    loop {
+        let mut subtreeCount = moves.len();
+        let mut nodes = 0;
+        let mut best = DRAW;
+        let mut one = 1;
+
+        alpha = min(12 * score0 / 10, 7 * score0 / 10) - 3;
+        beta = max(12 * score0 / 10, 7 * score0 / 10) + 3;
+        println!(
+            "# iterBNS{} depth {}, score {}, alpha {}, beta {}",
+            state.sid, depth, score0, alpha, beta
+        );
+        if !(beta - alpha > 5 && subtreeCount > 1) {
+            state.tellNoMore();
+            return;
+        }
+        // BNS loop
+        while beta - alpha > 5 && subtreeCount != 1 {
+            // clearHash = true;
+            let ordered = if pvs.len() > 0 {
+                pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
+            } else {
+                orderMoves(&pos, &mut killers, &moves[..]).clone()
+            };
+
+            println!(
+                "# iterBNS{} we have {} ordered moves {}",
+                state.sid,
+                ordered.len(),
+                P::showMoves(&ordered[..])
+            );
+            println!(
+                "# iterBNS{} alpha: {}, beta: {}, guess {}, guess window: {}…{}",
+                state.sid,
+                alpha,
+                beta,
+                guess,
+                -(guess + one),
+                -(guess - one)
+            );
+            // acquire mutable access to the transposition table
+            // the hash is locked during search
+
+            let mut hash: TransTable = state.trtable.lock().unwrap();
+            // hash.clear();
+
+            pvs.clear();
+            best.score = P::whiteIsMate;
+            // for all moves
+            for m in ordered {
+                let opos = pos.apply(m);
+                let mut hist = state.history.clone();
+                hist.push(opos);
+
+                let pv1 = negaMax(
+                    &mut hist,
+                    &mut hash,
+                    &mut killers,
+                    false,
+                    depth,
+                    -(guess + one),
+                    -(guess - one),
+                );
+                if computing::thinkingFinished() {
+                    state.tellNoMore();
+                    return;
+                }
+
+                // nodes += pv1.nodes;
+                // the final version with our move pushed onto the end
+                let pv = Variation {
+                    score: -pv1.score,
+                    depth: depth,
+                    nodes: pv1.nodes + nodes,
+                    ..pv1
+                }
+                .push(m);
+
+                // show the result of the search
+                println!(
+                    "# iterBNS{}:  after {}, search answers with depth:{} score:{} nodes:{} {}",
+                    state.sid,
+                    m.showSAN(pos),
+                    pv.depth,
+                    pv.score,
+                    pv.nodes,
+                    pv.showMovesSAN(pos)
+                );
+
+                // make sure good counter moves are treated as killers
+                if let Some(killer) = pv1.last() {
+                    if pv.score < guess || pvs.len() == 0 {
+                        killers.insert(killer);
+                    }
+                }
+
+                nodes = pv.nodes;
+                if pv.score >= guess - one {
+                    pvs.push(pv);
+                    if pv.score >= best.score || pvs.len() == 1 {
+                        if !state.talkPV(pv) {
+                            println!("# iterBNS{} was asked to finish.", state.sid);
+                            state.tellNoMore();
+                            return;
+                        }
+                        nodes = 0;
+                        best = pv;
+                    }
+                }
+
+                if pv.score > best.score {
+                    best = pv;
+                }
+            } // for all subtrees
+            subtreeCount = pvs.len();
+            if subtreeCount > 0 {
+                // subsequent iterations, order the PVs by decreasing score and extract
+                // our moves.
+                pvs.sort_unstable_by(|p1, p2| p2.score.cmp(&p1.score));
+                // by the way, update alpha & beta
+                if pvs[0].score == beta && pvs[pvs.len() - 1].score == alpha {
+                    println!(
+                        "# iterBNS{} new subtreeCount {}, alpha&beta unchanged!",
+                        state.sid, subtreeCount
+                    );
+                    break;
+                }
+                beta = pvs[0].score;
+                alpha = pvs[pvs.len() - 1].score;
+                guess = (alpha + beta) / 2;
+                println!(
+                    "# iterBNS{} new subtreeCount {}, new alpha {}, new beta {}",
+                    state.sid, subtreeCount, alpha, beta
+                );
+            } else {
+                println!("# iterBNS{} no sub trees made it, widening search window", state.sid);
+                one += 1;
+                guess = best.score - 50;
+            }
+        } // while loop
+        depth += 1;
+    } // depth loop
 }
