@@ -184,7 +184,9 @@ pub struct Transp {
     /// at most `n`
     pub score:    i32,
     /// moves of the principal variation
-    pub pvMoves:  Vec<Move>,
+    pub pvMoves:  [Move; VariationMoves],
+    /// number of valid moves in pvMoves
+    pub pvLength: u32,
     /// (ordered) moves of the associated position
     pub posMoves: Vec<Move>,
 }
@@ -345,6 +347,13 @@ pub struct GameState {
     /// True if PV output should be posted (xboard commands "post",
     /// "nopost")
     pub postMode:    bool,
+    /// Whether to choose from moves with almost equal choices,
+    /// where 0 moves "don't!" and any other value is a number of
+    /// centipawns such that two moves count as "equal" if their scores
+    /// differ at most that much.
+    /// Note that when this is 0, the last move communicated by the
+    /// strategy is taken no matter what the score is.
+    pub oracleDiff:  u32,
     /// Unique identifier supply for strategy, incremented with every
     /// strategy start, thus no strategy ever has a sid of 0
     pub sid:         u32,
@@ -400,6 +409,7 @@ impl GameState {
             ponderMode: true,
             postMode: false,
             ttCleanup: false,
+            oracleDiff: 5,
         }
     }
 
@@ -474,7 +484,7 @@ impl GameState {
     /// Collect garbage. Remove all entries where halfmoves < limit,
     /// except when they are members of the history or opening moves
     /// (first ten moves)
-    pub fn ttGarbage(&mut self, limit: u32) {
+    pub fn ttGarbage(&mut self) {
         match self.trtable.try_lock() {
             Ok(mut hash) => {
                 let size = hash.len();
@@ -482,7 +492,15 @@ impl GameState {
                 for p in &self.history {
                     hist.insert(p);
                 }
-                hash.retain(|p, t| hist.contains(p) || t.halfmove >= limit && t.halfmove < 20);
+                let mut n = size as i32 - 2_500_000;
+                if size > 2_500_000 {
+                    hash.retain(|p, t| {
+                        n -= 1;
+                        n < 0 || hist.contains(p) || t.halfmove < 30 || t.halfmove == u32::MAX
+                    });
+                    // hash.retain(|p, t| hist.contains(p) || t.halfmove
+                    // >= limit && t.halfmove < 30);
+                }
                 self.ttCleanup = false;
                 let size2 = hash.len();
                 println!(
@@ -670,6 +688,14 @@ impl GameState {
                 // TODO: compute best
                 let oracle: bool = rand::thread_rng().gen();
                 let best = match &self.best {
+                    _ if self.oracleDiff == 0 => {
+                        println!(
+                            "# taking newer move {}({})",
+                            var.last().map(|m| m.algebraic()).unwrap_or("????".to_string()),
+                            var.score
+                        );
+                        var
+                    }
                     None => {
                         println!(
                             "# taking first move {}({})",
@@ -702,7 +728,9 @@ impl GameState {
                                 var.score
                             );
                             var
-                        } else if var.score.abs() < P::blackIsMate - 1000 && (var.score - old.score).abs() <= 5 {
+                        } else if var.score.abs() < P::blackIsMate - 1000
+                            && (var.score - old.score).abs() <= self.oracleDiff as i32
+                        {
                             if oracle {
                                 println!(
                                     "# replacing because oracle {}({}) with {}({})",
@@ -918,7 +946,7 @@ impl GameState {
                     println!("# Strategy{} finally ended, it seems.", self.running);
                     self.running = 0;
                     if self.ttCleanup {
-                        self.ttGarbage(self.history.len() as u32);
+                        self.ttGarbage();
                     }
                     io::stdout().flush().unwrap_or_default();
                     self.state
