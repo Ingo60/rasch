@@ -294,6 +294,10 @@ pub struct Position {
     pub hash: u64,
 }
 
+/// Bitmask that lists the fields where `PAWN`s are allowed.
+/// They aren't on ranks 1 and 8.
+pub const pawnFields: BitSet = BitSet { bits: 0x00ff_ffff_ffff_ff00u64 };
+
 /// Bitmask for selection of the ply (half-move) counter, which is used to support the 50 moves rule.
 /// Note that we have room for 256 plies, but only 100 are needed.
 ///
@@ -1038,9 +1042,17 @@ impl Position {
     }
 
     /// Helper to set a certain bit in flags
-    fn setFlag(&self, f: Field) -> Position {
+    pub fn setFlag(&self, f: Field) -> Position {
         Position {
             flags: self.flags + bit(f),
+            ..*self
+        }
+    }
+
+    /// Helper to unset a bunch of flags
+    pub fn unsetFlags(&self, flgs: BitSet) -> Position {
+        Position {
+            flags: self.flags - flgs,
             ..*self
         }
     }
@@ -1714,6 +1726,28 @@ impl Position {
         - self.penaltyBadBishops(WHITE) + self.penaltyBadBishops(BLACK)
         - self.penaltyLazyOfficers(WHITE) + self.penaltyLazyOfficers(BLACK)
     }
+
+    /// compresses this position
+    pub fn compressed(&self) -> CPos { CPos::new(self) }
+
+    /// check position for validity
+    /// 1. There must be exactly one king for each player
+    /// 2. Pawns are restricted to ranks 2 to 7
+    /// 3. only the player to move may be in check
+    pub fn valid(&self) -> bool {
+        (self.whites * self.kings()).card() == 1
+        && (self.kings() - self.whites).card() == 1
+        && (self.pawns() - pawnFields).null()
+        && self.notInCheck()
+    }
+
+    /// Does this position represent a valid endgame position?
+    /// 1. It must be a valid position.
+    /// 2. There must be at most 5 pieces besides the kings.
+    /// 3. No castling rights must be present anymore.
+    pub fn validEndgame(&self) -> bool {
+        self.valid() && self.occupied().card() < 8 && (self.flags * castlingBits).null()
+    }
 }
 
 impl PartialEq for Position {
@@ -1961,4 +1995,128 @@ pub fn initialBoard() -> Position {
         .place(BLACK, KING, bit(E8))
         .place(WHITE, KING, bit(E1))
         .rehash()
+}
+
+#[rustfmt::skip]
+/// Compressed position for the endgame tablebases.
+
+// This is good for up to 7 pieces (kings included)
+// The bits are as follows:
+// Each non-king piece is encoded in 4 bits: 
+// 0 - EMPTY
+// 1/9  - BLACK/WHITE PAWN
+// 2/19 - BLACK/WHITE KNIGHT
+// 3/11 - BLACK/WHITE BISHOP
+// 4/12 - BLACK/WHITE ROOK
+// 5/13 - BLACK/WHITE QUEEN
+// 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant, the en passant field is behind it
+// 
+// 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
+//                                                                         -- ----    field number of the white king
+//                                                                  ---- --           field number of the black king
+//                                                          -- ----                   field number of 1st piece
+//                                                     -- --                          code of 1st piece
+//                                              ---- --                               field number of 2nd piece
+//                                         ----                                       code of 2nd piece
+//                                 -- ----                                            field number of 3rd piece
+//                            -- --                                                   code of 3rd piece
+//                     ---- --                                                        field number of 4th piece
+//                ----                                                                code of 4th piece
+//        -- ----                                                                     field number of 5th piece
+//   -- --                                                                            code of 5th piece
+//  x                                                                                 reserved
+// -                                                                                  0 = black to move, 1 = white to move
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CPos {
+    bits: u64
+}
+
+impl CPos {
+    pub fn new(pos: &Position) -> CPos {
+        if pos.occupied().card() > 7 {
+            panic!("not an endgame position");
+        }
+
+        let mut pieces = 0;
+        let mut kings = 0;
+        let turn = if pos.turn() == WHITE { 1 << 63 } else { 0 };
+        
+        for f in pos.occupied() {
+            if pos.pieceOn(f) != KING {
+                let color = if pos.whites.member(f) { 8 } else { 0 };
+                let pcode = match pos.pieceOn(f) {
+                    PAWN if f.rank() == 4 && color == 8  && pos.flags.member(Field::from(f as u8 - 8)) => 15,
+                    PAWN if f.rank() == 6 && color == 0  && pos.flags.member(Field::from(f as u8 + 8)) => 7,
+                    piece => color | piece as u64,
+                };
+                pieces <<= 4;
+                pieces |= pcode;
+                pieces <<= 6;
+                pieces |= f as u64;
+            }
+            else  {
+                if pos.whites.member(f) { kings |= f as u64; } else { kings |= (f as u64) << 6; }
+            }
+        }
+        CPos { bits: turn | (pieces << 12) | kings }
+    }
+
+    /// re-construct Position
+    pub fn uncompressed(&self) -> Position {
+        let mut pos = Position {
+            flags: BitSet::empty(), whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
+
+        };
+        if self.bits >> 63 == 1 { pos.flags = whiteToMove; }
+        pos = pos.place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
+                .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
+        let mut pcs = self.bits >> 12;
+        for _i in 0..5 {
+            let f = Field::from((pcs&0x3f) as u8);
+            pcs >>= 6;
+            let c = if pcs & 8 == 0 { BLACK } else { WHITE };
+            let p = match pcs&7 {
+                0 => EMPTY,
+                1 => PAWN,
+                2 => KNIGHT,
+                3 => BISHOP,
+                4 => ROOK,
+                5 => QUEEN,
+                7 => {
+                    if c == WHITE { pos.flags = pos.flags + bit(Field::from(f as u8 - 8)) }
+                    else { pos.flags = pos.flags + bit(Field::from(f as u8 + 8)) }
+                    PAWN
+                }
+                _other => {
+                    panic!("illegal piece code {} in compressed position", pcs&7);
+                    // EMPTY
+                }
+            };
+            if p != EMPTY {
+                pos = pos.place(c, p, bit(f));
+            }
+            pcs >>= 4;
+        }
+        pos
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::position::*;
+    // use crate::fieldset::Field::*;
+    #[test]
+    fn compress_decompress_identity() {
+    let p = emptyBoard()
+        .place(WHITE, KING, bit(E4))
+        .place(WHITE, ROOK, bit(D4))
+        .place(BLACK, KING, bit(E8))
+        .place(BLACK, PAWN, bit(E7))
+        .unsetFlags(castlingBits + whiteToMove)
+        .rehash();
+    assert!(p.validEndgame());
+    assert_eq!(p, p.compressed().uncompressed().rehash());
+    }
 }

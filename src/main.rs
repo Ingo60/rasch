@@ -26,6 +26,7 @@ use rasch::position::Piece::*;
 // use rasch::position::Player;
 use rasch::position::Position;
 // use rasch::zobrist as Z;
+use rasch::endgamedb as E;
 
 fn main() {
     mdb::initStatic();
@@ -60,9 +61,19 @@ fn main() {
     } else if argv[1].starts_with("mtdf") {
         gs.oracleDiff = 0; // take no chances
         gs.mainLoop(strategy_mtdf)
+    } else if argv[1].starts_with("gen") && argv.len() >= 3 {
+        match E::gen(String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
     } else {
         eprintln!("Illegal command line argument: `{}´", argv[1]);
-        eprintln!("Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple|bns]", argv[0]);
+        eprintln!(
+            "Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple|bns|mtdf|gen sig]",
+            argv[0]
+        );
         eprintln!("The default is `negamin´");
     };
 }
