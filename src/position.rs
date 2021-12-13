@@ -18,6 +18,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
+use std::cmp::Ordering;
 // use std::iter::FromIterator;
 
 use super::fieldset::BitSet;
@@ -1743,10 +1744,10 @@ impl Position {
 
     /// Does this position represent a valid endgame position?
     /// 1. It must be a valid position.
-    /// 2. There must be at most 5 pieces besides the kings.
+    /// 2. There must be at most 4 pieces besides the kings.
     /// 3. No castling rights must be present anymore.
     pub fn validEndgame(&self) -> bool {
-        self.valid() && self.occupied().card() < 8 && (self.flags * castlingBits).null()
+        self.valid() && self.occupied().card() < 7 && (self.flags * castlingBits).null()
     }
 }
 
@@ -1775,12 +1776,13 @@ impl Display for Position {
         let bvs: Vec<_> = bmoves.iter().map(|x| x.algebraic()).collect();
         write!(
             f,
-            "P:hash=0x{:x}  flags={:x}  flags{}\n\
+            "P:hash=0x{:x}  flags=0x{:x}  flags{}\n\
              whites{}\n\
              pawns {}\n\
              bishops{}  knights{}\n\
              rooks  {}  queens {} kings{}\n\
-             eval={}  check={}\n\
+             eval={}  occupied={}\n\
+             turn={:?}  black in check={}  white in check={}  notInCheck={} valid={}  validEndgame={}\n\
              material       {}  {}\n\
              moves          {}  {}\n\
              castling       {}  {}\n\
@@ -1794,7 +1796,8 @@ impl Display for Position {
             self.pawns(), 
             self.bishops(), self.knights(),
             self.rooks(), self.queens(), self.kings(),
-            self.eval(), self.inCheck(self.turn()),
+            self.eval(), self.occupied(),
+            self.turn(), self.inCheck(BLACK), self.inCheck(WHITE), self.notInCheck(), self.valid(), self.validEndgame(),
             self.scoreMaterial(WHITE), - self.scoreMaterial(BLACK),
             // -self.penalizeHanging(WHITE), self.penalizeHanging(BLACK),
             4 * wmoves.len() as i32, -4 * bmoves.len() as i32,
@@ -2000,16 +2003,31 @@ pub fn initialBoard() -> Position {
 #[rustfmt::skip]
 /// Compressed position for the endgame tablebases.
 
-// This is good for up to 7 pieces (kings included)
-// The bits are as follows:
-// Each non-king piece is encoded in 4 bits: 
-// 0 - EMPTY
-// 1/9  - BLACK/WHITE PAWN
-// 2/19 - BLACK/WHITE KNIGHT
-// 3/11 - BLACK/WHITE BISHOP
-// 4/12 - BLACK/WHITE ROOK
-// 5/13 - BLACK/WHITE QUEEN
-// 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant, the en passant field is behind it
+/// This is good for up to 6 pieces (kings included) and 11 bits worth of flags. 
+/// Since a black and a white `KING` *must* be present, we simply note their fields in the lower 2x6 bits.
+/// 
+/// Each of the other 4 pieces is encoded in 10 bits: a code for player and piece type (4 bits) and the field (6 bits).
+/// The encodings are:
+
+/// - 0 - EMPTY
+/// - 1/9  - BLACK/WHITE PAWN
+/// - 2/10 - BLACK/WHITE KNIGHT
+/// - 3/11 - BLACK/WHITE BISHOP
+/// - 4/12 - BLACK/WHITE ROOK
+/// - 5/13 - BLACK/WHITE QUEEN
+/// - 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant, the en passant field is behind it
+///
+/// In order to identify equal positions, the pieces must occur from left to right in **ascending field order**. 
+/// This is guaranteed when compressing a `Position`.
+/// 
+/// Care must be taken when reflecting a `CPos` to get the pieces in the correct order and to correct the move index, if any.
+/// For this, the from/to fields in the move must be reflected as well and the index of it found in the move list of the new position.
+/// 
+/// Not all u64 values make for a valid `CPos`. The following fatal errors will abort the program:
+/// - trying to compress a `Position` that is not a valid endgame as checked by `Position.validEndgame()`
+/// - trying to uncompress a `CPos` that contains a wrong piece code 8, 6 or 14
+/// - trying to uncompress a `CPos` where any two field numbers are equal. That is, every piece and the kings must have their own unique fields.
+/// - trying to reflect a `CPos` with an invalid move index.
 // 
 // 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
 //                                                                         -- ----    field number of the white king
@@ -2022,30 +2040,72 @@ pub fn initialBoard() -> Position {
 //                            -- --                                                   code of 3rd piece
 //                     ---- --                                                        field number of 4th piece
 //                ----                                                                code of 4th piece
-//        -- ----                                                                     field number of 5th piece
-//   -- --                                                                            code of 5th piece
-//  x                                                                                 reserved
-// -                                                                                  0 = black to move, 1 = white to move
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+//      mmmm mmmm                                                                     move number to play (255 means: no move)
+//  fff                                                                               flags
+// t                                                                                  0 = black to move, 1 = white to move
+//
+// Meaning of the flags:
+// 000 - not analyzed yet
+// 001 - player wins by playing the indicated move
+// 010 - player is mate
+// 
+// 
+#[derive(Clone, Copy, Debug)]
 pub struct CPos {
     bits: u64
 }
 
+/// Mask the flag bits in a CPos
+pub const cposFlags : u64 = 0x7000_0000_0000_0000u64;
+/// Shift for flag bits in CPos
+pub const cposFlagShift : u32 = cposFlags.trailing_zeros();
+/// Mask the move bits in a CPos
+pub const cposMove : u64 = 0x0ff0_0000_0000_0000u64;
+/// Shift for the move flags in a CPos
+pub const cposMoveShift : u32 = cposMove.trailing_zeros();
+/// Mask the bits that count in comparisions
+pub const cposComp : u64 = !(cposFlags|cposMove);
+/// Mask the code for piece 4
+pub const cposCode4 : u64 = 0x000f_0000_0000_0000u64;
+/// Mask the code for piece 3
+pub const cposCode3 : u64 = cposCode4 >> 10;
+/// Mask the code for piece 2
+pub const cposCode2 : u64 = cposCode3 >> 10;
+/// Mask the code for piece 1
+pub const cposCode1 : u64 = cposCode2 >> 10;
+
+/// Mask the lower left quarter fields (A..D, 1..4)
+pub const lowerLeftQuarter :  BitSet = BitSet { bits: 0x0000_0000_0f0f_0f0f };
+/// Mask the lower right quarter fields (E..H, 1..4)
+pub const lowerRightQuarter : BitSet = BitSet { bits: 0x0000_0000_f0f0_f0f0 };
+/// Mask the fields in the lower half A1..H4
+pub const lowerHalf: BitSet = BitSet { bits: lowerLeftQuarter.bits | lowerRightQuarter.bits };
+/// Mask the fields on files A to D
+pub const leftHalf: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
+
+
+
 impl CPos {
+
+    /// Compress an ordinary position, which must be a valid endgame position
     pub fn new(pos: &Position) -> CPos {
-        if pos.occupied().card() > 7 {
-            panic!("not an endgame position");
+
+        // this makes sure that we never use more than 40 bits for encoding of pieces
+        if !pos.validEndgame() {
+            panic!("not an endgame position {}", pos);
         }
 
         let mut pieces = 0;
         let mut kings = 0;
-        let turn = if pos.turn() == WHITE { 1 << 63 } else { 0 };
+        // shift the A1 flag to the front and indicate no valid move
+        let flags = (pos.flags.bits << 63) | cposMove;   
         
+        // `BitSet` iterator guarantees fields in ascending order
         for f in pos.occupied() {
-            if pos.pieceOn(f) != KING {
+            let pOn = pos.pieceOn(f);
+            if  pOn != KING {
                 let color = if pos.whites.member(f) { 8 } else { 0 };
-                let pcode = match pos.pieceOn(f) {
+                let pcode = match pOn {
                     PAWN if f.rank() == 4 && color == 8  && pos.flags.member(Field::from(f as u8 - 8)) => 15,
                     PAWN if f.rank() == 6 && color == 0  && pos.flags.member(Field::from(f as u8 + 8)) => 7,
                     piece => color | piece as u64,
@@ -2059,7 +2119,7 @@ impl CPos {
                 if pos.whites.member(f) { kings |= f as u64; } else { kings |= (f as u64) << 6; }
             }
         }
-        CPos { bits: turn | (pieces << 12) | kings }
+        CPos { bits: flags | (pieces << 12) | kings }
     }
 
     /// re-construct Position
@@ -2068,11 +2128,13 @@ impl CPos {
             flags: BitSet::empty(), whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
 
         };
+        // establish whose turn it is
         if self.bits >> 63 == 1 { pos.flags = whiteToMove; }
+        // place the kings
         pos = pos.place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
                 .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
         let mut pcs = self.bits >> 12;
-        for _i in 0..5 {
+        for _i in 0..4 {
             let f = Field::from((pcs&0x3f) as u8);
             pcs >>= 6;
             let c = if pcs & 8 == 0 { BLACK } else { WHITE };
@@ -2094,14 +2156,66 @@ impl CPos {
                 }
             };
             if p != EMPTY {
-                pos = pos.place(c, p, bit(f));
+                if pos.isEmpty(f) {
+                    pos = pos.place(c, p, bit(f)); 
+            } else { 
+                panic!("Double occupation of field {} in compressed position.", f);}
             }
             pcs >>= 4;
         }
         pos
     }
+
+    /// Does this position have pawns?
+    pub fn hasPawns(&self) -> bool {
+        let f = (self.bits & cposCode1) >> cposCode1.trailing_zeros();
+        if f == 1 || f == 9 || f == 7 || f == 15 { true }
+        else {
+            let f = (self.bits & cposCode2) >> cposCode2.trailing_zeros();
+            if f == 1 || f == 9 || f == 7 || f == 15 { true }
+            else {
+                let f = (self.bits & cposCode3) >> cposCode3.trailing_zeros();
+                if f == 1 || f == 9 || f == 7 || f == 15 { true }
+                else {
+                    let f = (self.bits & cposCode4) >> cposCode4.trailing_zeros();
+                    f == 1 || f == 9 || f == 7 || f == 15
+                }
+            }
+        }
+    }
 }
 
+impl PartialEq for CPos {
+    fn eq(&self, other: &CPos) -> bool {
+        self.bits & cposComp == other.bits & cposComp
+    }
+}
+
+impl Eq for CPos {}
+
+impl PartialOrd for CPos {
+    fn partial_cmp(&self, other: &CPos) -> Option<Ordering> {
+        (self.bits & cposComp).partial_cmp(&(other.bits & cposComp))
+    }
+    fn lt(&self, other: &CPos) -> bool {
+        (self.bits & cposComp) < (other.bits & cposComp)
+    }
+    fn le(&self, other: &CPos) -> bool {
+        (self.bits & cposComp) <= (other.bits & cposComp)
+    }
+    fn gt(&self, other: &CPos) -> bool {
+        (self.bits & cposComp) > (other.bits & cposComp)
+    }
+    fn ge(&self, other: &CPos) -> bool {
+        (self.bits & cposComp) >= (other.bits & cposComp)
+    }
+}
+
+impl Ord for CPos {
+    fn cmp(&self, other: &CPos) -> Ordering {
+        (self.bits & cposComp).cmp(&(other.bits & cposComp))
+    }
+}
 
 #[cfg(test)]
 mod tests {

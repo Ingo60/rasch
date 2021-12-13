@@ -11,8 +11,30 @@ use super::position::Position;
 
 use std::io;
 use std::io::Write;
+// use std::iter::FromIterator;
 
 pub type PlayerPiece = (Player, Piece);
+
+/// Helper to print big numbers nicely
+pub fn formatted64(u: u64) -> String {
+    let mut result = String::with_capacity(64);
+    formatu64(u, &mut result);
+    result
+}
+
+pub fn formattedSZ(u: usize) -> String { formatted64(u as u64) }
+
+fn formatu64(u: u64, result: &mut String) {
+    if u < 1000 {
+        result.push_str(&u.to_string());
+        return;
+    }
+    formatu64(u / 1000, result);
+    let r = u % 1000;
+    result.push(',');
+    let b = format!("{:03}", r);
+    result.push_str(&b);
+}
 
 /// Decode an endgame signature.
 ///
@@ -70,13 +92,81 @@ pub fn decodeSignature(desc: String) -> Vec<PlayerPiece> {
     result
 }
 
+pub fn fac(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        n * fac(n - 1)
+    }
+}
+/// over n 0 = 1
+/// over n 1 = n
+/// over n 2 = n * (n-1) / n!
+pub fn over(n: usize, k: usize) -> usize {
+    if k == 0 {
+        1
+    } else if k == 1 {
+        n
+    } else {
+        (n + 1 - k..n + 1).fold(1, |acc, x| x * acc) / fac(k)
+    }
+}
+
 /// Generate an endgame table base
 pub fn gen(sig: String) -> Result<(), String> {
     let pps = decodeSignature(sig);
-    let pawns = pps.iter().fold(0, |acc, (_, p)| if *p == PAWN { acc + 1 } else { acc });
+    let mut wPawns = 0;
+    let mut bPawns = 0;
+    let mut wKnights = 0;
+    let mut bKnights = 0;
+    let mut wBishops = 0;
+    let mut bBishops = 0;
+    let mut wRooks = 0;
+    let mut bRooks = 0;
+    let mut wQueens = 0;
+    let mut bQueens = 0;
+
+    // find count of each colour and kind
+    for x in &pps {
+        match x {
+            (WHITE, PAWN) => {
+                wPawns += 1;
+            }
+            (BLACK, PAWN) => {
+                bPawns += 1;
+            }
+            (WHITE, KNIGHT) => {
+                wKnights += 1;
+            }
+            (BLACK, KNIGHT) => {
+                bKnights += 1;
+            }
+            (WHITE, BISHOP) => {
+                wBishops += 1;
+            }
+            (BLACK, BISHOP) => {
+                bBishops += 1;
+            }
+            (WHITE, ROOK) => {
+                wRooks += 1;
+            }
+            (BLACK, ROOK) => {
+                bRooks += 1;
+            }
+            (WHITE, QUEEN) => {
+                wQueens += 1;
+            }
+            (BLACK, QUEEN) => {
+                bQueens += 1;
+            }
+            (_, _) => {}
+        }
+    }
+    /*
     if pps.len() == 0 {
         return Err("nothing done, invalid signature?".to_string());
     }
+    */
     let pos0 = Position {
         hash:      0,
         flags:     P::whiteToMove,
@@ -95,26 +185,43 @@ pub fn gen(sig: String) -> Result<(), String> {
     // reflection is in order.
 
     #[rustfmt::skip]
-    let wKbits = if pawns > 0 {
-        BitSet::new(&[
-            A1, B1, C1, D1, A2, B2, C2, D2, A3, B3, C3, D3, A4, B4, C4, D4, 
-            A5, B5, C5, D5, A6, B6, C6, D6, A7, B7, C7, D7, A8, B8, C8, D8,
-        ])
-    } else {
-        BitSet::new(&[A1, B1, C1, D1, A2, B2, C2, D2, A3, B3, C3, D3, A4, B4, C4, D4])
-    };
-    // positions of the two kings
-    let vecbase = if pawns > 0 { 1806 } else { 903 };
-    let vecmax = (0..pps.len()).fold(vecbase, |acc, i| {
-        if let (_, PAWN) = pps[i] {
-            56 * acc
-        } else {
-            (62 - i) * acc
-        }
-    }) * 2;
-    println!("We provide for {} positions.", vecmax);
+    let wKbits = if wPawns > 0 || bPawns > 0 { P::leftHalf } else { P::lowerLeftQuarter };
+    // positions of the two kings, less than 32*64 or 16*64
+    let vecbase = if wPawns > 0 || bPawns > 0 { 1806 } else { 903 };
+    println!("{} over {} is {}", 56, 3, over(56, 3));
+    println!("{} over {} is {}", 56, 2, over(56, 2));
+    println!("{} over {} is {}", 62, 2, over(62, 2));
+    let vecmax = 2
+        * vecbase
+        * over(56 - 1, wPawns)
+        * over(56 - 1 - wPawns, bPawns)
+        * over(62 - 2 - wPawns - bPawns, wKnights)
+        * over(62 - 2 - wPawns - bPawns - wKnights, bKnights)
+        * over(62 - 3 - wPawns - bPawns - wKnights - bKnights, wBishops)
+        * over(62 - 3 - wPawns - bPawns - wKnights - bKnights - wBishops, bBishops)
+        * over(
+            62 - 3 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops,
+            wRooks,
+        )
+        * over(
+            62 - 3 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks,
+            bRooks,
+        )
+        * over(
+            62 - 4 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks - bRooks,
+            wQueens,
+        )
+        * over(
+            62 - 4 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks - bRooks - wQueens,
+            bQueens,
+        );
+
+    println!("We provide for {} positions.", formattedSZ(vecmax));
     let mut positions = Vec::with_capacity(vecmax);
-    // place the white king
+
+    // Pass1 - create all positions
+    print!("Pass 1 (create all positions) ... ");
+    io::stdout().flush().unwrap_or_default();
     for wk in wKbits {
         let pos1 = pos0.place(WHITE, KING, P::bit(wk));
         // place the black king
@@ -127,7 +234,32 @@ pub fn gen(sig: String) -> Result<(), String> {
             }
         }
     }
-    println!("There are {} possible positions.", positions.len());
+    println!("done: found {} possible positions.", formattedSZ(positions.len()));
+
+    // Pass2 - sort
+    print!("Pass 2 (sorting) ... ");
+    io::stdout().flush().unwrap_or_default();
+    positions.sort_unstable();
+    println!("done.");
+
+    // Pass 3 - remove duplicates
+    print!("Pass 3 (removing duplicates) ... ");
+    io::stdout().flush().unwrap_or_default();
+    let mut i = 1;
+    for j in 1..positions.len() {
+        if positions[j] == positions[j - 1] {
+            // do not copy
+        } else if i < j {
+            positions[i] = positions[j];
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if i < positions.len() {
+        positions.truncate(i);
+    }
+    println!("completed, remaining positions {}", formattedSZ(positions.len()));
     let mut wmoves = 0u64;
     let mut bmoves = 0u64;
     let mut wmates = 0u64;
@@ -153,19 +285,45 @@ pub fn gen(sig: String) -> Result<(), String> {
             }
         }
     }
-    println!("WHITE to move {}, BLACK to move {}", wmoves, bmoves);
+    println!(
+        "WHITE to move {}, BLACK to move {}",
+        formatted64(wmoves),
+        formatted64(bmoves)
+    );
     println!("WHITE is mate {}, BLACK is mate {}, draws {}", wmates, bmates, draws);
     Ok(())
 }
 
 fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mut Vec<CPos>) {
     if index >= pps.len() {
+        if pos.valid() {
+            positions.push(pos.compressed());
+        }
+        let r = pos.applyNull();
+        if r.valid() {
+            positions.push(r.compressed());
+        }
         return;
     }
     let last = index + 1 == pps.len();
     let (pl, pc) = pps[index];
-    let bits = if pc == PAWN { P::pawnFields } else { BitSet::all() };
-    for f in bits {
+    let possible = if pc == PAWN { P::pawnFields } else { BitSet::all() };
+
+    // in the case that we have multiple pieces of the same kind and colour,
+    // we avoid duplicates by setting new such pieces only on fields that
+    // are greater than the maximum occupied one.
+    let used = possible
+        * match pos.occupied().fold(None, |acc, x| {
+            if pos.pieceOn(x) == pc && pos.whites.member(x) == (pl == WHITE) {
+                Some(x)
+            } else {
+                acc
+            }
+        }) {
+            Some(x) => BitSet::all().filter(|f| f > &x).collect(),
+            None => BitSet::all(),
+        };
+    for f in used {
         if pos.isEmpty(f) {
             let p = pos.place(pl, pc, P::bit(f));
             if last {

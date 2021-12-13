@@ -38,7 +38,7 @@ pub const innerFields: u64 = 0x0000_0018_1800_0000_u64;
 
 #[rustfmt::skip]
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
       A1 , B1 , C1 , D1 , E1 , F1 , G1 , H1
     , A2 , B2 , C2 , D2 , E2 , F2 , G2 , H2
@@ -306,9 +306,11 @@ impl BitSet {
     #[inline]
     /// the number of elements in this set
     pub const fn card(self) -> u32 { self.bits.count_ones() }
-    /// the smallest field that is member of this set
-    /// will panic when given the empty set
-    /// This is, in some sense, the inverse of singleton, becaue it is
+    /// The smallest field that is member of this set.
+    ///
+    /// Will panic when given the empty set.
+    ///
+    /// This is, in some sense, the inverse of `singleton`, becaue it is
     /// the case that `singleton(x).bitIndex() == x`
     pub fn bitIndex(self) -> Field {
         if self.bits == 0 {
