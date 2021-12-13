@@ -2107,7 +2107,7 @@ impl CPos {
                 let color = if pos.whites.member(f) { 8 } else { 0 };
                 let pcode = match pOn {
                     PAWN if f.rank() == 4 && color == 8  && pos.flags.member(Field::from(f as u8 - 8)) => 15,
-                    PAWN if f.rank() == 6 && color == 0  && pos.flags.member(Field::from(f as u8 + 8)) => 7,
+                    PAWN if f.rank() == 5 && color == 0  && pos.flags.member(Field::from(f as u8 + 8)) => 7,
                     piece => color | piece as u64,
                 };
                 pieces <<= 4;
@@ -2158,8 +2158,9 @@ impl CPos {
             if p != EMPTY {
                 if pos.isEmpty(f) {
                     pos = pos.place(c, p, bit(f)); 
-            } else { 
-                panic!("Double occupation of field {} in compressed position.", f);}
+                } else {
+                    panic!("Double occupation of field {} in compressed position.", f);
+                }
             }
             pcs >>= 4;
         }
@@ -2215,6 +2216,10 @@ impl Ord for CPos {
     fn cmp(&self, other: &CPos) -> Ordering {
         (self.bits & cposComp).cmp(&(other.bits & cposComp))
     }
+}
+
+impl Hash for CPos {
+    fn hash<H: Hasher>(&self, state: &mut H)  { (self.bits & cposComp).hash(state); }
 }
 
 #[cfg(test)]
