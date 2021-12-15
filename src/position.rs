@@ -21,7 +21,7 @@ use std::vec::Vec;
 use std::cmp::{min, max};
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Read};
+use std::io::{Seek, SeekFrom, Read, Write};
 // use std::boxed::Box;
 // use std::iter::FromIterator;
 
@@ -2340,7 +2340,32 @@ impl CPos {
             }
         }
     }
+
+    // read a CPos at the current position
+    pub fn read(file: &mut File) -> Result<CPos, std::io::Error> {
+        let mut buf = [0u8; 8];
+        file.read_exact(&mut buf)?;
+        Ok( CPos { bits: u64::from_be_bytes(buf) } )
+    }
+
+    /// read a CPos at some seek position
+    pub fn read_at(file: &mut File, wo: SeekFrom) -> Result<CPos, std::io::Error> {
+        file.seek(wo)?;
+        CPos::read(file)
+    }
     
+    /// write a CPos at the current file position
+    pub fn write(&self, file: &mut File) -> Result<(), std::io::Error> {
+        let buf = self.bits.to_be_bytes();
+        file.write_all(&buf)
+    }
+
+    /// write a CPos at some seek position
+    pub fn write_at(&self, file: &mut File, wo: SeekFrom)  -> Result<(), std::io::Error> {
+        file.seek(wo)?;
+        self.write(file)
+    }
+
     /// find a CPos in a sorted vector
     pub fn lookup(&self, vec: &Vec<CPos>) -> Option<CPos> {
         match vec.binary_search(&self.canonical()) {
@@ -2370,30 +2395,18 @@ impl CPos {
                             let mut upper = u / 8;
                             // eprintln!("There are {} positions in {}", u, self.signature());
                             let mut lower = 0;
+                            let cpos = self.canonical();
                             while lower < upper {
                                 let mid = lower + (upper-lower) / 2;
-                                match file.seek(SeekFrom::Start(8*mid)) {
+                                match CPos::read_at(&mut file, SeekFrom::Start(8*mid)) {
                                     Err(ioe) => { 
-                                        return Err(format!("error seeking EGTB file {} at {} ({})", 
+                                        return Err(format!("error reading EGTB file {} at {} ({})", 
                                             path, 8*mid, ioe)); 
                                     }
-                                    Ok(_) => {
-                                        let mut buf = [0u8; 8];
-                                        match file.read_exact(&mut buf) {
-                                            Err(ioe) => { 
-                                                return Err(format!("error reading EGTB file {} at {} ({})", 
-                                                    path, 8*mid, ioe)); 
-                                            }
-                                            Ok(_) => {
-                                                let c = CPos { bits: u64::from_be_bytes(buf) };
-                                                if c == *self { return Ok(c); }
-                                                else if c < *self {
-                                                    lower = mid + 1;
-                                                }
-                                                else { upper = mid; }
-                                            }
-                                        }
-                                        
+                                    Ok(c) => {
+                                        if      c == cpos      { return Ok(c); }
+                                        else if c <  cpos      { lower = mid + 1; }
+                                        else /* c >  cpos */   { upper = mid; }
                                     }
                                 }
                             }

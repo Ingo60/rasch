@@ -3,7 +3,7 @@ use super::fieldset::*;
 use super::position as P;
 use super::position::CPos;
 // use super::position::Move;
-use super::fen::encodeFEN;
+use super::fen::{decodeFEN, encodeFEN};
 use super::position::CPosState;
 use super::position::CPosState::*;
 use super::position::Piece;
@@ -11,9 +11,11 @@ use super::position::Piece::*;
 use super::position::Player;
 use super::position::Player::*;
 use super::position::Position;
+use crate::position::Mirrorable;
 
 use std::fs::File;
 use std::io;
+use std::io::ErrorKind::*;
 use std::io::Write;
 // use std::iter::FromIterator;
 
@@ -114,6 +116,131 @@ pub fn over(n: usize, k: usize) -> usize {
     } else {
         (n + 1 - k..n + 1).fold(1, |acc, x| x * acc) / fac(k)
     }
+}
+
+/// Play an example end game
+pub fn play(fen: &str) -> Result<(), String> {
+    let pos0 = decodeFEN(fen)?;
+    playPos(&pos0)
+}
+
+pub fn playPos(pos: &Position) -> Result<(), String> {
+    let cpos = if pos.validEndgame() {
+        Ok(pos.compressed())
+    } else {
+        Err(String::from("position is no valid end game."))
+    }?;
+    let sig = cpos.signature();
+    let none: Vec<CPos> = Vec::new();
+    let rpos = cpos.find(&none, "leer")?;
+    if rpos != cpos {
+        println!(
+            "{} looked up for 0x{:016x} ({})",
+            sig,
+            cpos.bits,
+            encodeFEN(&cpos.uncompressed())
+        );
+    }
+    println!(
+        "{} found canonic 0x{:016x} ({})",
+        sig,
+        rpos.bits,
+        encodeFEN(&rpos.uncompressed())
+    );
+    let s = rpos.state();
+    match s {
+        UNKNOWN => Err(String::from("illegal UNKNOWN state for this position")),
+        MATE => {
+            println!("{:?} to play finds mate", pos.turn());
+            Ok(())
+        }
+        STALEMATE => {
+            if pos.moves().len() == 0 {
+                println!("{:?} to play finds stale mate", pos.turn());
+            } else {
+                println!(
+                    "{:?} to play finds draw (insufficient material or other reasons)",
+                    pos.turn()
+                );
+            }
+            Ok(())
+        }
+        CAN_MATE | CAN_DRAW => {
+            let mv = rpos.uncompressed().moves()[rpos.moveIndex()];
+            let omv = if cpos.whiteKing() == rpos.whiteKing() {
+                Ok(mv)
+            } else if cpos.whiteKing().mirrorH() == rpos.whiteKing() {
+                Ok(mv.mirrorH())
+            } else if cpos.whiteKing().mirrorV() == rpos.whiteKing() {
+                Ok(mv.mirrorV())
+            } else if cpos.whiteKing().mirrorV().mirrorH() == rpos.whiteKing() {
+                Ok(mv.mirrorH().mirrorV())
+            } else {
+                Err(format!(
+                    "Can't reconstruct white king {} from white king {}",
+                    cpos.whiteKing(),
+                    rpos.whiteKing()
+                ))
+            }?;
+            println!(
+                "{:?} to move will enforce {} with {}",
+                pos.turn(),
+                if s == CAN_MATE { "mate" } else { "draw" },
+                omv.showSAN(*pos)
+            );
+            let next = pos.apply(omv);
+            playPos(&next)
+        }
+        CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE => {
+            let mv = pos.moves()[0];
+            println!(
+                "{:?} to move cannot avoid {} so arbitrarily {}",
+                pos.turn(),
+                if s == CANNOT_AVOID_MATE { "mate" } else { "draw" },
+                mv.showSAN(*pos)
+            );
+            let next = pos.apply(mv);
+            playPos(&next)
+        }
+    }
+}
+
+/// Provide statistics for an endgame tablebase
+pub fn stats(sig: String) -> Result<(), String> {
+    let path = format!("egtb/{}.egtb", sig);
+    let mut file = match File::open(&path) {
+        Err(cant) => return Err(format!("can't open {} ({})", path, cant)),
+        Ok(f) => f,
+    };
+
+    let mut kinds = vec![0, 0, 0, 0, 0, 0, 0, 0];
+    let c0 = CPos { bits: 0 };
+    let mut examples = vec![c0, c0, c0, c0, c0, c0, c0, c0];
+    loop {
+        match CPos::read(&mut file) {
+            Err(x) if x.kind() == UnexpectedEof => break,
+            Err(x) => return Err(format!("read error ({}) in {}", x, path)),
+            Ok(c) => {
+                let inx = c.state() as usize;
+                kinds[inx] += 1;
+                examples[inx] = c;
+            }
+        }
+    }
+    for i in 0..7 {
+        let s = CPosState::from(i as u64);
+        if kinds[i] == 0 {
+            println!("{:>12} positions with status {:?}", 0, s);
+        } else {
+            println!(
+                "{:>12} positions with status {:<20} for example {}",
+                formattedSZ(kinds[i]),
+                format!("{:?}", s),
+                encodeFEN(&examples[i].uncompressed())
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Generate an endgame table base
@@ -252,14 +379,19 @@ pub fn gen(sig: String) -> Result<(), String> {
 
     let mut pass = 2;
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
+    let mut mateonly = true;
     loop {
         pass += 1;
-        print!("Pass {} - analyzing positions ... ", pass);
+        print!("Pass {} - analyzing positions ...    0% ", pass);
         io::stdout().flush().unwrap_or_default();
 
         for i in 0..positions.len() {
+            if i % 1_000_000 == 0 || i + 1 == positions.len() {
+                print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
+                io::stdout().flush().unwrap_or_default();
+            }
             let c = positions[i];
-            if c.state() == UNKNOWN && c.moveIndex() == 255 {
+            if c.state() == UNKNOWN {
                 let p = c.uncompressed();
                 let moves = p.moves();
                 let player = p.turn();
@@ -311,26 +443,34 @@ pub fn gen(sig: String) -> Result<(), String> {
                         .clone()
                         .find(|&n| found[n].state() == STALEMATE || found[n].state() == CANNOT_AVOID_DRAW)
                     {
-                        analyzed[CAN_DRAW as usize] += 1;
-                        positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
+                        if !mateonly {
+                            analyzed[CAN_DRAW as usize] += 1;
+                            positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
+                        }
                     } else if range.clone().all(|n| found[n].state() == CAN_MATE) {
                         analyzed[CANNOT_AVOID_MATE as usize] += 1;
                         positions[i] = c.withState(CANNOT_AVOID_MATE);
-                    } else if range
-                        .clone()
-                        .all(|n| found[n].state() == CAN_DRAW || found[n].state() == STALEMATE)
-                    {
-                        analyzed[CANNOT_AVOID_DRAW as usize] += 1;
-                        positions[i] = c.withState(CANNOT_AVOID_DRAW);
+                    } else if range.clone().all(|n| {
+                        found[n].state() == CAN_DRAW || found[n].state() == CAN_MATE || found[n].state() == STALEMATE
+                    }) {
+                        if !mateonly {
+                            analyzed[CANNOT_AVOID_DRAW as usize] += 1;
+                            positions[i] = c.withState(CANNOT_AVOID_DRAW);
+                        }
                     }
                 }
             }
         }
         println!("done.");
-        if analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
+
+        // are we done yet?
+        if !mateonly && analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
             println!("    Construction of end game table completed.");
             break;
         }
+
+        mateonly =
+            analyzed[MATE as usize] > 0 || analyzed[CAN_MATE as usize] > 0 || analyzed[CANNOT_AVOID_MATE as usize] > 0;
         for i in 0..analyzed.len() {
             if analyzed[i] != 0 {
                 println!(
@@ -343,7 +483,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     }
 
-    print!("Pass {} - writing database ... ", pass + 1);
+    print!("Pass {} - writing database ...    0% ", pass + 1);
     io::stdout().flush().unwrap_or_default();
     let mut file = match File::create(&path) {
         Err(ioe) => {
@@ -352,10 +492,14 @@ pub fn gen(sig: String) -> Result<(), String> {
         Ok(f) => f,
     };
     let mut npos = 0usize;
-    for cpos in positions {
+    for i in 0..positions.len() {
+        let cpos = positions[i];
+        if i % 1_000_000 == 0 || i + 1 == positions.len() {
+            print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
+            io::stdout().flush().unwrap_or_default();
+        }
         if cpos.state() != UNKNOWN {
-            let buf = cpos.bits.to_be_bytes();
-            match file.write_all(&buf) {
+            match cpos.write(&mut file) {
                 Err(ioe) => {
                     return Err(format!(
                         "error writing {}th position to EGTB file {} ({})",
