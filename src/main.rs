@@ -68,10 +68,24 @@ fn main() {
                 println!("error: {}", s);
             }
         }
+    } else if argv[1].starts_with("stats") && argv.len() >= 3 {
+        match E::stats(String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("play") && argv.len() >= 3 {
+        match E::play(&String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
     } else {
         eprintln!("Illegal command line argument: `{}´", argv[1]);
         eprintln!(
-            "Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple|bns|mtdf|gen sig]",
+            "Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple|bns|mtdf|gen sig|stats sig|play 'fen']",
             argv[0]
         );
         eprintln!("The default is `negamin´");
