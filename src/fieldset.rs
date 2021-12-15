@@ -202,7 +202,7 @@ impl Field {
                 8 => H8,
                 w => panic!(format!("illegal rank {}", w)),
             },
-            _ => panic!(format!("illegal file '{}'", f)),
+            _ => panic!("illegal file '{}' ({})", f, f as u32),
         }
     }
 }

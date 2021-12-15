@@ -3,12 +3,16 @@ use super::fieldset::*;
 use super::position as P;
 use super::position::CPos;
 // use super::position::Move;
+use super::fen::encodeFEN;
+use super::position::CPosState;
+use super::position::CPosState::*;
 use super::position::Piece;
 use super::position::Piece::*;
 use super::position::Player;
 use super::position::Player::*;
 use super::position::Position;
 
+use std::fs::File;
 use std::io;
 use std::io::Write;
 // use std::iter::FromIterator;
@@ -188,9 +192,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     let wKbits = if wPawns > 0 || bPawns > 0 { P::leftHalf } else { P::lowerLeftQuarter };
     // positions of the two kings, less than 32*64 or 16*64
     let vecbase = if wPawns > 0 || bPawns > 0 { 1806 } else { 903 };
-    println!("{} over {} is {}", 56, 3, over(56, 3));
-    println!("{} over {} is {}", 56, 2, over(56, 2));
-    println!("{} over {} is {}", 62, 2, over(62, 2));
     let vecmax = 2
         * vecbase
         * over(56 - 1, wPawns)
@@ -235,6 +236,13 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     }
     println!("done: found {} possible positions.", formattedSZ(positions.len()));
+    let sig = if positions.len() > 0 {
+        positions[0].signature()
+    } else {
+        String::from("K-K")
+    };
+    let path = format!("egtb/{}.egtb", sig);
+    println!("    Generating EGTB for {} in {}", positions[0].signature(), path);
 
     // Pass2 - sort
     print!("Pass 2 (sorting) ... ");
@@ -242,55 +250,127 @@ pub fn gen(sig: String) -> Result<(), String> {
     positions.sort_unstable();
     println!("done.");
 
-    // Pass 3 - remove duplicates
-    print!("Pass 3 (removing duplicates) ... ");
-    io::stdout().flush().unwrap_or_default();
-    let mut i = 1;
-    for j in 1..positions.len() {
-        if positions[j] == positions[j - 1] {
-            // do not copy
-        } else if i < j {
-            positions[i] = positions[j];
-            i += 1;
-        } else {
-            i += 1;
-        }
-    }
-    if i < positions.len() {
-        positions.truncate(i);
-    }
-    println!("completed, remaining positions {}", formattedSZ(positions.len()));
-    let mut wmoves = 0u64;
-    let mut bmoves = 0u64;
-    let mut wmates = 0u64;
-    let mut bmates = 0u64;
-    let mut draws = 0u64;
-    for c in positions {
-        let p = c.uncompressed();
-        let pl = p.turn();
-        if pl == WHITE {
-            wmoves += 1;
-        } else {
-            bmoves += 1;
-        }
-        if p.moves().len() == 0 {
-            if p.inCheck(pl) {
-                if pl == WHITE {
-                    wmates += 1;
+    let mut pass = 2;
+    let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
+    loop {
+        pass += 1;
+        print!("Pass {} - analyzing positions ... ", pass);
+        io::stdout().flush().unwrap_or_default();
+
+        for i in 0..positions.len() {
+            let c = positions[i];
+            if c.state() == UNKNOWN && c.moveIndex() == 255 {
+                let p = c.uncompressed();
+                let moves = p.moves();
+                let player = p.turn();
+                if moves.len() == 0 {
+                    let s = if p.inCheck(player) { MATE } else { STALEMATE };
+                    analyzed[s as usize] += 1;
+                    positions[i] = c.withState(s);
                 } else {
-                    bmates += 1;
+                    let newPositions = moves
+                        .iter()
+                        .copied()
+                        .map(|m| p.apply(m).compressed())
+                        .collect::<Vec<CPos>>();
+                    let results = newPositions
+                        .iter()
+                        .copied()
+                        .map(|x| x.find(&positions, &sig))
+                        .collect::<Vec<Result<CPos, String>>>();
+                    // go through it and panic on error
+                    for i in 0..results.len() {
+                        match &results[i] {
+                            Err(s) => {
+                                panic!(
+                                    "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
+                                     0x{:016x}",
+                                    s,
+                                    encodeFEN(&newPositions[i].uncompressed()),
+                                    encodeFEN(&newPositions[i].canonical().uncompressed()),
+                                    newPositions[i].canonical().bits
+                                );
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                    // they're all ok
+                    let found = results
+                        .iter()
+                        .map(|x| x.as_ref().unwrap())
+                        .copied()
+                        .collect::<Vec<CPos>>();
+                    let range = 0..found.len();
+                    if let Some(u) = range
+                        .clone()
+                        .find(|&n| found[n].state() == MATE || found[n].state() == CANNOT_AVOID_MATE)
+                    {
+                        analyzed[CAN_MATE as usize] += 1;
+                        positions[i] = c.withState(CAN_MATE).withMoveIndex(u);
+                    } else if let Some(u) = range
+                        .clone()
+                        .find(|&n| found[n].state() == STALEMATE || found[n].state() == CANNOT_AVOID_DRAW)
+                    {
+                        analyzed[CAN_DRAW as usize] += 1;
+                        positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
+                    } else if range.clone().all(|n| found[n].state() == CAN_MATE) {
+                        analyzed[CANNOT_AVOID_MATE as usize] += 1;
+                        positions[i] = c.withState(CANNOT_AVOID_MATE);
+                    } else if range
+                        .clone()
+                        .all(|n| found[n].state() == CAN_DRAW || found[n].state() == STALEMATE)
+                    {
+                        analyzed[CANNOT_AVOID_DRAW as usize] += 1;
+                        positions[i] = c.withState(CANNOT_AVOID_DRAW);
+                    }
                 }
-            } else {
-                draws += 1;
+            }
+        }
+        println!("done.");
+        if analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
+            println!("    Construction of end game table completed.");
+            break;
+        }
+        for i in 0..analyzed.len() {
+            if analyzed[i] != 0 {
+                println!(
+                    "    Found {} new {:?} positions.",
+                    formattedSZ(analyzed[i]),
+                    CPosState::from(i as u64)
+                );
+                analyzed[i] = 0;
             }
         }
     }
-    println!(
-        "WHITE to move {}, BLACK to move {}",
-        formatted64(wmoves),
-        formatted64(bmoves)
-    );
-    println!("WHITE is mate {}, BLACK is mate {}, draws {}", wmates, bmates, draws);
+
+    print!("Pass {} - writing database ... ", pass + 1);
+    io::stdout().flush().unwrap_or_default();
+    let mut file = match File::create(&path) {
+        Err(ioe) => {
+            return Err(format!("could not create EGTB file {} ({})", path, ioe));
+        }
+        Ok(f) => f,
+    };
+    let mut npos = 0usize;
+    for cpos in positions {
+        if cpos.state() != UNKNOWN {
+            let buf = cpos.bits.to_be_bytes();
+            match file.write_all(&buf) {
+                Err(ioe) => {
+                    return Err(format!(
+                        "error writing {}th position to EGTB file {} ({})",
+                        npos + 1,
+                        path,
+                        ioe
+                    ));
+                }
+                Ok(_) => {
+                    npos += 1;
+                }
+            }
+        }
+    }
+    println!("done, {} positions written to EGTB file {}.", formattedSZ(npos), path);
     Ok(())
 }
 
@@ -298,10 +378,14 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
     if index >= pps.len() {
         if pos.valid() {
             positions.push(pos.compressed());
+            // println!("{}", encodeFEN(pos));
         }
         let r = pos.applyNull();
         if r.valid() {
             positions.push(r.compressed());
+            if encodeFEN(&r) == "8/8/8/8/8/8/8/3K3k b  - 0 1" {
+                println!("0x{:016x}", r.compressed().bits);
+            }
         }
         return;
     }
@@ -323,6 +407,20 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
             Some(x) => BitSet::all().filter(|f| f > &x).collect(),
             None => BitSet::all(),
         };
+
+    // alert if we have the position wKd1, bKb1, wQg1 and placing a bQ
+    // it looks like h1 is not in used?
+    /*
+    let alert = pos.kings() * pos.whites == P::bit(D1)
+        && pos.kings() - pos.whites == P::bit(B1)
+        && pos.queens() * pos.whites == P::bit(G1)
+        && pl == BLACK
+        && pc == QUEEN;
+    if alert {
+        println!("\nAlert: placing {:?} {:?} onto {}", pl, pc, used);
+    }
+    */
+
     for f in used {
         if pos.isEmpty(f) {
             let p = pos.place(pl, pc, P::bit(f));
@@ -331,6 +429,18 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
                     positions.push(p.compressed());
                 }
                 let r = p.applyNull();
+                /*
+                if alert && f == H1 {
+                    let rc = r.compressed();
+                    // let rcc = rc.canonical();
+                    println!(
+                        "Alert: Position is valid:{}, fen: {}, hex: 0x{:016x}",
+                        r.valid(),
+                        encodeFEN(&rc.uncompressed()),
+                        rc.bits
+                    );
+                }
+                */
                 if r.valid() {
                     positions.push(r.compressed());
                 }

@@ -10,6 +10,7 @@
 
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
 #![allow(non_upper_case_globals)] // as well as this
+#![allow(non_camel_case_types)]
 
 // use standard packages
 use std::fmt::Display;
@@ -19,6 +20,9 @@ use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
 use std::cmp::Ordering;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Read};
+// use std::boxed::Box;
 // use std::iter::FromIterator;
 
 use super::fieldset::BitSet;
@@ -45,23 +49,7 @@ pub const blackIsMate: i32 = 32768;
 /// score when WHITE is mate
 pub const whiteIsMate: i32 = -blackIsMate;
 
-/// Compute the penalty for a hanging piece `hang` that is attacked by some piece `att`
-/// depending on whether the hanging piece is defended or not
-/// Gives a bonus of 10 percent of the piece value when it is not attacked, but defended
-pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
-    let scoreh = hang.score();
-    let scorea = att.score();
-    match att {
-        EMPTY => if defended { percent(10, scoreh) } else { 0 },
-        KING if defended => 0,
-        _hanging_king if hang == KING => 0,             // avoid extra bonus for check move
-        _otherwise => match defended {
-            false => percent(70, scoreh), 
-            true if scoreh > scorea => percent(70, scoreh - scorea),
-            _other => 0  
-        }
-    }
-}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 #[repr(u32)]
@@ -1531,6 +1519,7 @@ impl Position {
         sum
     }
 
+
     /// compute the penalty for a hanging piece, at best 0 when piece is not in danger
     pub fn penaltyForHangingPiece(&self, f: Field, leastAttacker: Piece, leastDefender: Piece) -> i32 {
         let piece = self.pieceOn(f);
@@ -1751,6 +1740,25 @@ impl Position {
     }
 }
 
+/// Compute the penalty for a hanging piece `hang` that is attacked by some piece `att`
+/// depending on whether the hanging piece is defended or not
+/// Gives a bonus of 10 percent of the piece value when it is not attacked, but defended
+pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
+    let scoreh = hang.score();
+    let scorea = att.score();
+    match att {
+        EMPTY => if defended { percent(10, scoreh) } else { 0 },
+        KING if defended => 0,
+        _hanging_king if hang == KING => 0,             // avoid extra bonus for check move
+        _otherwise => match defended {
+            false => percent(70, scoreh), 
+            true if scoreh > scorea => percent(70, scoreh - scorea),
+            _other => 0  
+        }
+    }
+}
+
+
 impl PartialEq for Position {
     fn eq(&self, other: &Position) -> bool {
         self.hash == other.hash 
@@ -1952,6 +1960,19 @@ impl Display for Move {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.algebraic()) }
 }
 
+impl Mirrorable for Move {
+    fn mirrorH(&self) -> Self {
+        let from = self.from().mirrorH();
+        let to   = self.to().mirrorH();
+        Move::new(self.player(), self.piece(), self.promote(), from, to)
+    }
+    fn mirrorV(&self) -> Self {
+        let from = self.from().mirrorV();
+        let to   = self.to().mirrorV();
+        Move::new(self.player(), self.piece(), self.promote(), from, to)
+    }
+}
+
 
 pub fn showMoves(moves: &[Move]) -> String {
     moves.iter().map(|x| x.algebraic()).collect::<Vec<_>>().join(" ")
@@ -2046,14 +2067,59 @@ pub fn initialBoard() -> Position {
 //
 // Meaning of the flags:
 // 000 - not analyzed yet
-// 001 - player wins by playing the indicated move
-// 010 - player is mate
+// 001 - white wins (by playing the indicated move or black is mate)
+// 010 - black wins (by playing the indicated move or white is mate)
+// 011 - it's a stalemate
+// 100 - white can reach stalemate by playing the indicated move
+// 101 - black can reach stalemate by playing the indicated move
+// 110 - player cannot avoid stalemate
+// 111 - player cannot avoid mate
 // 
 // 
 #[derive(Clone, Copy, Debug)]
 pub struct CPos {
-    bits: u64
+    pub bits: u64
 }
+
+/// Result of retrograde analysis.
+/// - MATE is given to all positions where the player cannot make any legal move and is in check.
+/// - STALEMATE is given to all positions where the player cannot move, but is not in check. 
+/// In addition, this is reported for positions not found in a database search.
+/// - CAN_MATE is given to all positions where the player has a move such that 
+/// the resulting position is either MATE or CANNOT_AVOID_MATE.
+/// - CAN_DRAW is given to all positions that are not CAN_MATE where the player has a move such that
+/// the resulting position is either STALEMATE or CANNOT_AVOID_DRAW.
+/// - CANNOT_AVOID_DRAW is given to positions, where all moves lead to STALEMATE or CAN_DRAW
+/// - CANNOT_AVOID_MATE is givon to positions, where all moves lead to CAN_MATE.
+/// 
+/// With CAN_MATE and CAN_DRAW, the index of the move to play is recorded in the cposMove bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CPosState {
+    UNKNOWN,
+    MATE,
+    STALEMATE,
+    CAN_MATE,
+    CAN_DRAW,
+    CANNOT_AVOID_DRAW,
+    CANNOT_AVOID_MATE,
+}
+
+
+impl From<u64> for CPosState {
+    fn from(u: u64) -> CPosState {
+        match u&7 {
+            1 => MATE,
+            2 => STALEMATE,
+            3 => CAN_MATE,
+            4 => CAN_DRAW,
+            5 => CANNOT_AVOID_DRAW,
+            6 => CANNOT_AVOID_MATE,
+            _ => UNKNOWN,
+        }
+    }
+}
+
+pub use CPosState::*;
 
 /// Mask the flag bits in a CPos
 pub const cposFlags : u64 = 0x7000_0000_0000_0000u64;
@@ -2073,6 +2139,21 @@ pub const cposCode3 : u64 = cposCode4 >> 10;
 pub const cposCode2 : u64 = cposCode3 >> 10;
 /// Mask the code for piece 1
 pub const cposCode1 : u64 = cposCode2 >> 10;
+/// Mask the field of piece 4
+pub const cposFld4 : u64 = 0x0000_fc00_0000_0000u64;
+/// Maskt the field of piece 3
+pub const cposFld3 : u64 = cposFld4 >> 10;
+/// Maskt the field of piece 2
+pub const cposFld2 : u64 = cposFld3 >> 10;
+/// Maskt the field of piece 1
+pub const cposFld1 : u64 = cposFld2 >> 10;
+/// Mask the field of the black king
+pub const cposWhiteKing : u64 = 0x3f;
+/// Mask the field of the white king
+pub const cposBlackKing : u64 = cposWhiteKing << 6;
+/// list of masks that extract field numbers
+pub const cposFieldMasks : [u64; 6] = [cposBlackKing, cposWhiteKing, cposFld1, cposFld2, cposFld3, cposFld4];
+
 
 /// Mask the lower left quarter fields (A..D, 1..4)
 pub const lowerLeftQuarter :  BitSet = BitSet { bits: 0x0000_0000_0f0f_0f0f };
@@ -2167,6 +2248,27 @@ impl CPos {
         pos
     }
 
+    pub fn signature(&self) -> String {
+        let mut result = String::from("");
+        let pos = self.uncompressed();
+        result.push('K');
+        // look for white queens, etc.
+        for _i in 0 .. (pos.queens()  * pos.whites).card() { result.push('Q'); }
+        for _i in 0 .. (pos.rooks()   * pos.whites).card() { result.push('R'); }
+        for _i in 0 .. (pos.bishops() * pos.whites).card() { result.push('B'); }
+        for _i in 0 .. (pos.knights() * pos.whites).card() { result.push('N'); }
+        for _i in 0 .. (pos.pawns()   * pos.whites).card() { result.push('P'); }
+        result.push('-');
+        result.push('K');
+        for _i in 0 .. (pos.queens()  - pos.whites).card() { result.push('Q'); }
+        for _i in 0 .. (pos.rooks()   - pos.whites).card() { result.push('R'); }
+        for _i in 0 .. (pos.bishops() - pos.whites).card() { result.push('B'); }
+        for _i in 0 .. (pos.knights() - pos.whites).card() { result.push('N'); }
+        for _i in 0 .. (pos.pawns()   - pos.whites).card() { result.push('P'); }
+        result
+    }
+
+
     /// Does this position have pawns?
     pub fn hasPawns(&self) -> bool {
         let f = (self.bits & cposCode1) >> cposCode1.trailing_zeros();
@@ -2184,7 +2286,126 @@ impl CPos {
             }
         }
     }
-}
+
+    /// get the state from the CPos
+    pub fn state(&self) -> CPosState {
+        CPosState::from((self.bits & cposFlags) >> cposFlagShift)
+    }
+
+    /// make an identical CPos with a new state
+    pub fn withState(&self, ns: CPosState) -> CPos {
+        CPos { bits: (self.bits & !cposFlags) | ((ns as u64) << cposFlagShift ) }
+    }
+
+    /// get the move index
+    pub fn moveIndex(&self) -> usize {
+        ((self.bits & cposMove) >> cposMoveShift) as usize
+    }
+
+    /// set the move index
+    pub fn withMoveIndex(&self, idx: usize) -> CPos {
+        CPos { bits: (self.bits & !cposMove) | ((idx as u64) << cposMoveShift ) }
+    }
+
+    /// get the field number of the white king
+    pub fn whiteKing(&self) -> Field {
+        Field::from((self.bits & cposWhiteKing) as u8)
+    }
+
+    /// get a bitset with the psoition of the white king set
+    pub fn whiteKingBit(&self) -> BitSet {
+        bit(self.whiteKing())
+    }
+
+    /// Make a canonical CPos for lookup in the DB
+    /// A canonical CPos has the white king in the left half and, if the position has no pawns,
+    /// in the lower left quarter.
+    
+    pub fn canonical(&self) -> CPos {
+        let kf = self.whiteKing();
+        if self.hasPawns() {
+            if leftHalf.member(kf) { *self }
+            else {
+                self.mirrorV()
+            }
+        }
+        else {
+            if lowerLeftQuarter.member(kf) { *self }
+            else if lowerHalf.member(kf) { self.mirrorV() }
+            else if leftHalf.member(kf) {
+                self.mirrorH() 
+            }
+            else /* upper right quarter */ {
+                self.mirrorH().mirrorV()
+            }
+        }
+    }
+    
+    /// find a CPos in a sorted vector
+    pub fn lookup(&self, vec: &Vec<CPos>) -> Option<CPos> {
+        match vec.binary_search(&self.canonical()) {
+            Ok(p) => Some(vec[p]),
+            Err(_) => None,
+        }
+    }
+
+    /// find a CPos in a sorted vector that holds the positions for a certain signature
+    /// or look in the file system
+    pub fn find(&self, vec: &Vec<CPos>, sig: &str) -> Result<CPos, String> {
+        if self.signature() == sig {
+            match self.lookup(vec) {
+                None => Err(String::from("not found in memory")),
+                Some(c) => Ok(c),
+            }
+        }
+        else {
+            let path = format!("egtb/{}.egtb", self.signature());
+            match File::open(&path) {
+                Err(ioe) => Err(format!("could not open EGTB file {} ({})", path, ioe)),
+                Ok(opened) => {
+                    let mut file = opened;
+                    match file.seek(SeekFrom::End(0)) {
+                        Err(ioe) => Err(format!("error seeking EGTB file {} ({})", path, ioe)),
+                        Ok(u) => {
+                            let mut upper = u / 8;
+                            // eprintln!("There are {} positions in {}", u, self.signature());
+                            let mut lower = 0;
+                            while lower < upper {
+                                let mid = lower + (upper-lower) / 2;
+                                match file.seek(SeekFrom::Start(8*mid)) {
+                                    Err(ioe) => { 
+                                        return Err(format!("error seeking EGTB file {} at {} ({})", 
+                                            path, 8*mid, ioe)); 
+                                    }
+                                    Ok(_) => {
+                                        let mut buf = [0u8; 8];
+                                        match file.read_exact(&mut buf) {
+                                            Err(ioe) => { 
+                                                return Err(format!("error reading EGTB file {} at {} ({})", 
+                                                    path, 8*mid, ioe)); 
+                                            }
+                                            Ok(_) => {
+                                                let c = CPos { bits: u64::from_be_bytes(buf) };
+                                                if c == *self { return Ok(c); }
+                                                else if c < *self {
+                                                    lower = mid + 1;
+                                                }
+                                                else { upper = mid; }
+                                            }
+                                        }
+                                        
+                                    }
+                                }
+                            }
+                            // pretend we found a DRAW
+                            Ok(self.withState(STALEMATE))
+                        }
+                    }
+                }
+            }
+        }
+    }
+ }
 
 impl PartialEq for CPos {
     fn eq(&self, other: &CPos) -> bool {
@@ -2221,6 +2442,61 @@ impl Ord for CPos {
 impl Hash for CPos {
     fn hash<H: Hasher>(&self, state: &mut H)  { (self.bits & cposComp).hash(state); }
 }
+
+
+pub trait Mirrorable where Self: Sized {
+    fn mirrorH(&self) -> Self;
+    fn mirrorV(&self) -> Self;
+}
+
+
+impl Mirrorable for Field {
+    /// Mirror the field on horizontal middle axis.
+    /// Changes to corresponding rank on other side, e.g. c6 <-> c3
+    fn mirrorH(&self) -> Field { Field::fromFR(self.file(), 9 - self.rank()) }
+    /// Mirror the field on the vertical middle axis.
+    /// Changes to corresponding file on the other side, e.g. c3 <-> f3
+    fn mirrorV(&self) -> Field { Field::fromFR((b'h' as u8 - self.file() as u8 + b'a' as u8) as char, self.rank()) }
+}
+
+impl Mirrorable for CPos {
+    fn mirrorH(&self) -> CPos {
+        if self.hasPawns() {
+            panic!("can't mirror a position with pawns horizontally");
+        };
+        let mut bits = self.bits;
+        for m in &cposFieldMasks {
+            if     *m == cposFld1 && (bits&cposCode1) == 0 
+                || *m == cposFld2 && (bits&cposCode2) == 0 
+                || *m == cposFld3 && (bits&cposCode3) == 0 
+                || *m == cposFld4 && (bits&cposCode4) == 0 { /* don't mirror unused fields */ } 
+            else {
+                let f = Field::from(((bits & m) >> m.trailing_zeros()) as u8).mirrorH();
+                bits &= !m;
+                bits |= (f as u64) << m.trailing_zeros();
+            }
+        }
+        CPos { bits }.uncompressed().compressed()
+    }
+    fn mirrorV(&self) -> CPos {
+        // we can always do this
+        let mut bits = self.bits;
+        for m in &cposFieldMasks {
+            if     *m == cposFld1 && (bits&cposCode1) == 0 
+                || *m == cposFld2 && (bits&cposCode2) == 0 
+                || *m == cposFld3 && (bits&cposCode3) == 0 
+                || *m == cposFld4 && (bits&cposCode4) == 0 { /* don't mirror unused fields */ } 
+            else {
+                let f = Field::from(((bits & m) >> m.trailing_zeros()) as u8).mirrorV();
+                bits &= !m;
+                bits |= (f as u64) << m.trailing_zeros();
+            }
+        }
+        CPos { bits }.uncompressed().compressed()
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
