@@ -22,6 +22,9 @@ use std::cmp::{min, max};
 use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Read, Write};
+use std::collections::{HashMap};
+
+
 // use std::boxed::Box;
 // use std::iter::FromIterator;
 
@@ -2360,6 +2363,12 @@ impl CPos {
         file.write_all(&buf)
     }
 
+    /// write a CPos all sequentially
+    pub fn write_seq(&self, file: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
+        let buf = self.bits.to_be_bytes();
+        file.write_all(&buf)
+    }
+
     /// write a CPos at some seek position
     pub fn write_at(&self, file: &mut File, wo: SeekFrom)  -> Result<(), std::io::Error> {
         file.seek(wo)?;
@@ -2376,7 +2385,7 @@ impl CPos {
 
     /// find a CPos in a sorted vector that holds the positions for a certain signature
     /// or look in the file system
-    pub fn find(&self, vec: &Vec<CPos>, sig: &str) -> Result<CPos, String> {
+    pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut HashMap<String, Box<File>>) -> Result<CPos, String> {
         if self.signature() == sig {
             match self.lookup(vec) {
                 None => Err(String::from("not found in memory")),
@@ -2385,35 +2394,51 @@ impl CPos {
         }
         else {
             let path = format!("egtb/{}.egtb", self.signature());
-            match File::open(&path) {
-                Err(ioe) => Err(format!("could not open EGTB file {} ({})", path, ioe)),
-                Ok(opened) => {
-                    let mut file = opened;
-                    match file.seek(SeekFrom::End(0)) {
-                        Err(ioe) => Err(format!("error seeking EGTB file {} ({})", path, ioe)),
-                        Ok(u) => {
-                            let mut upper = u / 8;
-                            // eprintln!("There are {} positions in {}", u, self.signature());
-                            let mut lower = 0;
-                            let cpos = self.canonical();
-                            while lower < upper {
-                                let mid = lower + (upper-lower) / 2;
-                                match CPos::read_at(&mut file, SeekFrom::Start(8*mid)) {
-                                    Err(ioe) => { 
-                                        return Err(format!("error reading EGTB file {} at {} ({})", 
-                                            path, 8*mid, ioe)); 
-                                    }
-                                    Ok(c) => {
-                                        if      c == cpos      { return Ok(c); }
-                                        else if c <  cpos      { lower = mid + 1; }
-                                        else /* c >  cpos */   { upper = mid; }
-                                    }
-                                }
+            let hentry = hash.get_mut(&self.signature());
+            let mut file = match hentry {
+                Some(f) => f,
+                None => {
+                    let rfile = File::open(&path);
+                    let wtf = Box::new (match rfile  {
+                        Err(ioe) => return Err(format!("could not open EGTB file {} ({})", path, ioe)),
+                        Ok(opened) => {
+                            opened
+                            
+                            // 
+                            // hash.get(&self.signature()).unwrap()
+                        }
+                    });
+                    hash.insert(self.signature(), wtf);
+                    hash.get_mut(&self.signature()).unwrap()    
+                }
+            };
+            
+            
+            // let mut file = opened;
+            match file.seek(SeekFrom::End(0)) {
+                Err(ioe) => Err(format!("error seeking EGTB file {} ({})", path, ioe)),
+                Ok(u) => {
+                    let mut upper = u / 8;
+                    // eprintln!("There are {} positions in {}", u, self.signature());
+                    let mut lower = 0;
+                    let cpos = self.canonical();
+                    while lower < upper {
+                        let mid = lower + (upper-lower) / 2;
+                        match CPos::read_at(&mut file, SeekFrom::Start(8*mid)) {
+                            Err(ioe) => { 
+                                return Err(format!("error reading EGTB file {} at {} ({})", 
+                                    path, 8*mid, ioe)); 
                             }
-                            // pretend we found a DRAW
-                            Ok(self.withState(STALEMATE))
+                            Ok(c) => {
+                                if      c == cpos      { return Ok(c); }
+                                else if c <  cpos      { lower = mid + 1; }
+                                else /* c >  cpos */   { upper = mid; }
+                            }
                         }
                     }
+                    // pretend we found a DRAW
+                    Ok(self.withState(STALEMATE))
+            
                 }
             }
         }

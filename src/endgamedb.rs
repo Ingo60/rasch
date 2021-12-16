@@ -1,4 +1,6 @@
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+
 use super::fieldset::*;
 use super::position as P;
 use super::position::CPos;
@@ -13,8 +15,10 @@ use super::position::Player::*;
 use super::position::Position;
 use crate::position::Mirrorable;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
+use std::io::BufWriter;
 use std::io::ErrorKind::*;
 use std::io::Write;
 // use std::iter::FromIterator;
@@ -121,10 +125,11 @@ pub fn over(n: usize, k: usize) -> usize {
 /// Play an example end game
 pub fn play(fen: &str) -> Result<(), String> {
     let pos0 = decodeFEN(fen)?;
-    playPos(&pos0)
+    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
+    playPos(&pos0, &mut openFiles)
 }
 
-pub fn playPos(pos: &Position) -> Result<(), String> {
+pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<(), String> {
     let cpos = if pos.validEndgame() {
         Ok(pos.compressed())
     } else {
@@ -132,7 +137,7 @@ pub fn playPos(pos: &Position) -> Result<(), String> {
     }?;
     let sig = cpos.signature();
     let none: Vec<CPos> = Vec::new();
-    let rpos = cpos.find(&none, "leer")?;
+    let rpos = cpos.find(&none, "leer", hash)?;
     if rpos != cpos {
         println!(
             "{} looked up for 0x{:016x} ({})",
@@ -189,18 +194,37 @@ pub fn playPos(pos: &Position) -> Result<(), String> {
                 omv.showSAN(*pos)
             );
             let next = pos.apply(omv);
-            playPos(&next)
+            playPos(&next, hash)
         }
         CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE => {
-            let mv = pos.moves()[0];
+            let moves = pos.moves();
+            let mv = if s == CANNOT_AVOID_MATE {
+                moves[0]
+            } else {
+                let reached = moves.iter().map(|&m| pos.apply(m).compressed()).collect::<Vec<CPos>>();
+                let lookups = reached
+                    .iter()
+                    .map(|cp| cp.find(&none, "leer", hash))
+                    .filter(|x| x.is_ok())
+                    .map(|x| x.unwrap())
+                    .find(|cp| cp.state() != CAN_MATE && cp.state() != MATE);
+                match lookups {
+                    None => moves[0],
+                    Some(cp) => match (0..reached.len()).find(|&i| reached[i].canonical() == cp) {
+                        Some(i) => moves[i],
+                        None => moves[0],
+                    },
+                }
+            };
             println!(
-                "{:?} to move cannot avoid {} so arbitrarily {}",
+                "{:?} to move cannot avoid {} so {} {}",
                 pos.turn(),
                 if s == CANNOT_AVOID_MATE { "mate" } else { "draw" },
+                if mv == moves[0] { "arbitrarily" } else { "intentionally" },
                 mv.showSAN(*pos)
             );
             let next = pos.apply(mv);
-            playPos(&next)
+            playPos(&next, hash)
         }
     }
 }
@@ -243,6 +267,8 @@ pub fn stats(sig: String) -> Result<(), String> {
     Ok(())
 }
 
+const maxHashed: usize = 10_000_000;
+
 /// Generate an endgame table base
 pub fn gen(sig: String) -> Result<(), String> {
     let pps = decodeSignature(sig);
@@ -256,6 +282,8 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut bRooks = 0;
     let mut wQueens = 0;
     let mut bQueens = 0;
+    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
+    let mut posHash: HashMap<CPos, Vec<CPos>> = HashMap::with_capacity(maxHashed);
 
     // find count of each colour and kind
     for x in &pps {
@@ -369,10 +397,19 @@ pub fn gen(sig: String) -> Result<(), String> {
         String::from("K-K")
     };
     let path = format!("egtb/{}.egtb", sig);
-    println!("    Generating EGTB for {} in {}", positions[0].signature(), path);
+    match File::open(&path) {
+        Err(_) => {}
+        Ok(_) => {
+            return Err(format!(
+                "{} seems to exist already, please remove manually to re-create",
+                path
+            ))
+        }
+    };
+    println!("    Generating EGTB for {} in {}", sig, path);
 
     // Pass2 - sort
-    print!("Pass 2 (sorting) ... ");
+    print!("{} Pass 2 (sorting) ... ", sig);
     io::stdout().flush().unwrap_or_default();
     positions.sort_unstable();
     println!("done.");
@@ -381,8 +418,9 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
     loop {
+        let mut cacheHits = 0;
         pass += 1;
-        print!("Pass {} - analyzing positions ...    0% ", pass);
+        print!("{} Pass {} - analyzing positions ...    0% ", sig, pass);
         io::stdout().flush().unwrap_or_default();
 
         for i in 0..positions.len() {
@@ -393,75 +431,100 @@ pub fn gen(sig: String) -> Result<(), String> {
             let c = positions[i];
             if c.state() == UNKNOWN {
                 let p = c.uncompressed();
-                let moves = p.moves();
                 let player = p.turn();
-                if moves.len() == 0 {
+                let mut fromHash = true;
+                let mut reached = match posHash.get(&c) {
+                    Some(vec) => vec.iter().copied().collect(),
+                    None => {
+                        fromHash = false;
+                        let moves = p.moves();
+                        moves
+                            .iter()
+                            .copied()
+                            .map(|m| p.apply(m).compressed())
+                            .collect::<Vec<CPos>>()
+                    }
+                };
+                if fromHash {
+                    cacheHits += 1;
+                }
+                if reached.len() == 0 {
                     let s = if p.inCheck(player) { MATE } else { STALEMATE };
                     analyzed[s as usize] += 1;
                     positions[i] = c.withState(s);
                 } else {
-                    let newPositions = moves
-                        .iter()
-                        .copied()
-                        .map(|m| p.apply(m).compressed())
-                        .collect::<Vec<CPos>>();
-                    let results = newPositions
-                        .iter()
-                        .copied()
-                        .map(|x| x.find(&positions, &sig))
-                        .collect::<Vec<Result<CPos, String>>>();
-                    // go through it and panic on error
-                    for i in 0..results.len() {
-                        match &results[i] {
+                    // let mut modified = false;
+                    let mut all_can_mate = true;
+                    let mut all_can_draw = true;
+                    for u in 0..reached.len() {
+                        match if reached[u].state() == UNKNOWN {
+                            reached[u].find(&positions, &sig, &mut openFiles)
+                        } else {
+                            Ok(reached[u])
+                        } {
                             Err(s) => {
                                 panic!(
                                     "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
                                      0x{:016x}",
                                     s,
-                                    encodeFEN(&newPositions[i].uncompressed()),
-                                    encodeFEN(&newPositions[i].canonical().uncompressed()),
-                                    newPositions[i].canonical().bits
+                                    encodeFEN(&reached[i].uncompressed()),
+                                    encodeFEN(&reached[i].canonical().uncompressed()),
+                                    reached[i].canonical().bits
                                 );
                             }
-                            Ok(_) => {}
+                            Ok(rp) => {
+                                if reached[u].state() != rp.state() {
+                                    reached[u] = rp;
+                                    // modified = true;
+                                }
+                                all_can_mate = all_can_mate && rp.state() == CAN_MATE;
+                                all_can_draw = all_can_draw && (rp.state() == CAN_DRAW || rp.state() == CAN_MATE);
+                                match rp.state() {
+                                    MATE | CANNOT_AVOID_MATE => {
+                                        if mateonly {
+                                            analyzed[CAN_MATE as usize] += 1;
+                                            positions[i] = c.withState(CAN_MATE).withMoveIndex(u);
+
+                                            all_can_mate = false;
+                                            all_can_draw = false;
+                                            break;
+                                        }
+                                    }
+                                    STALEMATE | CANNOT_AVOID_DRAW => {
+                                        if !mateonly {
+                                            analyzed[CAN_DRAW as usize] += 1;
+                                            positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
+
+                                            all_can_mate = false;
+                                            all_can_draw = false;
+                                            break;
+                                        }
+                                    }
+                                    _ => (),
+                                }
+                            }
                         }
                     }
-                    // they're all ok
-                    let found = results
-                        .iter()
-                        .map(|x| x.as_ref().unwrap())
-                        .copied()
-                        .collect::<Vec<CPos>>();
-                    let range = 0..found.len();
-                    if let Some(u) = range
-                        .clone()
-                        .find(|&n| found[n].state() == MATE || found[n].state() == CANNOT_AVOID_MATE)
-                    {
-                        analyzed[CAN_MATE as usize] += 1;
-                        positions[i] = c.withState(CAN_MATE).withMoveIndex(u);
-                    } else if let Some(u) = range
-                        .clone()
-                        .find(|&n| found[n].state() == STALEMATE || found[n].state() == CANNOT_AVOID_DRAW)
-                    {
-                        if !mateonly {
-                            analyzed[CAN_DRAW as usize] += 1;
-                            positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
-                        }
-                    } else if range.clone().all(|n| found[n].state() == CAN_MATE) {
+                    if all_can_mate && mateonly {
                         analyzed[CANNOT_AVOID_MATE as usize] += 1;
                         positions[i] = c.withState(CANNOT_AVOID_MATE);
-                    } else if range.clone().all(|n| {
-                        found[n].state() == CAN_DRAW || found[n].state() == CAN_MATE || found[n].state() == STALEMATE
-                    }) {
-                        if !mateonly {
-                            analyzed[CANNOT_AVOID_DRAW as usize] += 1;
-                            positions[i] = c.withState(CANNOT_AVOID_DRAW);
-                        }
+                    } else if !all_can_mate && all_can_draw && !mateonly {
+                        analyzed[CANNOT_AVOID_DRAW as usize] += 1;
+                        positions[i] = c.withState(CANNOT_AVOID_DRAW);
+                    }
+                    if positions[i].state() == UNKNOWN && (posHash.len() < posHash.capacity() || fromHash) {
+                        posHash.insert(positions[i], reached);
+                    } else if fromHash && positions[i].state() != UNKNOWN {
+                        posHash.remove(&positions[i]);
                     }
                 }
             }
         }
-        println!("done.");
+        println!(
+            "done. Cache hits {}, hash size {}",
+            formattedSZ(cacheHits),
+            formattedSZ(posHash.len())
+        );
 
         // are we done yet?
         if !mateonly && analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
@@ -483,14 +546,15 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     }
 
-    print!("Pass {} - writing database ...    0% ", pass + 1);
+    print!("{} Pass {} - writing database ...    0% ", sig, pass + 1);
     io::stdout().flush().unwrap_or_default();
-    let mut file = match File::create(&path) {
+    let file = match File::create(&path) {
         Err(ioe) => {
             return Err(format!("could not create EGTB file {} ({})", path, ioe));
         }
         Ok(f) => f,
     };
+    let mut bufWriter = BufWriter::new(file);
     let mut npos = 0usize;
     for i in 0..positions.len() {
         let cpos = positions[i];
@@ -499,7 +563,7 @@ pub fn gen(sig: String) -> Result<(), String> {
             io::stdout().flush().unwrap_or_default();
         }
         if cpos.state() != UNKNOWN {
-            match cpos.write(&mut file) {
+            match cpos.write_seq(&mut bufWriter) {
                 Err(ioe) => {
                     return Err(format!(
                         "error writing {}th position to EGTB file {} ({})",
@@ -514,6 +578,9 @@ pub fn gen(sig: String) -> Result<(), String> {
             }
         }
     }
+    bufWriter
+        .flush()
+        .map_err(|x| format!("couldn't flush buffer ({})", x))?;
     println!("done, {} positions written to EGTB file {}.", formattedSZ(npos), path);
     Ok(())
 }
