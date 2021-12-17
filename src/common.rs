@@ -4,6 +4,7 @@
 #![allow(non_upper_case_globals)] // as well as this
 
 use super::computing;
+use super::endgamedb as E;
 use super::fen;
 use super::opening::{setupOpening, OpeningMap};
 use super::position as P;
@@ -47,21 +48,23 @@ pub const VariationMoves: usize = 16;
 pub struct Variation {
     /// the given score for the position arrived at after making all
     /// moves
-    pub score:  i32,
+    pub score: i32,
     /// estimate about searched nodes
-    pub nodes:  u32,
+    pub nodes: u32,
     /// estimate of search depth
-    pub depth:  u32,
+    pub depth: u32,
     /// actual utilization of the array
     pub length: u32,
     /// sequence of moves, mostly used for display.
-    pub moves:  [Move; VariationMoves as usize],
+    pub moves: [Move; VariationMoves as usize],
 }
 
 impl Variation {
     /// Return the moves as slice.
     /// Not that the moves come out in **reverse order**!
-    pub fn rmoves(&self) -> &[Move] { &self.moves[0..self.length as usize] }
+    pub fn rmoves(&self) -> &[Move] {
+        &self.moves[0..self.length as usize]
+    }
 
     /// Return the moves as slice in the correct order
     pub fn moves(&self) -> Vec<Move> {
@@ -159,11 +162,15 @@ impl Variation {
     }
 
     /// Give the moves in coordinate notation, separated by spaces
-    pub fn showMoves(&self) -> String { P::showMoves(&self.moves()[..]) }
+    pub fn showMoves(&self) -> String {
+        P::showMoves(&self.moves()[..])
+    }
 
     /// Give the moves in standard algebraic notation, separated by
     /// spaces
-    pub fn showMovesSAN(&self, pos: Position) -> String { P::showMovesSAN(&self.moves()[..], pos) }
+    pub fn showMovesSAN(&self, pos: Position) -> String {
+        P::showMovesSAN(&self.moves()[..], pos)
+    }
 }
 
 /// Data structure to be found in the transposition table
@@ -175,16 +182,16 @@ pub struct Transp {
     /// the maximum value, it is permanent and never removed.
     pub halfmove: u32,
     /// At what depth was this transposition made?
-    pub depth:    u32,
+    pub depth: u32,
     /// Score with integrated bounds.
     /// Values of the form `4×n`   mean `n` is an exact score (i.e.
     /// computed with eval()) Values of the form `4×n+1` mean `n` is
     /// a lower bound, that is, the score may be higher.
     /// Values of the form `4xn-1` mean `n` is an upper bound, that is,
     /// at most `n`
-    pub score:    i32,
+    pub score: i32,
     /// moves of the principal variation
-    pub pvMoves:  [Move; VariationMoves],
+    pub pvMoves: [Move; VariationMoves],
     /// number of valid moves in pvMoves
     pub pvLength: u32,
     /// (ordered) moves of the associated position
@@ -201,9 +208,9 @@ pub struct SimpleTransp {
     pub halfmove: u32,
     /// The variation computed for a position, depth is exact and
     /// pv.depth and pv.length > 0
-    pub pv:       Variation,
+    pub pv: Variation,
     /// The (ordered) moves in this position
-    pub moves:    Vec<Move>,
+    pub moves: Vec<Move>,
 }
 
 /// Data structure to be sent over the Protocol Channel
@@ -253,22 +260,22 @@ pub type SimpleTranspositionHash = HashMap<Position, SimpleTransp>;
 #[derive(Debug)]
 pub struct StrategyState {
     /// unique identifier for this instance
-    pub sid:      u32,
+    pub sid: u32,
     /// The sender used to send `Protocol` messages to the protocol
     /// handler
-    pub sender:   mpsc::SyncSender<Protocol>,
+    pub sender: mpsc::SyncSender<Protocol>,
     /// The receiver used to get acknowledgements from the protocol
     /// handler
     pub receiver: mpsc::Receiver<bool>,
     /// The game history. The last pushed position is the current one.
     /// There will be at least one position.
-    pub history:  Vec<Position>,
+    pub history: Vec<Position>,
     /// Transposition table
-    pub trtable:  Arc<Mutex<HashMap<Position, Transp>>>,
+    pub trtable: Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening map
     pub openings: Arc<Mutex<OpeningMap>>,
     /// Simple transposition table
-    pub strtab:   Arc<Mutex<SimpleTranspositionHash>>,
+    pub strtab: Arc<Mutex<SimpleTranspositionHash>>,
 }
 
 impl StrategyState {
@@ -282,7 +289,9 @@ impl StrategyState {
         }
     }
     /// Current player. Will panic, if history is an empty Vec.
-    pub fn player(&self) -> Player { self.current().turn() }
+    pub fn player(&self) -> Player {
+        self.current().turn()
+    }
     /// send something to the protocol handler and wait for the answer
     pub fn talkDriver(&self, p: Protocol) -> bool {
         match self.sender.send(p) {
@@ -294,78 +303,84 @@ impl StrategyState {
         }
     }
     /// send a variation to the protocol handler and wait for the answer
-    pub fn talkPV(&self, v: Variation) -> bool { self.talkDriver(MV(self.sid, v)) }
+    pub fn talkPV(&self, v: Variation) -> bool {
+        self.talkDriver(MV(self.sid, v))
+    }
 
     /// Send something to the protocol handler and don't wait for the
     /// answer This should be the last thing the strategy ever
     /// sends.
-    pub fn tellDriver(&self, p: Protocol) -> () { self.sender.send(p).unwrap_or_default() }
+    pub fn tellDriver(&self, p: Protocol) -> () {
+        self.sender.send(p).unwrap_or_default()
+    }
 
     /// send a final NoMore
-    pub fn tellNoMore(&self) { self.tellDriver(NoMore(self.sid)) }
+    pub fn tellNoMore(&self) {
+        self.tellDriver(NoMore(self.sid))
+    }
 }
 
 /// State the protocol needs
 pub struct GameState {
     /// The name of the strategy
-    pub name:        String,
+    pub name: String,
     /// the internal state
-    pub state:       State,
+    pub state: State,
     /// The colour we are playing
-    pub player:      Player,
+    pub player: Player,
     /// Best move so far
-    pub best:        Option<Variation>,
+    pub best: Option<Variation>,
     /// nodes searched
-    pub nodes:       u32,
+    pub nodes: u32,
     /// The channel where threads send `Protocol` records to the
     /// protocol handler. Must be cloned and passed to new threads.
-    pub toMain:      mpsc::SyncSender<Protocol>,
+    pub toMain: mpsc::SyncSender<Protocol>,
     /// The channel where `Protocol` records sent from threads are
     /// received.
     pub fromThreads: mpsc::Receiver<Protocol>,
     /// The channel where answers to the reader are sent.
-    pub toReader:    mpsc::SyncSender<bool>,
+    pub toReader: mpsc::SyncSender<bool>,
     /// The channel where answers to the strategy are sent.
-    pub toStrategy:  Option<mpsc::SyncSender<bool>>,
+    pub toStrategy: Option<mpsc::SyncSender<bool>>,
     // The channel where the strategy receives answers
     // pub fromMain:    mpsc::Receiver<bool>,
     /// The history of the game
-    pub history:     Vec<Position>,
+    pub history: Vec<Position>,
     /// Our remaining time
-    pub myTime:      Duration,
+    pub myTime: Duration,
     /// Their remaining time
-    pub oTime:       Duration,
+    pub oTime: Duration,
     /// Time for entire game
-    pub gameTime:    Duration,
+    pub gameTime: Duration,
     /// Incremental time
-    pub incrTime:    Duration,
+    pub incrTime: Duration,
     /// Number of moves for game, or 0 for incremental
-    pub gameMoves:   i32,
+    pub gameMoves: i32,
     /// True when pondering (thinking while it's the other users turn)
     /// is allowed through GUI (xboard xommands "hard", "easy")
-    pub ponderMode:  bool,
+    pub ponderMode: bool,
     /// True if PV output should be posted (xboard commands "post",
     /// "nopost")
-    pub postMode:    bool,
+    pub postMode: bool,
     /// Whether to choose from moves with almost equal choices,
     /// where 0 moves "don't!" and any other value is a number of
     /// centipawns such that two moves count as "equal" if their scores
     /// differ at most that much.
     /// Note that when this is 0, the last move communicated by the
     /// strategy is taken no matter what the score is.
-    pub oracleDiff:  u32,
+    pub oracleDiff: u32,
     /// Unique identifier supply for strategy, incremented with every
     /// strategy start, thus no strategy ever has a sid of 0
-    pub sid:         u32,
+    pub sid: u32,
     /// Unique identifier for actually running strategy thread or 0 for
     /// none.
-    pub running:     u32,
+    pub running: u32,
     /// transposition table
-    pub trtable:     Arc<Mutex<HashMap<Position, Transp>>>,
+    pub trtable: Arc<Mutex<HashMap<Position, Transp>>>,
     /// Opening Map
-    pub openings:    Arc<Mutex<OpeningMap>>,
+    pub openings: Arc<Mutex<OpeningMap>>,
     /// Simple transposition table
-    pub strtab:      Arc<Mutex<SimpleTranspositionHash>>,
+    pub strtab: Arc<Mutex<SimpleTranspositionHash>>,
     /// Indicator that the Transposition table may need a cleanup.
     /// This must be done when no strategy threads are running.
     /// The flag is set when the thinking decides that there is not
@@ -374,7 +389,7 @@ pub struct GameState {
     /// active, as the shutdown occurs only when the state changes
     /// from THINKING to PLAYING (or FORCED). Hence we actually want
     /// to run this when we got a NoMore from a strategy.
-    pub ttCleanup:   bool,
+    pub ttCleanup: bool,
 }
 
 impl GameState {
@@ -538,6 +553,13 @@ impl GameState {
                     let omv = {
                         let openings = self.openings.lock().unwrap();
                         match openings.get(&pos) {
+                            None if pos.validEndgame() => match E::findEndgameMove(&pos) {
+                                Ok(mv) => Some(mv),
+                                Err(e) => {
+                                    println!("# findEndgameMove: {}", e);
+                                    None
+                                }
+                            },
                             None => None,
                             Some(recs) => {
                                 let mut choices = Vec::new();
@@ -572,11 +594,11 @@ impl GameState {
                         }
                         Some(mv) => {
                             self.best = Some(Variation {
-                                moves:  [mv; VariationMoves],
+                                moves: [mv; VariationMoves],
                                 length: 1,
-                                nodes:  1,
-                                depth:  1,
-                                score:  0,
+                                nodes: 1,
+                                depth: 1,
+                                score: 0,
                             });
                             self.sendMove()
                         }
@@ -592,8 +614,10 @@ impl GameState {
                     let nextpos = self.current().apply(emove);
                     let nextmoves = nextpos.moves();
                     if self.running == 0 {
+                        // check whether we will have an endgame move
+                        let egmove = nextpos.validEndgame() && E::findEndgameMove(&nextpos).is_ok();
                         // does it make sense?
-                        if nextmoves.len() > 1 {
+                        if !egmove && nextmoves.len() > 1 {
                             self.start(strategy, Some(emove))
                         } else {
                             self.nextCommand()
