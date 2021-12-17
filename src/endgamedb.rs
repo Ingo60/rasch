@@ -16,6 +16,7 @@ use super::position::Position;
 use crate::position::Mirrorable;
 
 use std::collections::HashMap;
+use std::env;
 use std::fs::File;
 use std::io;
 use std::io::BufWriter;
@@ -25,6 +26,15 @@ use std::io::Write;
 
 pub type PlayerPiece = (Player, Piece);
 
+pub const POSITION_NULL: Position = Position {
+    hash: 0,
+    flags: P::whiteToMove,
+    whites: BitSet::empty(),
+    bishopSet: BitSet::empty(),
+    pawnSet: BitSet::empty(),
+    rookSet: BitSet::empty(),
+};
+
 /// Helper to print big numbers nicely
 pub fn formatted64(u: u64) -> String {
     let mut result = String::with_capacity(64);
@@ -32,7 +42,9 @@ pub fn formatted64(u: u64) -> String {
     result
 }
 
-pub fn formattedSZ(u: usize) -> String { formatted64(u as u64) }
+pub fn formattedSZ(u: usize) -> String {
+    formatted64(u as u64)
+}
 
 fn formatu64(u: u64, result: &mut String) {
     if u < 1000 {
@@ -67,10 +79,9 @@ fn formatu64(u: u64, result: &mut String) {
 /// assert_eq!(E::decodeSignature("KRP-KQ".to_string()), vec![(WHITE,ROOK),(WHITE,PAWN),(BLACK,QUEEN)]);
 /// assert_eq!(E::decodeSignature("blödsinn".to_string()), vec![]);
 /// ```
-pub fn decodeSignature(desc: String) -> Vec<PlayerPiece> {
+pub fn decodeSignature(desc: &str) -> Vec<PlayerPiece> {
     let mut result = Vec::new();
     let mut wer = WHITE;
-
     for c in desc.chars() {
         match c.to_ascii_uppercase() {
             'K' => {}
@@ -231,7 +242,7 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
 
 /// Provide statistics for an endgame tablebase
 pub fn stats(sig: String) -> Result<(), String> {
-    let path = format!("egtb/{}.egtb", sig);
+    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     let mut file = match File::open(&path) {
         Err(cant) => return Err(format!("can't open {} ({})", path, cant)),
         Ok(f) => f,
@@ -267,11 +278,11 @@ pub fn stats(sig: String) -> Result<(), String> {
     Ok(())
 }
 
-const maxHashed: usize = 10_000_000;
+const maxHashed: usize = 32 * 1024 * 1024;
 
 /// Generate an endgame table base
 pub fn gen(sig: String) -> Result<(), String> {
-    let pps = decodeSignature(sig);
+    let pps = decodeSignature(&sig);
     let mut wPawns = 0;
     let mut bPawns = 0;
     let mut wKnights = 0;
@@ -282,8 +293,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut bRooks = 0;
     let mut wQueens = 0;
     let mut bQueens = 0;
-    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
-    let mut posHash: HashMap<CPos, Vec<CPos>> = HashMap::with_capacity(maxHashed);
 
     // find count of each colour and kind
     for x in &pps {
@@ -321,19 +330,6 @@ pub fn gen(sig: String) -> Result<(), String> {
             (_, _) => {}
         }
     }
-    /*
-    if pps.len() == 0 {
-        return Err("nothing done, invalid signature?".to_string());
-    }
-    */
-    let pos0 = Position {
-        hash:      0,
-        flags:     P::whiteToMove,
-        whites:    BitSet::empty(),
-        bishopSet: BitSet::empty(),
-        pawnSet:   BitSet::empty(),
-        rookSet:   BitSet::empty(),
-    };
     // Places to use for the white king.
     // If there are no pawns, it is enough to compute the positions where
     // the king is in the lower left quarter. The remaining positions
@@ -344,7 +340,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     // reflection is in order.
 
     #[rustfmt::skip]
-    let wKbits = if wPawns > 0 || bPawns > 0 { P::leftHalf } else { P::lowerLeftQuarter };
     // positions of the two kings, less than 32*64 or 16*64
     let vecbase = if wPawns > 0 || bPawns > 0 { 1806 } else { 903 };
     let vecmax = 2
@@ -372,31 +367,54 @@ pub fn gen(sig: String) -> Result<(), String> {
             bQueens,
         );
 
-    println!("We provide for {} positions.", formattedSZ(vecmax));
-    let mut positions = Vec::with_capacity(vecmax);
+    println!("{} We're expecitng {} positions.", sig, formattedSZ(vecmax));
+    let mut positions = Vec::with_capacity(0);
+    let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
 
     // Pass1 - create all positions
-    print!("Pass 1 (create all positions) ... ");
+    print!("{} Pass 1 - create all positions ... ", sig);
     io::stdout().flush().unwrap_or_default();
-    for wk in wKbits {
-        let pos1 = pos0.place(WHITE, KING, P::bit(wk));
-        // place the black king
-        for bk in BitSet::all() {
-            if pos1.isEmpty(bk) {
-                let pos2 = pos1.place(BLACK, KING, P::bit(bk));
-                if pos2.valid() {
-                    complete(&pos2, 0, &pps, &mut positions);
+
+    let wKbits = if wPawns > 0 || bPawns > 0 { P::leftHalf } else { P::lowerLeftQuarter };
+    let inMemory = {
+        let mut sink = match positions.try_reserve_exact(vecmax) {
+            Ok(_) => Sink::V(&mut positions),
+            Err(_) => {
+                print!("writing to {} ... ", rawPath);
+                let f = File::create(&rawPath).map_err(|e| format!("Can't create {} ({})", &rawPath, e))?;
+                Sink::W(BufWriter::new(f))
+            }
+        };
+        for wk in wKbits {
+            let pos1 = POSITION_NULL.place(WHITE, KING, P::bit(wk));
+            // place the black king
+            for bk in BitSet::all() {
+                if pos1.isEmpty(bk) {
+                    let pos2 = pos1.place(BLACK, KING, P::bit(bk));
+                    if pos2.valid() {
+                        complete(&pos2, 0, &pps, &mut sink);
+                    }
                 }
             }
         }
-    }
-    println!("done: found {} possible positions.", formattedSZ(positions.len()));
-    let sig = if positions.len() > 0 {
-        positions[0].signature()
-    } else {
-        String::from("K-K")
+        sink.flush();
+
+        if let Sink::V(_) = sink {
+            println!("done: found {} possible positions.", formattedSZ(positions.len()));
+            true
+        } else {
+            println!("done");
+            false
+        }
     };
-    let path = format!("egtb/{}.egtb", sig);
+
+    // for now
+    if !inMemory {
+        return Err(String::from("the rest of the processing is not implemented yet."));
+    }
+
+    let sig = if positions.len() > 0 { positions[0].signature() } else { String::from("K-K") };
+    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     match File::open(&path) {
         Err(_) => {}
         Ok(_) => {
@@ -417,10 +435,22 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut pass = 2;
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
+    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
+    let mut posHash: HashMap<usize, Vec<CPos>> = HashMap::with_capacity(0);
+    posHash
+        .try_reserve(maxHashed)
+        .map_err(|e| format!("Cannot reserve memory for {} hash entries ({})", maxHashed, e))?;
+
     loop {
-        let mut cacheHits = 0;
+        let mut cacheHits = 0usize;
+        let mut cacheLookups = 0usize;
         pass += 1;
-        print!("{} Pass {} - analyzing positions ...    0% ", sig, pass);
+        print!(
+            "{} Pass {} - analyzing {} positions ...    0% ",
+            sig,
+            pass,
+            if mateonly { "mate" } else { "draw" }
+        );
         io::stdout().flush().unwrap_or_default();
 
         for i in 0..positions.len() {
@@ -432,77 +462,70 @@ pub fn gen(sig: String) -> Result<(), String> {
             if c.state() == UNKNOWN {
                 let p = c.uncompressed();
                 let player = p.turn();
-                let mut fromHash = true;
-                let mut reached = match posHash.get(&c) {
-                    Some(vec) => vec.iter().copied().collect(),
-                    None => {
-                        fromHash = false;
-                        let moves = p.moves();
-                        moves
-                            .iter()
-                            .copied()
-                            .map(|m| p.apply(m).compressed())
-                            .collect::<Vec<CPos>>()
+                cacheLookups += 1;
+                let mut reached = match posHash.get_mut(&i) {
+                    Some(r) => {
+                        cacheHits += 1;
+                        r.iter().copied().collect()
                     }
+                    None => p
+                        .moves()
+                        .iter()
+                        .copied()
+                        .map(|m| p.apply(m).compressed())
+                        .collect::<Vec<CPos>>(),
                 };
-                if fromHash {
-                    cacheHits += 1;
-                }
+                let mut all_can_mate = true;
+                let mut all_can_draw = true;
+                let mut all_unknown = true;
                 if reached.len() == 0 {
                     let s = if p.inCheck(player) { MATE } else { STALEMATE };
                     analyzed[s as usize] += 1;
                     positions[i] = c.withState(s);
                 } else {
-                    // let mut modified = false;
-                    let mut all_can_mate = true;
-                    let mut all_can_draw = true;
-                    for u in 0..reached.len() {
-                        match if reached[u].state() == UNKNOWN {
-                            reached[u].find(&positions, &sig, &mut openFiles)
+                    'children: for u in 0..reached.len() {
+                        let rp = if reached[u].state() == UNKNOWN {
+                            reached[u].find(&positions, &sig, &mut openFiles).map_err(|s| {
+                                format!(
+                                    "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
+                                0x{:016x}",
+                                    s,
+                                    encodeFEN(&reached[u].uncompressed()),
+                                    encodeFEN(&reached[u].canonical().uncompressed()),
+                                    reached[u].canonical().bits
+                                )
+                            })
                         } else {
                             Ok(reached[u])
-                        } {
-                            Err(s) => {
-                                panic!(
-                                    "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
-                                     0x{:016x}",
-                                    s,
-                                    encodeFEN(&reached[i].uncompressed()),
-                                    encodeFEN(&reached[i].canonical().uncompressed()),
-                                    reached[i].canonical().bits
-                                );
-                            }
-                            Ok(rp) => {
-                                if reached[u].state() != rp.state() {
-                                    reached[u] = rp;
-                                    // modified = true;
-                                }
-                                all_can_mate = all_can_mate && rp.state() == CAN_MATE;
-                                all_can_draw = all_can_draw && (rp.state() == CAN_DRAW || rp.state() == CAN_MATE);
-                                match rp.state() {
-                                    MATE | CANNOT_AVOID_MATE => {
-                                        if mateonly {
-                                            analyzed[CAN_MATE as usize] += 1;
-                                            positions[i] = c.withState(CAN_MATE).withMoveIndex(u);
+                        }?;
+                        if reached[u].state() != rp.state() {
+                            reached[u] = rp;
+                        }
+                        all_unknown = all_unknown && rp.state() == UNKNOWN;
+                        all_can_mate = all_can_mate && rp.state() == CAN_MATE;
+                        all_can_draw = all_can_draw && (rp.state() == CAN_DRAW || rp.state() == CAN_MATE);
+                        match rp.state() {
+                            MATE | CANNOT_AVOID_MATE => {
+                                if mateonly {
+                                    analyzed[CAN_MATE as usize] += 1;
+                                    positions[i] = c.withState(CAN_MATE).withMoveIndex(u);
 
-                                            all_can_mate = false;
-                                            all_can_draw = false;
-                                            break;
-                                        }
-                                    }
-                                    STALEMATE | CANNOT_AVOID_DRAW => {
-                                        if !mateonly {
-                                            analyzed[CAN_DRAW as usize] += 1;
-                                            positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
-
-                                            all_can_mate = false;
-                                            all_can_draw = false;
-                                            break;
-                                        }
-                                    }
-                                    _ => (),
+                                    all_can_mate = false;
+                                    all_can_draw = false;
+                                    break 'children;
                                 }
                             }
+                            STALEMATE | CANNOT_AVOID_DRAW => {
+                                if !mateonly {
+                                    analyzed[CAN_DRAW as usize] += 1;
+                                    positions[i] = c.withState(CAN_DRAW).withMoveIndex(u);
+
+                                    all_can_mate = false;
+                                    all_can_draw = false;
+                                    break 'children;
+                                }
+                            }
+                            _ => (),
                         }
                     }
                     if all_can_mate && mateonly {
@@ -512,17 +535,18 @@ pub fn gen(sig: String) -> Result<(), String> {
                         analyzed[CANNOT_AVOID_DRAW as usize] += 1;
                         positions[i] = c.withState(CANNOT_AVOID_DRAW);
                     }
-                    if positions[i].state() == UNKNOWN && (posHash.len() < posHash.capacity() || fromHash) {
-                        posHash.insert(positions[i], reached);
-                    } else if fromHash && positions[i].state() != UNKNOWN {
-                        posHash.remove(&positions[i]);
-                    }
+                }
+                // assert!(posHash.contains_key(&i));
+                if positions[i].state() == UNKNOWN && !all_unknown && posHash.len() < maxHashed {
+                    posHash.insert(i, reached);
+                } else {
+                    posHash.remove(&i);
                 }
             }
         }
         println!(
-            "done. Cache hits {}, hash size {}",
-            formattedSZ(cacheHits),
+            "done. Cache hit rate {}%, new hash size {}",
+            if cacheLookups > 0 { cacheHits * 100 / cacheLookups } else { 0 },
             formattedSZ(posHash.len())
         );
 
@@ -585,7 +609,31 @@ pub fn gen(sig: String) -> Result<(), String> {
     Ok(())
 }
 
-fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mut Vec<CPos>) {
+enum Sink<'a> {
+    W(BufWriter<File>),
+    V(&'a mut Vec<CPos>),
+}
+
+impl Sink<'_> {
+    pub fn push(&mut self, cpos: CPos) {
+        match self {
+            Sink::W(bf) => {
+                cpos.write_seq(bf).unwrap();
+            }
+            Sink::V(vec) => {
+                vec.push(cpos);
+            }
+        }
+    }
+    pub fn flush(&mut self) {
+        match self {
+            Sink::W(bf) => bf.flush().unwrap(),
+            Sink::V(_) => (),
+        }
+    }
+}
+
+fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mut Sink) {
     if index >= pps.len() {
         if pos.valid() {
             positions.push(pos.compressed());
@@ -594,9 +642,11 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
         let r = pos.applyNull();
         if r.valid() {
             positions.push(r.compressed());
+            /*
             if encodeFEN(&r) == "8/8/8/8/8/8/8/3K3k b  - 0 1" {
                 println!("0x{:016x}", r.compressed().bits);
             }
+            */
         }
         return;
     }
