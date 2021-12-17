@@ -2173,7 +2173,7 @@ pub const lowerHalf: BitSet = BitSet { bits: lowerLeftQuarter.bits | lowerRightQ
 /// Mask the fields on files A to D
 pub const leftHalf: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
 
-
+pub type EgtbMap = HashMap<String, Box<(File, u64, CPos)>>;
 
 impl CPos {
 
@@ -2450,7 +2450,7 @@ impl CPos {
 
     /// find a CPos in a sorted vector that holds the positions for a certain signature
     /// or look in the file system
-    pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut HashMap<String, Box<File>>) -> Result<CPos, String> {
+    pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut EgtbMap) -> Result<CPos, String> {
 
         let canon   = self.canonical();
 
@@ -2458,44 +2458,56 @@ impl CPos {
             Ok(p) => { return Ok(vec[p]); }
             Err(_) => if self.signature() == sig { return Err(String::from("not found in memory")) }
         };
+
         // need to look into files
-        {
-            let selfsig = self.signature();
-            let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), selfsig);
-            let mut file = hash.entry(selfsig).or_insert( {
-                    let rfile = File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
-                    Box::new (rfile)
-                })
-            ;
-            
-            
-            // let mut file = opened;
-            match file.seek(SeekFrom::End(0)) {
-                Err(ioe) => Err(format!("error seeking EGTB file {} ({})", path, ioe)),
-                Ok(u) => {
-                    let mut upper = u / 8;
-                    // eprintln!("There are {} positions in {}", u, self.signature());
-                    let mut lower = 0;
-                    while lower < upper {
-                        let mid = lower + (upper-lower) / 2;
-                        match CPos::read_at(&mut file, SeekFrom::Start(8*mid)) {
-                            Err(ioe) => { 
-                                return Err(format!("error reading EGTB file {} at {} ({})", 
-                                    path, 8*mid, ioe)); 
-                            }
-                            Ok(c) => {
-                                if      c == canon      { return Ok(c); }
-                                else if c <  canon      { lower = mid + 1; }
-                                else /* c >  canon */   { upper = mid; }
-                            }
+        let selfsig = self.signature();
+        let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), selfsig);
+        let mut blubb = hash.entry(selfsig).or_insert( {
+                let mut rfile = File::open(&path)
+                                .map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
+                let upper = rfile.seek(SeekFrom::End(0))
+                                .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))?;
+                let npos = upper / 8;
+                let mid  = npos / 2; 
+                let mPos = CPos::read_at(&mut rfile, SeekFrom::Start(8*mid))
+                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8*mid, ioe))?;
+                Box::new ((rfile, npos, mPos))
+            })
+        ;
+
+        let maxpos  = blubb.1;
+        let midCPos = blubb.2;
+        let mut upper = maxpos;
+        // eprintln!("There are {} positions in {}", u, self.signature());
+        let mut lower = 0;
+        while lower < upper {
+            let mid = lower + (upper-lower) / 2;
+            match if mid == maxpos/2 { Ok(midCPos) } 
+                    else { CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid)) } {
+                Err(ioe) => { 
+                    return Err(format!("error reading EGTB file {} at {} ({})", 
+                        path, 8*mid, ioe)); 
+                }
+                Ok(c) => {
+                    if      c == canon      {
+                        // if this was the middle one, we better re-read it
+                        if mid == maxpos/2 {
+                            blubb.2 = CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid))
+                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", 
+                                path, 8*mid, ioe))?;
+                            return Ok(blubb.2);
+
                         }
+                        else { return Ok(c); }
                     }
-                    // pretend we found a DRAW
-                    Ok(self.withState(STALEMATE).withMoveIndex(254))
-            
+                    else if c <  canon      { lower = mid + 1; }
+                    else /* c >  canon */   { upper = mid; }
                 }
             }
         }
+        // pretend we found a DRAW
+        Ok(self.withState(STALEMATE).withMoveIndex(254))
+
     }
  }
 
