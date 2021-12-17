@@ -23,6 +23,7 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Read, Write};
 use std::collections::{HashMap};
+use std::env;
 
 
 // use std::boxed::Box;
@@ -151,7 +152,7 @@ impl From<u32> for Piece {
             4 => ROOK,
             5 => QUEEN,
             6 => KING,
-            _ => panic!(format!("can't cast {} to Piece", u)),
+            _ => panic!("can't cast {} to Piece", u),
         }
     }
 }
@@ -2393,25 +2394,12 @@ impl CPos {
             }
         }
         else {
-            let path = format!("egtb/{}.egtb", self.signature());
-            let hentry = hash.get_mut(&self.signature());
-            let mut file = match hentry {
-                Some(f) => f,
-                None => {
-                    let rfile = File::open(&path);
-                    let wtf = Box::new (match rfile  {
-                        Err(ioe) => return Err(format!("could not open EGTB file {} ({})", path, ioe)),
-                        Ok(opened) => {
-                            opened
-                            
-                            // 
-                            // hash.get(&self.signature()).unwrap()
-                        }
-                    });
-                    hash.insert(self.signature(), wtf);
-                    hash.get_mut(&self.signature()).unwrap()    
-                }
-            };
+            let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), self.signature());
+            let mut file = hash.entry(self.signature()).or_insert( {
+                    let rfile = File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
+                    Box::new (rfile)
+                })
+            ;
             
             
             // let mut file = opened;
