@@ -2143,6 +2143,11 @@ pub const cposCode3 : u64 = cposCode4 >> 10;
 pub const cposCode2 : u64 = cposCode3 >> 10;
 /// Mask the code for piece 1
 pub const cposCode1 : u64 = cposCode2 >> 10;
+/// shifts to get the numbers
+pub const cposCode1Shift : u32 = cposCode1.trailing_zeros();
+pub const cposCode2Shift : u32 = cposCode2.trailing_zeros();
+pub const cposCode3Shift : u32 = cposCode3.trailing_zeros();
+pub const cposCode4Shift : u32 = cposCode4.trailing_zeros();
 /// Mask the field of piece 4
 pub const cposFld4 : u64 = 0x0000_fc00_0000_0000u64;
 /// Maskt the field of piece 3
@@ -2253,6 +2258,58 @@ impl CPos {
     }
 
     pub fn signature(&self) -> String {
+        let mut result = String::with_capacity(10);
+        result.push('K');
+        let p1 = (self.bits & cposCode1) >> cposCode1Shift;
+        let p2 = (self.bits & cposCode2) >> cposCode2Shift;
+        let p3 = (self.bits & cposCode3) >> cposCode3Shift;
+        let p4 = (self.bits & cposCode4) >> cposCode4Shift;
+        if p1==13 { result.push('Q') }
+        if p2==13 { result.push('Q') }
+        if p3==13 { result.push('Q') }
+        if p4==13 { result.push('Q') }
+        if p1==12 { result.push('R') }
+        if p2==12 { result.push('R') }
+        if p3==12 { result.push('R') }
+        if p4==12 { result.push('R') }
+        if p1==11 { result.push('B') }
+        if p2==11 { result.push('B') }
+        if p3==11 { result.push('B') }
+        if p4==11 { result.push('B') }
+        if p1==10 { result.push('N') }
+        if p2==10 { result.push('N') }
+        if p3==10 { result.push('N') }
+        if p4==10 { result.push('N') }
+        if p1==9 || p1 == 15 { result.push('P') }
+        if p2==9 || p2 == 15 { result.push('P') }
+        if p3==9 || p3 == 15 { result.push('P') }
+        if p4==9 || p4 == 15 { result.push('P') }
+        result.push('-');
+        result.push('K');
+        if p1==5 { result.push('Q') }
+        if p2==5 { result.push('Q') }
+        if p3==5 { result.push('Q') }
+        if p4==5 { result.push('Q') }
+        if p1==4 { result.push('R') }
+        if p2==4 { result.push('R') }
+        if p3==4 { result.push('R') }
+        if p4==4 { result.push('R') }
+        if p1==3 { result.push('B') }
+        if p2==3 { result.push('B') }
+        if p3==3 { result.push('B') }
+        if p4==3 { result.push('B') }
+        if p1==2 { result.push('N') }
+        if p2==2 { result.push('N') }
+        if p3==2 { result.push('N') }
+        if p4==2 { result.push('N') }
+        if p1==1 || p1 == 7 { result.push('P') }
+        if p2==1 || p2 == 7 { result.push('P') }
+        if p3==1 || p3 == 7 { result.push('P') }
+        if p4==1 || p4 == 7 { result.push('P') }
+        result
+    }
+
+    pub fn signature_slow(&self) -> String {
         let mut result = String::from("");
         let pos = self.uncompressed();
         result.push('K');
@@ -2387,15 +2444,16 @@ impl CPos {
     /// find a CPos in a sorted vector that holds the positions for a certain signature
     /// or look in the file system
     pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut HashMap<String, Box<File>>) -> Result<CPos, String> {
-        if self.signature() == sig {
+        let selfsig = self.signature();
+        if  selfsig == sig {
             match self.lookup(vec) {
                 None => Err(String::from("not found in memory")),
                 Some(c) => Ok(c),
             }
         }
         else {
-            let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), self.signature());
-            let mut file = hash.entry(self.signature()).or_insert( {
+            let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), selfsig);
+            let mut file = hash.entry(selfsig).or_insert( {
                     let rfile = File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
                     Box::new (rfile)
                 })
