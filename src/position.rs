@@ -21,7 +21,7 @@ use std::vec::Vec;
 use std::cmp::{min, max};
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Read, Write};
+use std::io::{Seek, SeekFrom, Read, Write, BufReader};
 use std::collections::{HashMap};
 use std::env;
 
@@ -2409,6 +2409,13 @@ impl CPos {
         Ok( CPos { bits: u64::from_be_bytes(buf) } )
     }
 
+    // read a CPos at the current position from a buffered reader
+    pub fn read_seq(file: &mut BufReader<File>) -> Result<CPos, std::io::Error> {
+        let mut buf = [0u8; 8];
+        file.read_exact(&mut buf)?;
+        Ok( CPos { bits: u64::from_be_bytes(buf) } )
+    }
+
     /// read a CPos at some seek position
     pub fn read_at(file: &mut File, wo: SeekFrom) -> Result<CPos, std::io::Error> {
         file.seek(wo)?;
@@ -2444,14 +2451,16 @@ impl CPos {
     /// find a CPos in a sorted vector that holds the positions for a certain signature
     /// or look in the file system
     pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut HashMap<String, Box<File>>) -> Result<CPos, String> {
-        let selfsig = self.signature();
-        if  selfsig == sig {
-            match self.lookup(vec) {
-                None => Err(String::from("not found in memory")),
-                Some(c) => Ok(c),
-            }
-        }
-        else {
+
+        let canon   = self.canonical();
+
+        match vec.binary_search(&canon) {
+            Ok(p) => { return Ok(vec[p]); }
+            Err(_) => if self.signature() == sig { return Err(String::from("not found in memory")) }
+        };
+        // need to look into files
+        {
+            let selfsig = self.signature();
             let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), selfsig);
             let mut file = hash.entry(selfsig).or_insert( {
                     let rfile = File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
@@ -2467,7 +2476,6 @@ impl CPos {
                     let mut upper = u / 8;
                     // eprintln!("There are {} positions in {}", u, self.signature());
                     let mut lower = 0;
-                    let cpos = self.canonical();
                     while lower < upper {
                         let mid = lower + (upper-lower) / 2;
                         match CPos::read_at(&mut file, SeekFrom::Start(8*mid)) {
@@ -2476,14 +2484,14 @@ impl CPos {
                                     path, 8*mid, ioe)); 
                             }
                             Ok(c) => {
-                                if      c == cpos      { return Ok(c); }
-                                else if c <  cpos      { lower = mid + 1; }
-                                else /* c >  cpos */   { upper = mid; }
+                                if      c == canon      { return Ok(c); }
+                                else if c <  canon      { lower = mid + 1; }
+                                else /* c >  canon */   { upper = mid; }
                             }
                         }
                     }
                     // pretend we found a DRAW
-                    Ok(self.withState(STALEMATE))
+                    Ok(self.withState(STALEMATE).withMoveIndex(254))
             
                 }
             }
