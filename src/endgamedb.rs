@@ -1,13 +1,13 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
+use super::fen::{decodeFEN, encodeFEN};
 use super::fieldset::*;
 use super::position as P;
 use super::position::CPos;
-// use super::position::Move;
-use super::fen::{decodeFEN, encodeFEN};
 use super::position::CPosState;
 use super::position::CPosState::*;
+use super::position::Move;
 use super::position::Piece;
 use super::position::Piece::*;
 use super::position::Player;
@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io;
+use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::ErrorKind::*;
 use std::io::Write;
@@ -135,30 +136,41 @@ pub fn over(n: usize, k: usize) -> usize {
 
 /// Play an example end game
 pub fn play(fen: &str) -> Result<(), String> {
-    let pos0 = decodeFEN(fen)?;
-    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
-    playPos(&pos0, &mut openFiles)
+    let mut pos = decodeFEN(fen)?;
+    while pos.getPlyCounter() < 100 {
+        match findEndgameMove(&pos) {
+            Ok(mv) => {
+                pos = pos.apply(mv);
+                continue;
+            }
+            Err(s) if s == "MATE" => return Ok(()),
+            Err(s) if s == "STALEMATE" => return Ok(()),
+            Err(x) => return Err(x),
+        };
+    }
+    Err(String::from("DRAW (50 moves)"))
 }
 
-pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<(), String> {
+pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     let cpos = if pos.validEndgame() {
         Ok(pos.compressed())
     } else {
         Err(String::from("position is no valid end game."))
     }?;
+    let mut hash: HashMap<String, Box<File>> = HashMap::new();
     let sig = cpos.signature();
     let none: Vec<CPos> = Vec::new();
-    let rpos = cpos.find(&none, "leer", hash)?;
+    let rpos = cpos.find(&none, "leer", &mut hash)?;
     if rpos != cpos {
         println!(
-            "{} looked up for 0x{:016x} ({})",
+            "# {} looked up for 0x{:016x} ({})",
             sig,
             cpos.bits,
             encodeFEN(&cpos.uncompressed())
         );
     }
     println!(
-        "{} found canonic 0x{:016x} ({})",
+        "# {} found canonic 0x{:016x} ({})",
         sig,
         rpos.bits,
         encodeFEN(&rpos.uncompressed())
@@ -167,19 +179,12 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
     match s {
         UNKNOWN => Err(String::from("illegal UNKNOWN state for this position")),
         MATE => {
-            println!("{:?} to play finds mate", pos.turn());
-            Ok(())
+            println!("# {:?} to play finds mate", pos.turn());
+            Err(String::from("MATE"))
         }
-        STALEMATE => {
-            if pos.moves().len() == 0 {
-                println!("{:?} to play finds stale mate", pos.turn());
-            } else {
-                println!(
-                    "{:?} to play finds draw (insufficient material or other reasons)",
-                    pos.turn()
-                );
-            }
-            Ok(())
+        STALEMATE if pos.moves().len() == 0 => {
+            println!("# {:?} to play finds stale mate", pos.turn());
+            Err(String::from("STALEMATE"))
         }
         CAN_MATE | CAN_DRAW => {
             let mv = rpos.uncompressed().moves()[rpos.moveIndex()];
@@ -199,15 +204,14 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
                 ))
             }?;
             println!(
-                "{:?} to move will enforce {} with {}",
+                "# {:?} to move will enforce {} with {}",
                 pos.turn(),
                 if s == CAN_MATE { "mate" } else { "draw" },
                 omv.showSAN(*pos)
             );
-            let next = pos.apply(omv);
-            playPos(&next, hash)
+            Ok(omv)
         }
-        CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE => {
+        STALEMATE | CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE => {
             let moves = pos.moves();
             let mv = if s == CANNOT_AVOID_MATE {
                 moves[0]
@@ -215,10 +219,14 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
                 let reached = moves.iter().map(|&m| pos.apply(m).compressed()).collect::<Vec<CPos>>();
                 let lookups = reached
                     .iter()
-                    .map(|cp| cp.find(&none, "leer", hash))
+                    .map(|cp| cp.find(&none, "leer", &mut hash))
                     .filter(|x| x.is_ok())
                     .map(|x| x.unwrap())
-                    .find(|cp| cp.state() != CAN_MATE && cp.state() != MATE);
+                    .find(|cp| {
+                        cp.state() != CAN_MATE
+                            && cp.state() != MATE
+                            && !(cp.state() == STALEMATE && cp.moveIndex() == 255)
+                    });
                 match lookups {
                     None => moves[0],
                     Some(cp) => match (0..reached.len()).find(|&i| reached[i].canonical() == cp) {
@@ -228,14 +236,13 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
                 }
             };
             println!(
-                "{:?} to move cannot avoid {} so {} {}",
+                "# {:?} to move cannot avoid {} so {} {}",
                 pos.turn(),
                 if s == CANNOT_AVOID_MATE { "mate" } else { "draw" },
                 if mv == moves[0] { "arbitrarily" } else { "intentionally" },
                 mv.showSAN(*pos)
             );
-            let next = pos.apply(mv);
-            playPos(&next, hash)
+            Ok(mv)
         }
     }
 }
@@ -243,16 +250,17 @@ pub fn playPos(pos: &Position, hash: &mut HashMap<String, Box<File>>) -> Result<
 /// Provide statistics for an endgame tablebase
 pub fn stats(sig: String) -> Result<(), String> {
     let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let mut file = match File::open(&path) {
+    let file = match File::open(&path) {
         Err(cant) => return Err(format!("can't open {} ({})", path, cant)),
         Ok(f) => f,
     };
+    let mut rdr = BufReader::new(file);
 
     let mut kinds = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let c0 = CPos { bits: 0 };
     let mut examples = vec![c0, c0, c0, c0, c0, c0, c0, c0];
     loop {
-        match CPos::read(&mut file) {
+        match CPos::read_seq(&mut rdr) {
             Err(x) if x.kind() == UnexpectedEof => break,
             Err(x) => return Err(format!("read error ({}) in {}", x, path)),
             Ok(c) => {
@@ -436,10 +444,24 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
     let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
+    let mut maxHashCap = maxHashed;
     let mut posHash: HashMap<usize, Vec<CPos>> = HashMap::with_capacity(0);
-    posHash
-        .try_reserve(maxHashed)
-        .map_err(|e| format!("Cannot reserve memory for {} hash entries ({})", maxHashed, e))?;
+
+    // create and size our hash
+    while maxHashCap > 100_000 {
+        match posHash.try_reserve(maxHashCap) {
+            Ok(_) => break,
+            Err(_) => {
+                maxHashCap /= 2;
+                continue;
+            }
+        }
+    }
+    if maxHashCap > 100_000 {
+        println!("{} reserved space for {} hash entries.", sig, posHash.capacity());
+    } else {
+        return Err(format!("Cannot reserve memory for {} hash entries.", maxHashCap));
+    }
 
     loop {
         let mut cacheHits = 0usize;
@@ -537,7 +559,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                     }
                 }
                 // assert!(posHash.contains_key(&i));
-                if positions[i].state() == UNKNOWN && !all_unknown && posHash.len() < maxHashed {
+                if positions[i].state() == UNKNOWN && !all_unknown && posHash.len() < maxHashCap {
                     posHash.insert(i, reached);
                 } else {
                     posHash.remove(&i);
