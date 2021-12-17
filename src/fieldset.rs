@@ -123,7 +123,7 @@ impl Field {
                 6 => A6,
                 7 => A7,
                 8 => A8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'b' => match r {
                 1 => B1,
@@ -134,7 +134,7 @@ impl Field {
                 6 => B6,
                 7 => B7,
                 8 => B8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'c' => match r {
                 1 => C1,
@@ -145,7 +145,7 @@ impl Field {
                 6 => C6,
                 7 => C7,
                 8 => C8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'd' => match r {
                 1 => D1,
@@ -156,7 +156,7 @@ impl Field {
                 6 => D6,
                 7 => D7,
                 8 => D8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'e' => match r {
                 1 => E1,
@@ -167,7 +167,7 @@ impl Field {
                 6 => E6,
                 7 => E7,
                 8 => E8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'f' => match r {
                 1 => F1,
@@ -178,7 +178,7 @@ impl Field {
                 6 => F6,
                 7 => F7,
                 8 => F8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'g' => match r {
                 1 => G1,
@@ -189,7 +189,7 @@ impl Field {
                 6 => G6,
                 7 => G7,
                 8 => G8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             'h' => match r {
                 1 => H1,
@@ -200,7 +200,7 @@ impl Field {
                 6 => H6,
                 7 => H7,
                 8 => H8,
-                w => panic!(format!("illegal rank {}", w)),
+                w => panic!("illegal rank {}", w),
             },
             _ => panic!("illegal file '{}' ({})", f, f as u32),
         }
