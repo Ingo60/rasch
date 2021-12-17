@@ -157,7 +157,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     } else {
         Err(String::from("position is no valid end game."))
     }?;
-    let mut hash: HashMap<String, Box<File>> = HashMap::new();
+    let mut hash: P::EgtbMap = HashMap::new();
     let sig = cpos.signature();
     let none: Vec<CPos> = Vec::new();
     let rpos = cpos.find(&none, "leer", &mut hash)?;
@@ -443,8 +443,8 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut pass = 2;
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
-    let mut openFiles: HashMap<String, Box<File>> = HashMap::new();
-    let mut maxHashCap = maxHashed;
+    let mut openFiles: P::EgtbMap = HashMap::new();
+    let mut maxHashCap = positions.len().min(maxHashed);
     let mut posHash: HashMap<usize, Vec<CPos>> = HashMap::with_capacity(0);
 
     // create and size our hash
@@ -458,7 +458,11 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     }
     if maxHashCap > 100_000 {
-        println!("{} reserved space for {} hash entries.", sig, posHash.capacity());
+        println!(
+            "{} reserved space for {} hash entries.",
+            sig,
+            formattedSZ(posHash.capacity())
+        );
     } else {
         return Err(format!("Cannot reserve memory for {} hash entries.", maxHashCap));
     }
@@ -559,9 +563,12 @@ pub fn gen(sig: String) -> Result<(), String> {
                     }
                 }
                 // assert!(posHash.contains_key(&i));
-                if positions[i].state() == UNKNOWN && !all_unknown && posHash.len() < maxHashCap {
+                if positions[i].state() == UNKNOWN
+                    && (maxHashCap >= positions.len() || !all_unknown && posHash.len() < maxHashCap)
+                {
                     posHash.insert(i, reached);
-                } else {
+                }
+                if positions[i].state() != UNKNOWN {
                     posHash.remove(&i);
                 }
             }
