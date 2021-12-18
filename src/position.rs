@@ -24,6 +24,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Read, Write, BufReader};
 use std::collections::{HashMap};
 use std::env;
+use std::io::ErrorKind::*;
 
 
 // use std::boxed::Box;
@@ -2402,18 +2403,29 @@ impl CPos {
         }
     }
 
-    // read a CPos at the current position
+    /// read a CPos at the current position
     pub fn read(file: &mut File) -> Result<CPos, std::io::Error> {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
         Ok( CPos { bits: u64::from_be_bytes(buf) } )
     }
 
-    // read a CPos at the current position from a buffered reader
+    /// read a CPos at the current position from a buffered reader
     pub fn read_seq(file: &mut BufReader<File>) -> Result<CPos, std::io::Error> {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
         Ok( CPos { bits: u64::from_be_bytes(buf) } )
+    }
+
+    /// like `read_seq`, but maps Err(UnexpectedEOF) to OK(None) and
+    /// Ok(v) to Ok(Some(v))
+    pub fn read_seq_with_eof(file: &mut BufReader<File>) -> Result<Option<CPos>, std::io::Error> {
+        let mut buf = [0u8; 8];
+        match file.read_exact(&mut buf) {
+            Ok(_) => Ok(Some(CPos { bits: u64::from_be_bytes(buf) })),
+            Err(x) if x.kind() == UnexpectedEof => Ok(None),
+            Err(other) => Err(other)
+        }
     }
 
     /// read a CPos at some seek position
