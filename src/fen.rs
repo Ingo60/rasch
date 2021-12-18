@@ -90,10 +90,7 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
         return Err(String::from("cannot decode FEN, it must have 6 space separated fields"));
     }
     let mut pos = P::emptyBoard();
-    pos = P::Position {
-        flags: F::BitSet::empty(),
-        ..pos
-    };
+    pos = P::Position { flags: F::BitSet::empty(), ..pos };
 
     let fen1: Vec<char> = fen[0].chars().collect();
     let fen2 = fen[1];
@@ -175,18 +172,8 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
 
     // decode player
     match fen2 {
-        "w" => {
-            pos = P::Position {
-                flags: pos.flags + P::whiteToMove,
-                ..pos
-            }
-        }
-        "b" => {
-            pos = P::Position {
-                flags: pos.flags - P::whiteToMove,
-                ..pos
-            }
-        }
+        "w" => pos = P::Position { flags: pos.flags + P::whiteToMove, ..pos },
+        "b" => pos = P::Position { flags: pos.flags - P::whiteToMove, ..pos },
         _ => {
             return Err(format!(
                 "Invalid FEN: second field must be 'w' or 'b', found \"{}\"",
@@ -198,36 +185,11 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
     //decode castling
     for ch in fen3.iter() {
         match ch {
-            'K' => {
-                pos = P::Position {
-                    flags: pos.flags + P::bit(G1),
-                    ..pos
-                }
-            }
-            'Q' => {
-                pos = P::Position {
-                    flags: pos.flags + P::bit(C1),
-                    ..pos
-                }
-            }
-            'k' => {
-                pos = P::Position {
-                    flags: pos.flags + P::bit(G8),
-                    ..pos
-                }
-            }
-            'q' => {
-                pos = P::Position {
-                    flags: pos.flags + P::bit(C8),
-                    ..pos
-                }
-            }
-            '-' => {
-                pos = P::Position {
-                    flags: pos.flags - P::castlingBits,
-                    ..pos
-                }
-            }
+            'K' => pos = P::Position { flags: pos.flags + P::bit(G1), ..pos },
+            'Q' => pos = P::Position { flags: pos.flags + P::bit(C1), ..pos },
+            'k' => pos = P::Position { flags: pos.flags + P::bit(G8), ..pos },
+            'q' => pos = P::Position { flags: pos.flags + P::bit(C8), ..pos },
+            '-' => pos = P::Position { flags: pos.flags - P::castlingBits, ..pos },
             _other => {
                 return Err(format!("Invalid FEN: illegal char in castling field: '{}'", ch));
             }
@@ -237,10 +199,7 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
     // decode en passant
     if fen4 != "-" {
         let f: F::Field = fen4.parse()?;
-        pos = P::Position {
-            flags: pos.flags + P::bit(f),
-            ..pos
-        };
+        pos = P::Position { flags: pos.flags + P::bit(f), ..pos };
     }
     Ok(pos.rehash())
 }
@@ -257,14 +216,10 @@ pub fn encodeFEN(pos: &P::Position) -> String {
     let fen6 = "1";
     let fen5 = pos.getPlyCounter().to_string();
     let eps = pos.flags * P::enPassantBits;
-    let fen4 = if eps.some() {
-        P::fld(eps).to_string()
-    } else {
-        String::from("-")
-    };
+    let fen4 = if eps.some() { P::fld(eps).to_string() } else { String::from("-") };
     let crs = pos.flags * P::castlingBits;
     let fen3 = if crs.null() {
-        String::from("")
+        String::from("-")
     } else {
         crs.map(|f| match f {
             C1 => 'Q',
@@ -284,11 +239,7 @@ pub fn encodeFEN(pos: &P::Position) -> String {
                 _other => "",
             });
             let p = pos.pieceOn(*f).show();
-            let pP = if pos.whites.member(*f) {
-                p
-            } else {
-                p.to_ascii_lowercase()
-            };
+            let pP = if pos.whites.member(*f) { p } else { p.to_ascii_lowercase() };
             prefix + &pP
         })
         .collect();
