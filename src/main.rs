@@ -27,6 +27,7 @@ use rasch::position::Piece::*;
 use rasch::position::Position;
 // use rasch::zobrist as Z;
 use rasch::endgamedb as E;
+use rasch::sortegtb as S;
 
 fn main() {
     mdb::initStatic();
@@ -75,20 +76,49 @@ fn main() {
                 println!("error: {}", s);
             }
         }
-    } else if argv[1].starts_with("play") && argv.len() >= 3 {
+    } else if argv[1].starts_with("play") && argv.len() == 3 {
         match E::play(&String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
                 println!("error: {}", s);
             }
         }
+    } else if argv[1].starts_with("play") && argv.len() == 8 {
+        let mut fen = String::from(argv[2].clone());
+        for i in 3..8 {
+            fen.push(' ');
+            fen.push_str(&argv[i]);
+        }
+        match E::play(&fen) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("sort") && argv.len() >= 3 {
+        match S::sort(&String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+            }
+        }
     } else {
         eprintln!("Illegal command line argument: `{}´", argv[1]);
         eprintln!(
-            "Usage: {} [flamegraph [N]|negamin|negamax|pvs|simple|bns|mtdf|gen sig|stats sig|play 'fen']",
+            "Usage (e.g. as xboard client): \
+            \n    {0} [negamin|negamax|pvs|bns|mtdf]     # default is `negamin`
+            \nDeveloper tools:\
+            \n    {0} flamegraph [N]    # used to get data for cargo flamegraph\
+            \n    {0} gen sig           # genereate end game table\
+            \n    {0} stats sig         # print statistics for end game table\
+            \n    {0} play 'fen'        # simulate end game from position given in FEN notation\
+            \n    {0} sort sig          # sort an unsorted end game table\
+            \n\
+            \nThe directory where end game tables reside is given with environment variable EGTB.\
+            \nDefault is ./egtb\
+            \n",
             argv[0]
         );
-        eprintln!("The default is `negamin´");
     };
 }
 
@@ -159,11 +189,11 @@ pub fn strategy_best(mut state: StrategyState) {
             .send(MV(
                 state.sid,
                 Variation {
-                    depth:  1,
-                    moves:  [mv; VariationMoves as usize],
+                    depth: 1,
+                    moves: [mv; VariationMoves as usize],
                     length: 1,
-                    nodes:  1,
-                    score:  p2.eval(),
+                    nodes: 1,
+                    score: p2.eval(),
                 },
             ))
             .unwrap();
@@ -255,13 +285,19 @@ pub fn boundedScore(n: i32) -> i32 {
 }
 
 /// Create an upper bound score.
-pub fn upperBound(n: i32) -> i32 { 4 * n - 1 }
+pub fn upperBound(n: i32) -> i32 {
+    4 * n - 1
+}
 
 /// Create a lower bound score.
-pub fn lowerBound(n: i32) -> i32 { 4 * n + 1 }
+pub fn lowerBound(n: i32) -> i32 {
+    4 * n + 1
+}
 
 /// Create an exact score.
-pub fn exactScore(n: i32) -> i32 { 4 * n }
+pub fn exactScore(n: i32) -> i32 {
+    4 * n
+}
 
 /// Helper functin for negaMax
 pub fn negaMaxGo(
@@ -274,13 +310,7 @@ pub fn negaMaxGo(
     beta: i32,
     moves: &Vec<Move>,
 ) -> Variation {
-    let mut best = Variation {
-        nodes: 0,
-        length: 0,
-        moves: NONE,
-        depth,
-        score: -999_999_999,
-    };
+    let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = *hist.last().unwrap();
     let mut alpha = alpha0;
     for m in moves.iter().copied() {
@@ -307,12 +337,7 @@ pub fn negaMaxGo(
             return killerpv;
         }
         if score > alpha || score > best.score {
-            best = Variation {
-                nodes: best.nodes + pv.nodes,
-                score,
-                ..pv
-            }
-            .push(m);
+            best = Variation { nodes: best.nodes + pv.nodes, score, ..pv }.push(m);
         } else {
             best.nodes += pv.nodes;
         }
@@ -332,13 +357,7 @@ pub fn pvsGo(
     beta: i32,
     moves: &[Move],
 ) -> Variation {
-    let mut best = Variation {
-        nodes: 0,
-        length: 0,
-        moves: NONE,
-        depth,
-        score: -999_999_999,
-    };
+    let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = *hist.last().unwrap();
     let mut alpha = alpha0;
     for &m in moves.iter() {
@@ -380,12 +399,7 @@ pub fn pvsGo(
             if let Some(killer) = pv.last() {
                 killers.insert(killer);
             }
-            best = Variation {
-                nodes: best.nodes + pv.nodes,
-                score,
-                ..pv
-            }
-            .push(m);
+            best = Variation { nodes: best.nodes + pv.nodes, score, ..pv }.push(m);
         } else {
             best.nodes += pv.nodes;
         }
@@ -428,13 +442,7 @@ pub fn insertPV(
 }
 
 const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
-const DRAW: Variation = Variation {
-    score:  0,
-    nodes:  1,
-    depth:  0,
-    length: 0,
-    moves:  NONE,
-};
+const DRAW: Variation = Variation { score: 0, nodes: 1, depth: 0, length: 0, moves: NONE };
 
 pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool, u32, i32, i32) -> Variation;
 
@@ -456,10 +464,7 @@ pub fn negaMax(
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
-        let epv = Variation {
-            score: pos.turn().factor() * pos.eval(),
-            ..DRAW
-        };
+        let epv = Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
         return epv;
     }
     // the follwoing is needed because else there is an immutable reference
@@ -475,24 +480,14 @@ pub fn negaMax(
             ordered.push(hashmove);
             ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
             match checkBound(te.score) {
-                Ordering::Equal if te.depth >= depth => Variation {
-                    length: te.pvLength,
-                    moves: te.pvMoves,
-                    score: te.score >> 2,
-                    nodes: 1,
-                    depth,
-                },
+                Ordering::Equal if te.depth >= depth => {
+                    Variation { length: te.pvLength, moves: te.pvMoves, score: te.score >> 2, nodes: 1, depth }
+                }
 
                 Ordering::Less if te.depth >= depth => {
                     let alpha2 = max(alpha, (te.score - 1) >> 2);
                     if alpha2 > beta {
-                        Variation {
-                            length: te.pvLength,
-                            moves: te.pvMoves,
-                            score: alpha2,
-                            nodes: 1,
-                            depth,
-                        }
+                        Variation { length: te.pvLength, moves: te.pvMoves, score: alpha2, nodes: 1, depth }
                     } else {
                         let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
                         if depth >= te.depth && !ext {
@@ -505,13 +500,7 @@ pub fn negaMax(
                 Ordering::Greater if te.depth >= depth => {
                     let beta2 = min(beta, (te.score + 1) >> 2);
                     if alpha >= beta2 {
-                        Variation {
-                            length: te.pvLength,
-                            moves: te.pvMoves,
-                            score: beta2,
-                            nodes: 1,
-                            depth,
-                        }
+                        Variation { length: te.pvLength, moves: te.pvMoves, score: beta2, nodes: 1, depth }
                     } else {
                         let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
                         if depth >= te.depth && !ext {
@@ -532,17 +521,10 @@ pub fn negaMax(
         }
         None => {
             let moves = pos.moves();
-            let ordered = if depth > 1 {
-                orderMoves(&pos, killers, &moves[..])
-            } else {
-                moves
-            };
+            let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation {
-                        score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
-                        ..DRAW
-                    };
+                    let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
                     mate
                 } else {
                     DRAW
@@ -621,10 +603,10 @@ pub fn strategy_negamin(state: StrategyState) {
     }
     if allMoves.len() == 1 {
         if state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         }) {
             state.tellNoMore();
@@ -652,10 +634,7 @@ pub fn pvsSearch(
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
-        let epv = Variation {
-            score: pos.turn().factor() * pos.eval(),
-            ..DRAW
-        };
+        let epv = Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
         return epv;
     }
     // the follwoing is needed because else there is an immutable reference
@@ -671,24 +650,14 @@ pub fn pvsSearch(
             ordered.push(hashmove);
             ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
             match checkBound(te.score) {
-                Ordering::Equal if te.depth >= depth => Variation {
-                    length: te.pvLength,
-                    moves: te.pvMoves,
-                    score: te.score >> 2,
-                    nodes: 1,
-                    depth,
-                },
+                Ordering::Equal if te.depth >= depth => {
+                    Variation { length: te.pvLength, moves: te.pvMoves, score: te.score >> 2, nodes: 1, depth }
+                }
 
                 Ordering::Less if te.depth >= depth => {
                     let alpha2 = max(alpha, (te.score - 1) >> 2);
                     if alpha2 > beta {
-                        Variation {
-                            length: te.pvLength,
-                            moves: te.pvMoves,
-                            score: alpha2,
-                            nodes: 1,
-                            depth,
-                        }
+                        Variation { length: te.pvLength, moves: te.pvMoves, score: alpha2, nodes: 1, depth }
                     } else {
                         let pv = pvsGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
                         if depth >= te.depth && !ext {
@@ -701,13 +670,7 @@ pub fn pvsSearch(
                 Ordering::Greater if te.depth >= depth => {
                     let beta2 = min(beta, (te.score + 1) >> 2);
                     if alpha >= beta2 {
-                        Variation {
-                            length: te.pvLength,
-                            moves: te.pvMoves,
-                            score: beta2,
-                            nodes: 1,
-                            depth,
-                        }
+                        Variation { length: te.pvLength, moves: te.pvMoves, score: beta2, nodes: 1, depth }
                     } else {
                         let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
                         if depth >= te.depth && !ext {
@@ -728,17 +691,10 @@ pub fn pvsSearch(
         }
         None => {
             let moves = pos.moves();
-            let ordered = if depth > 1 {
-                orderMoves(&pos, killers, &moves[..])
-            } else {
-                moves
-            };
+            let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation {
-                        score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3,
-                        ..DRAW
-                    };
+                    let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
                     mate
                 } else {
                     DRAW
@@ -840,13 +796,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
 
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
-            let pv = Variation {
-                score: -pv1.score,
-                depth: depth + 1,
-                nodes: pv1.nodes + nodes + 1,
-                ..pv1
-            }
-            .push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
@@ -876,13 +826,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
     let myPos = state.current();
     let myMoves = myPos.moves();
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
-    let mut best = Variation {
-        depth:  0,
-        length: 0,
-        moves:  NONE,
-        nodes:  0,
-        score:  P::whiteIsMate,
-    };
+    let mut best = Variation { depth: 0, length: 0, moves: NONE, nodes: 0, score: P::whiteIsMate };
     let mut nodes = 0;
     // for increasing depth
     loop
@@ -987,13 +931,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             }
 
             // the final version with our move pushed onto the end
-            let pv = Variation {
-                score: -pv1.score,
-                depth: depth + 1,
-                nodes: pv1.nodes + nodes + 1,
-                ..pv1
-            }
-            .push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
 
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
@@ -1046,10 +984,10 @@ pub fn strategy_negamax(state: StrategyState) {
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
         state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
         state.tellNoMore();
@@ -1072,10 +1010,10 @@ pub fn strategy_pvs(state: StrategyState) {
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
         state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
         state.tellNoMore();
@@ -1135,10 +1073,10 @@ pub fn strategy_simple(state: StrategyState) {
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
         state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
         state.tellNoMore();
@@ -1231,13 +1169,7 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
 
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
-            let pv = Variation {
-                score: -pv1.score,
-                depth: depth + 1,
-                nodes: pv1.nodes + nodes + 1,
-                ..pv1
-            }
-            .push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
@@ -1362,10 +1294,7 @@ pub fn simpleMax(
     // mate or draw checking
     if ordered.len() == 0 {
         if pos.inCheck(pos.turn()) {
-            let mate = Variation {
-                score: P::whiteIsMate + (pos.getRootDistance() as i32),
-                ..DRAW
-            };
+            let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32), ..DRAW };
             return mate;
         } else {
             return DRAW;
@@ -1373,25 +1302,12 @@ pub fn simpleMax(
     }
 
     let mut best = match maybeTE {
-        Some(te) if te.pv.depth >= depth => Variation {
-            nodes: 1,
-            score: te.pv.score,
-            ..te.pv
-        },
-        _other => Variation {
-            nodes:  0,
-            length: 0,
-            moves:  NONE,
-            depth:  0,
-            score:  -999_999_999,
-        },
+        Some(te) if te.pv.depth >= depth => Variation { nodes: 1, score: te.pv.score, ..te.pv },
+        _other => Variation { nodes: 0, length: 0, moves: NONE, depth: 0, score: -999_999_999 },
     };
 
     if depth == 0 {
-        Variation {
-            score: pos.eval_have_moves(&ordered) * pos.turn().factor(),
-            ..DRAW
-        }
+        Variation { score: pos.eval_have_moves(&ordered) * pos.turn().factor(), ..DRAW }
     } else {
         let current = pos;
         let mut alpha = max(alpha0, best.score);
@@ -1414,13 +1330,7 @@ pub fn simpleMax(
                 killers.insert(killer);
             }
             if score > beta || score > alpha || score > best.score {
-                best = Variation {
-                    nodes: best.nodes + pv.nodes,
-                    depth: pv.depth + 1,
-                    score,
-                    ..pv
-                }
-                .push(m);
+                best = Variation { nodes: best.nodes + pv.nodes, depth: pv.depth + 1, score, ..pv }.push(m);
                 if score > beta {
                     break;
                 }
@@ -1439,11 +1349,7 @@ pub fn simpleMax(
             } else if depth > 2 && best.depth > 0 && best.length > 0 && best.score != 0 {
                 hash.insert(
                     current,
-                    SimpleTransp {
-                        halfmove: hist.len() as u32,
-                        moves:    ordered,
-                        pv:       Variation { nodes: 1, ..best },
-                    },
+                    SimpleTransp { halfmove: hist.len() as u32, moves: ordered, pv: Variation { nodes: 1, ..best } },
                 );
             };
         }
@@ -1466,10 +1372,10 @@ pub fn strategy_bns(state: StrategyState) {
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
         state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
         state.tellNoMore();
@@ -1540,13 +1446,7 @@ pub fn iterBNS(state: StrategyState) {
 
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
-            let pv = Variation {
-                score: -pv1.score,
-                depth: depth,
-                nodes,
-                ..pv1
-            }
-            .push(m);
+            let pv = Variation { score: -pv1.score, depth: depth, nodes, ..pv1 }.push(m);
 
             // show the result of the search
             println!(
@@ -1642,17 +1542,11 @@ pub fn mtdfMax(
         }
     };
     if depth == 0 {
-        return Variation {
-            score: pos.turn().factor() * pos.eval(),
-            ..DRAW
-        };
+        return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
     };
     if moves.len() == 0 {
         if pos.inCheck(pos.turn()) {
-            return Variation {
-                score: P::whiteIsMate + (pos.getRootDistance() as i32),
-                ..DRAW
-            };
+            return Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32), ..DRAW };
         } else {
             return DRAW;
         }
@@ -1664,24 +1558,12 @@ pub fn mtdfMax(
                 || checkBound(te.score) == Ordering::Less && score <= alpha
                 || checkBound(te.score) == Ordering::Greater && score >= beta
             {
-                return Variation {
-                    length: te.pvLength,
-                    moves: te.pvMoves,
-                    score,
-                    nodes: 1,
-                    depth,
-                };
+                return Variation { length: te.pvLength, moves: te.pvMoves, score, nodes: 1, depth };
             };
         }
         _otherwise => {}
     };
-    let mut best = Variation {
-        nodes: 0,
-        length: 0,
-        moves: NONE,
-        depth,
-        score: -999_999_999,
-    };
+    let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = pos;
     let mut a = alpha;
     for m in moves.iter().copied() {
@@ -1706,13 +1588,7 @@ pub fn mtdfMax(
             }
         }
         if score > best.score {
-            best = Variation {
-                nodes: best.nodes + pv.nodes,
-                score,
-                depth,
-                ..pv
-            }
-            .push(m);
+            best = Variation { nodes: best.nodes + pv.nodes, score, depth, ..pv }.push(m);
         } else {
             best.nodes += pv.nodes;
         }
@@ -1745,10 +1621,10 @@ pub fn strategy_mtdf(state: StrategyState) {
     // if there's just 1 move left, we have no choice
     if allMoves.len() == 1 {
         state.talkPV(Variation {
-            depth:  1,
-            nodes:  1,
-            score:  -9999,
-            moves:  [allMoves[0]; VariationMoves as usize],
+            depth: 1,
+            nodes: 1,
+            score: -9999,
+            moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
         state.tellNoMore();

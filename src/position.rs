@@ -1264,7 +1264,26 @@ impl Position {
             hash: self.hash ^ zobrist::flagZobrist(A1 as usize) ^ currentEPHash,
             .. *self
         }
-    } 
+    }
+
+    /// Checks if the board would be valid, if just the "to move" bit was switched.
+    /// Consequently this returns **false** when the player to move stands in check
+    /// or when the opponent has just made a pawn move.
+    /// 
+    /// For instance, say, BLACK has made a double pawn move that attacks the WHITE KING.
+    /// Then it is WHITEs turn on &self, and we want to know, whether this position would
+    /// be valid for BLACK, which it is not for 2 reasons:
+    /// 1. The black pawn could capture the WHITE KING
+    /// 2. From en-passant position it must be WHITE's turn, hence this position is invalid.
+    /// 
+    /// This is different to `pos.applyNull().valid()` with regard to the en-passant field as `applyNull()` clears them.
+    /// This is also cheaper, as `applyNull()` corrects the `hash` field and the counters.
+    pub fn validForOpponent(&self) -> bool {
+        Position {
+            flags: BitSet { bits: self.flags.bits ^ whiteToMove.bits },
+            .. *self
+        }.valid()
+    }
 
     /// generate the castling moves possible in this position
     fn castlingMoves(&self, vec: &mut Vec<Move>) {
@@ -1728,20 +1747,22 @@ impl Position {
     /// check position for validity
     /// 1. There must be exactly one king for each player
     /// 2. Pawns are restricted to ranks 2 to 7
-    /// 3. only the player to move may be in check
+    /// 3. Only the player to move may be in check
+    /// 4. If it is white's turn, no en-passant bit for rank 3 must be set
+    /// 5. Likewise, if black is to move, no en-passant bit for rank 6 must be set.
     pub fn valid(&self) -> bool {
         (self.whites * self.kings()).card() == 1
         && (self.kings() - self.whites).card() == 1
         && (self.pawns() - pawnFields).null()
         && self.notInCheck()
+        && (self.flags * enPassantBits * if self.turn() == WHITE { lowerHalf } else { !lowerHalf }).null()
     }
 
     /// Does this position represent a valid endgame position?
-    /// 1. It must be a valid position.
-    /// 2. There must be at most 4 pieces besides the kings.
-    /// 3. No castling rights must be present anymore.
+    /// 1. There must be at most 4 pieces besides the kings.
+    /// 2. No castling rights must be present anymore.
     pub fn validEndgame(&self) -> bool {
-        self.valid() && self.occupied().card() < 7 && (self.flags * castlingBits).null()
+        self.occupied().card() < 7 && (self.flags * castlingBits).null()
     }
 }
 
@@ -2026,10 +2047,169 @@ pub fn initialBoard() -> Position {
         .rehash()
 }
 
+
+/// Signature of a CPos
+/// 
+/// This is needed to employ the symmetries on the chess board in order to save lots of disk space. 
+/// We define a "canonical" position as follows:
+/// - if there are no PAWNs in the game, the white KING is in the lower left corner (rank 1..4, file A..D)
+/// - if there are PAWNs in the game, the white KING is in the left half (rank 1..8, files A..D)
+/// 
+/// Only canonical positions will be in the database.
+/// All other positions with the same sets of pieces can be reduced to a canonical one by
+/// - mirroring the board on the vertical axis if the king is in the right half
+/// - and then, if there are no PAWNs in the game, mirroring the board on the horizontal axis
+/// 
+/// But this is not all. For example, it turns out that it doesn't matter if we have a WHITE KING on A1, 
+/// a BLACK KING on C2 and a BLACK ROOK on C8 or if we change the BLACK pieces to WHITE ones and the WHITE ones to BLACK
+/// ones: Whatever the player with ROOK and KING is, will be able to mate if it is his turn while the other player
+/// is doomed to move his KING to A2 where it is mated in the next move.
+/// To get "the same" position with different colors, it is necessary to mirror the board on the horizontal axis
+/// whenever pawns are present. In addition, when querying the database, care must be taken to 
+/// exchange the states for BLACK and WHITE whenever it was necessary to exchange colors.
+/// 
+/// Every canonical position has thus up to 3 equivalent positions where the pieces have the same colors and up to
+/// 4 equivalent positions where the colours are chhanged. Taking into account that every position in the EGTB has 
+/// two states for the different players to move, we map up to 16 positions to one and the same 64 bit word.
+/// (If there are pawns, it is only 4, though).
+/// 
+/// The question is only: which of the two positions described earlier will be in the database? We will extend our
+/// definition by these rules:
+/// - WHITE has the more valuable pieces, where for the sake of simplicity, 
+/// a queen beats any number of rooks, bishops, knights and pawns, a rook beats any number of bishops, knights and pawns,
+/// and so forth. But, of course, 2 rooks are better than 1, as long as no queens are present.
+/// Thus, the following are canonic signatures: `KQP-KRR` `KQ-KRRR`, whereas `KBB-KQ` is not.
+/// - If both BLACK and WHITE have the same number and kinds of pieces there will be one table where both colour symmetric
+/// positions are contained, so no savings here (for now).
+/// To decide the question, whether a position must get colour changed on searching, we have this `Signature` type,
+/// that can be created fast from a `CPos`, can be compared fast and can be used to derive a unique file name for the 
+/// EGTB file.
+/// 
+/// The rule will be: a position must be colour changed before lookup if it is lower than the position with opposite colours.
+/// 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signature {
+    /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
+    /// significant ones the number of pawns.
+    white: u32,
+    /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
+    /// significant ones the number of pawns.
+    black: u32,
+}
+
+pub const sigPawnBits: u32 = 0x3f;
+pub const sigPawnShift: u32 = 0;
+pub const sigKnightBits: u32 = sigPawnBits << 6;
+pub const sigKnightShift: u32 = 6;
+pub const sigBishopBits: u32 = sigKnightBits << 6;
+pub const sigBishopShift: u32 = 12;
+pub const sigRookBits: u32 = sigBishopBits << 6;
+pub const sigRookShift: u32 = 18;
+pub const sigQueenBits: u32 = sigRookBits << 6;
+pub const sigQueenShift: u32 = 24;
+
+impl Signature {
+    pub fn new(cpos: CPos) {
+        let mut white = 0u32;
+        let mut black = 0u32;
+        // do this 3 times for each piece code
+        // (yes, this is how an unrolled loop looks)
+        match (cpos.bits & cposCode1) >> cposCode1Shift {
+            1 | 7 => { white += 1 /* << sigPawnShift */; } 
+            9 | 15 => { black += 1 /* << sigPawnShift */; }
+            2 => { white += 1 << sigKnightShift; }
+            3 => { white += 1 << sigBishopShift; }
+            4 => { white += 1 << sigRookShift; }
+            5 => { white += 1 << sigQueenShift; }
+            10 => { black += 1 << sigKnightShift; }
+            11 => { black += 1 << sigBishopShift; }
+            12 => { black += 1 << sigRookShift; }
+            13 => { black += 1 << sigQueenShift; }
+            _ => {}
+        }
+        match (cpos.bits & cposCode2) >> cposCode2Shift {
+            1 | 7 => { white += 1 /* << sigPawnShift */; } 
+            9 | 15 => { black += 1 /* << sigPawnShift */; }
+            2 => { white += 1 << sigKnightShift; }
+            3 => { white += 1 << sigBishopShift; }
+            4 => { white += 1 << sigRookShift; }
+            5 => { white += 1 << sigQueenShift; }
+            10 => { black += 1 << sigKnightShift; }
+            11 => { black += 1 << sigBishopShift; }
+            12 => { black += 1 << sigRookShift; }
+            13 => { black += 1 << sigQueenShift; }
+            _ => {}
+        }
+        match (cpos.bits & cposCode3) >> cposCode3Shift {
+            1 | 7 => { white += 1 /* << sigPawnShift */; } 
+            9 | 15 => { black += 1 /* << sigPawnShift */; }
+            2 => { white += 1 << sigKnightShift; }
+            3 => { white += 1 << sigBishopShift; }
+            4 => { white += 1 << sigRookShift; }
+            5 => { white += 1 << sigQueenShift; }
+            10 => { black += 1 << sigKnightShift; }
+            11 => { black += 1 << sigBishopShift; }
+            12 => { black += 1 << sigRookShift; }
+            13 => { black += 1 << sigQueenShift; }
+            _ => {}
+        }
+        match (cpos.bits & cposCode4) >> cposCode4Shift {
+            1 | 7 => { white += 1 /* << sigPawnShift */; } 
+            9 | 15 => { black += 1 /* << sigPawnShift */; }
+            2 => { white += 1 << sigKnightShift; }
+            3 => { white += 1 << sigBishopShift; }
+            4 => { white += 1 << sigRookShift; }
+            5 => { white += 1 << sigQueenShift; }
+            10 => { black += 1 << sigKnightShift; }
+            11 => { black += 1 << sigBishopShift; }
+            12 => { black += 1 << sigRookShift; }
+            13 => { black += 1 << sigQueenShift; }
+            _ => {}
+        }
+    }
+    pub fn whiteQueens(&self) -> u32 {
+        (self.white & sigQueenBits) >> sigQueenShift
+    }
+    pub fn whiteRooks(&self) -> u32 {
+        (self.white & sigRookBits) >> sigRookShift
+    }
+    pub fn whiteBishop(&self) -> u32 {
+        (self.white & sigBishopBits) >> sigBishopShift
+    }
+    pub fn whiteKnights(&self) -> u32 {
+        (self.white & sigKnightBits) >> sigKnightShift
+    }
+    pub fn whitePawns(&self) -> u32 {
+        self.white & sigPawnBits
+    }
+    pub fn blackQueens(&self) -> u32 {
+        (self.black & sigQueenBits) >> sigQueenShift
+    }
+    pub fn blackRooks(&self) -> u32 {
+        (self.black & sigRookBits) >> sigRookShift
+    }
+    pub fn blackBishop(&self) -> u32 {
+        (self.black & sigBishopBits) >> sigBishopShift
+    }
+    pub fn blackKnights(&self) -> u32 {
+        (self.black & sigKnightBits) >> sigKnightShift
+    }
+    pub fn blackPawns(&self) -> u32 {
+        self.black & sigPawnBits
+    } 
+}
+
 #[rustfmt::skip]
 /// Compressed position for the endgame tablebases.
 
 /// This is good for up to 6 pieces (kings included) and 11 bits worth of flags. 
+/// The flags indicate the ability for a player to force a win or a draw, or the inability to avoid a loss or a draw.
+/// 
+/// Note that the CPos does not indicate which player is to move. Hence the flags accomodate for both cases.
+/// It is as if you enter a room and see a chessboard with a few pieces on it. 
+/// You don't normally know who is to move (except if some player is in check, then it must be that players move), 
+/// so you can figure out the odds for both sides.
+/// 
 /// Since a black and a white `KING` *must* be present, we simply note their fields in the lower 2x6 bits.
 /// 
 /// Each of the other 4 pieces is encoded in 10 bits: a code for player and piece type (4 bits) and the field (6 bits).
@@ -2041,46 +2221,48 @@ pub fn initialBoard() -> Position {
 /// - 3/11 - BLACK/WHITE BISHOP
 /// - 4/12 - BLACK/WHITE ROOK
 /// - 5/13 - BLACK/WHITE QUEEN
-/// - 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant, the en passant field is behind it
+/// - 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant.
+/// 
 ///
 /// In order to identify equal positions, the pieces must occur from left to right in **ascending field order**. 
 /// This is guaranteed when compressing a `Position`.
 /// 
 /// Care must be taken when reflecting a `CPos` to get the pieces in the correct order and to correct the move index, if any.
-/// For this, the from/to fields in the move must be reflected as well and the index of it found in the move list of the new position.
 /// 
 /// Not all u64 values make for a valid `CPos`. The following fatal errors will abort the program:
 /// - trying to compress a `Position` that is not a valid endgame as checked by `Position.validEndgame()`
 /// - trying to uncompress a `CPos` that contains a wrong piece code 8, 6 or 14
 /// - trying to uncompress a `CPos` where any two field numbers are equal. That is, every piece and the kings must have their own unique fields.
-/// - trying to reflect a `CPos` with an invalid move index.
+/// - trying to uncompress a `CPos` indicating a player to move for whom this position is invalid.
 // 
 // 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
 //                                                                         -- ----    field number of the white king
 //                                                                  ---- --           field number of the black king
-//                                                          -- ----                   field number of 1st piece
-//                                                     -- --                          code of 1st piece
-//                                              ---- --                               field number of 2nd piece
-//                                         ----                                       code of 2nd piece
-//                                 -- ----                                            field number of 3rd piece
-//                            -- --                                                   code of 3rd piece
-//                     ---- --                                                        field number of 4th piece
-//                ----                                                                code of 4th piece
-//      mmmm mmmm                                                                     move number to play (255 means: no move)
-//  fff                                                                               flags
-// t                                                                                  0 = black to move, 1 = white to move
+//                                                          fi eld1                   field number of 1st piece
+//                                                     co d1                          code of 1st piece
+//                                              fiel d2                               field number of 2nd piece
+//                                         cod2                                       code of 2nd piece
+//                                 fi eld3                                            field number of 3rd piece
+//                            co d3                                                   code of 3rd piece
+//                     fiel d4                                                        field number of 4th piece
+//                cod4                                                                code of 4th piece
+//           xxxx                                                                     reserved (0)
+//      ffff                                                                          flags and validity indicator for WHITE
+// ffff                                                                               flags and validity indicator for BLACK
 //
-// Meaning of the flags:
-// 000 - not analyzed yet
-// 001 - white wins (by playing the indicated move or black is mate)
-// 010 - black wins (by playing the indicated move or white is mate)
-// 011 - it's a stalemate
-// 100 - white can reach stalemate by playing the indicated move
-// 101 - black can reach stalemate by playing the indicated move
-// 110 - player cannot avoid stalemate
-// 111 - player cannot avoid mate
-// 
-// 
+// Meaning of the flags from the POV of the player who is to move:
+// 0000 - UNKNOWN (does not appear in tablebase)
+// 0001 - MATE
+// 0010 - STALEMATE
+// 0011 - CAN_MATE
+// 0100 - CAN_DRAW
+// 0101 - CANNOT_AVOID_DRAW
+// 0110 - CANNOT_AVOID_MATE
+// 0111 - OTHER_DRAW (must not appear in tablebase)
+// 1--- - Position is not valid for this player to move
+
+#[rustfmt::allow]
+
 #[derive(Clone, Copy, Debug)]
 pub struct CPos {
     pub bits: u64
@@ -2100,42 +2282,66 @@ pub struct CPos {
 /// With CAN_MATE and CAN_DRAW, the index of the move to play is recorded in the cposMove bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CPosState {
+    /// not yet analyzed (this must map from and to u0!)
     UNKNOWN,
+    /// no moves possible and the king is in check
     MATE,
+    /// no moves possible, but not in check
     STALEMATE,
+    /// there is at least 1 move in this position that reaches a position that is MATE, or CANNOT_AVOID_MATE
     CAN_MATE,
+    /// there is a move in this position that reaches a position that is OTHER_DRAW, STALEMATE or CANNOT_AVOID_DRAW
     CAN_DRAW,
+    /// for every possible move, the opponent can answer with a move that forces a draw or a mate
     CANNOT_AVOID_DRAW,
+    /// for every possible move, the opponent can answer with a move that forces mate
     CANNOT_AVOID_MATE,
+    /// a move not found when looking up a table
+    /// which means there is no forced way to win due to lack of material or repeated positions
+    OTHER_DRAW,
+    /// Position is not valid for the player this flags apply to.
+    /// This happens when the opposite KING would be in check or 
+    /// there is a PAWN of this player who is eligible for en-passant
+    /// capturing. But this would only be possible when it is the
+    /// other player's move.
+    INVALID_POS,
 }
 
 
 impl From<u64> for CPosState {
     fn from(u: u64) -> CPosState {
-        match u&7 {
+        match u&15 {
+            0 => UNKNOWN,
             1 => MATE,
             2 => STALEMATE,
             3 => CAN_MATE,
             4 => CAN_DRAW,
             5 => CANNOT_AVOID_DRAW,
             6 => CANNOT_AVOID_MATE,
-            _ => UNKNOWN,
+            7 => OTHER_DRAW,
+            x if x > 7 => INVALID_POS,
+            _ => UNKNOWN,   // to make rustc happy
+            
         }
     }
 }
 
 pub use CPosState::*;
 
+/// Mask the black flag bits in a CPos
+pub const cposBlackFlags : u64 = 0xf000_0000_0000_0000u64;
+pub const cposBlackFlagsShift : u32 = cposBlackFlags.trailing_zeros();
+/// Mask the white flag bits in a CPos
+pub const cposWhiteFlags : u64 = 0x0f00_0000_0000_0000u64;
+pub const cposWhiteFlagsShift : u32 = cposWhiteFlags.trailing_zeros();
 /// Mask the flag bits in a CPos
-pub const cposFlags : u64 = 0x7000_0000_0000_0000u64;
+pub const cposFlags : u64 = cposBlackFlags | cposWhiteFlags;
 /// Shift for flag bits in CPos
 pub const cposFlagShift : u32 = cposFlags.trailing_zeros();
 /// Mask the move bits in a CPos
-pub const cposMove : u64 = 0x0ff0_0000_0000_0000u64;
-/// Shift for the move flags in a CPos
-pub const cposMoveShift : u32 = cposMove.trailing_zeros();
+pub const cposReserved : u64 = 0x00f0_0000_0000_0000u64;
 /// Mask the bits that count in comparisions
-pub const cposComp : u64 = !(cposFlags|cposMove);
+pub const cposComp : u64 = !(cposFlags|cposReserved);
 /// Mask the code for piece 4
 pub const cposCode4 : u64 = 0x000f_0000_0000_0000u64;
 /// Mask the code for piece 3
@@ -2159,10 +2365,13 @@ pub const cposFld2 : u64 = cposFld3 >> 10;
 pub const cposFld1 : u64 = cposFld2 >> 10;
 /// Mask the field of the black king
 pub const cposWhiteKing : u64 = 0x3f;
+pub const cposBlackKingShift : u64 = 6;
+pub const cposWhiteKingShift : u64 = 0;
 /// Mask the field of the white king
-pub const cposBlackKing : u64 = cposWhiteKing << 6;
+pub const cposBlackKing : u64 = cposWhiteKing << cposBlackKingShift;
+
 /// list of masks that extract field numbers
-pub const cposFieldMasks : [u64; 6] = [cposBlackKing, cposWhiteKing, cposFld1, cposFld2, cposFld3, cposFld4];
+const cposFieldMasks : [u64; 6] = [cposBlackKing, cposWhiteKing, cposFld1, cposFld2, cposFld3, cposFld4];
 
 
 /// Mask the lower left quarter fields (A..D, 1..4)
@@ -2178,7 +2387,8 @@ pub type EgtbMap = HashMap<String, Box<(File, u64, CPos)>>;
 
 impl CPos {
 
-    /// Compress an ordinary position, which must be a valid endgame position
+    /// Compress an ordinary position, which must be a valid endgame position.
+    /// Sets the INVALID_POS or UNKNOWN flags for both players.
     pub fn new(pos: &Position) -> CPos {
 
         // this makes sure that we never use more than 40 bits for encoding of pieces
@@ -2188,8 +2398,16 @@ impl CPos {
 
         let mut pieces = 0;
         let mut kings = 0;
-        // shift the A1 flag to the front and indicate no valid move
-        let flags = (pos.flags.bits << 63) | cposMove;   
+        
+        // figure out validity
+        let bstate = if pos.turn() == BLACK {
+            if pos.valid() { UNKNOWN } else { INVALID_POS }
+        } else if pos.validForOpponent() { UNKNOWN } else { INVALID_POS };
+        let wstate = if pos.turn() == WHITE {
+            if pos.valid() { UNKNOWN } else { INVALID_POS }
+        } else if pos.validForOpponent() { UNKNOWN } else { INVALID_POS };
+        let bflags = (bstate as u64) << cposBlackFlagsShift;
+        let wflags = (wstate as u64) << cposWhiteFlagsShift;
         
         // `BitSet` iterator guarantees fields in ascending order
         for f in pos.occupied() {
@@ -2207,20 +2425,26 @@ impl CPos {
                 pieces |= f as u64;
             }
             else  {
-                if pos.whites.member(f) { kings |= f as u64; } else { kings |= (f as u64) << 6; }
+                if pos.whites.member(f) { kings |= f as u64; } else { kings |= (f as u64) << cposBlackKingShift; }
             }
         }
-        CPos { bits: flags | (pieces << 12) | kings }
+        CPos { bits: bflags | wflags | (pieces << 12) | kings }
     }
 
-    /// re-construct Position
-    pub fn uncompressed(&self) -> Position {
+    /// Re-construct position
+    /// Before using it for anything, check validity and re-hash
+    pub fn uncompressed(&self, player: Player) -> Position {
+        /*
+        if self.state(player) == INVALID_POS {
+            panic!("not a valid position for {:?}", player);
+        }
+        */
         let mut pos = Position {
             flags: BitSet::empty(), whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
 
         };
         // establish whose turn it is
-        if self.bits >> 63 == 1 { pos.flags = whiteToMove; }
+        if player == WHITE { pos.flags = whiteToMove; }
         // place the kings
         pos = pos.place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
                 .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
@@ -2312,7 +2536,7 @@ impl CPos {
 
     pub fn signature_slow(&self) -> String {
         let mut result = String::from("");
-        let pos = self.uncompressed();
+        let pos = self.uncompressed(WHITE); 
         result.push('K');
         // look for white queens, etc.
         for _i in 0 .. (pos.queens()  * pos.whites).card() { result.push('Q'); }
@@ -2350,28 +2574,40 @@ impl CPos {
     }
 
     /// get the state from the CPos
-    pub fn state(&self) -> CPosState {
-        CPosState::from((self.bits & cposFlags) >> cposFlagShift)
+    pub fn state(&self, player: Player) -> CPosState {
+        match player {
+            WHITE => CPosState::from((self.bits & cposWhiteFlags) >> cposWhiteFlagsShift),
+            BLACK => CPosState::from((self.bits & cposBlackFlags) >> cposBlackFlagsShift),
+        }
     }
 
     /// make an identical CPos with a new state
-    pub fn withState(&self, ns: CPosState) -> CPos {
-        CPos { bits: (self.bits & !cposFlags) | ((ns as u64) << cposFlagShift ) }
+    pub fn withState(&self, ws: CPosState, bs: CPosState) -> CPos {
+        CPos { bits: (self.bits & !cposFlags) 
+                    | ((ws as u64) << cposWhiteFlagsShift) 
+                    | ((bs as u64) << cposBlackFlagsShift) }
     }
 
-    /// get the move index
-    pub fn moveIndex(&self) -> usize {
-        ((self.bits & cposMove) >> cposMoveShift) as usize
-    }
-
-    /// set the move index
-    pub fn withMoveIndex(&self, idx: usize) -> CPos {
-        CPos { bits: (self.bits & !cposMove) | ((idx as u64) << cposMoveShift ) }
+    /// make an identical CPos with a new state for player
+    pub fn withStateFor(&self, player: Player, ns: CPosState) -> CPos {
+        if player == WHITE {
+            CPos { bits: (self.bits & !cposWhiteFlags) 
+                | ((ns as u64) << cposWhiteFlagsShift) 
+            }    
+        }
+        else {
+            CPos { bits: (self.bits & !cposBlackFlags) | ((ns as u64) << cposBlackFlagsShift) }
+        }
     }
 
     /// get the field number of the white king
     pub fn whiteKing(&self) -> Field {
         Field::from((self.bits & cposWhiteKing) as u8)
+    }
+
+    /// get the field number of the white king
+    pub fn blackKing(&self) -> Field {
+        Field::from(((self.bits & cposBlackKing) >> cposBlackKingShift) as u8)
     }
 
     /// get a bitset with the psoition of the white king set
@@ -2460,8 +2696,16 @@ impl CPos {
         }
     }
 
-    /// find a CPos in a sorted vector that holds the positions for a certain signature
-    /// or look in the file system
+    /// Find a CPos in a sorted vector that holds the positions for a certain signature
+    /// or look in the actual database in file system.
+    /// 
+    /// The databse consists of a number of files, each named after the signature of the `CPos`s it contains.
+    /// To avoid frequent opening and closing of several files, `File` objects of files 
+    /// that have contributed in searching are remembered in the `hash` object. Only when this hash goes out
+    /// of scope or entries getting removed will the corresponding file actually be closed.
+    /// 
+    /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
+    /// already opened files, but a real difference is seen with many thousand lookups only.
     pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut EgtbMap) -> Result<CPos, String> {
 
         let canon   = self.canonical();
@@ -2481,8 +2725,17 @@ impl CPos {
                                 .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))?;
                 let npos = upper / 8;
                 let mid  = npos / 2; 
-                let mPos = CPos::read_at(&mut rfile, SeekFrom::Start(8*mid))
-                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8*mid, ioe))?;
+                let mPos = if npos > 0 {
+                            // this read must not be done for empty EGTBs 
+                            CPos::read_at(&mut rfile, SeekFrom::Start(8*mid))
+                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8*mid, ioe))?
+                            }
+                            else {
+                                // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
+                                // All searches will terminate immediately because the number of entries is 0.
+                                CPos { bits: 0 }.withState(INVALID_POS, INVALID_POS)
+
+                            };
                 Box::new ((rfile, npos, mPos))
             })
         ;
@@ -2518,7 +2771,7 @@ impl CPos {
             }
         }
         // pretend we found a DRAW
-        Ok(self.withState(STALEMATE).withMoveIndex(254))
+        Ok(self.withState(OTHER_DRAW, OTHER_DRAW))
 
     }
  }
@@ -2592,7 +2845,7 @@ impl Mirrorable for CPos {
                 bits |= (f as u64) << m.trailing_zeros();
             }
         }
-        CPos { bits }.uncompressed().compressed()
+        CPos { bits }.uncompressed(WHITE).compressed()
     }
     fn mirrorV(&self) -> CPos {
         // we can always do this
@@ -2608,7 +2861,7 @@ impl Mirrorable for CPos {
                 bits |= (f as u64) << m.trailing_zeros();
             }
         }
-        CPos { bits }.uncompressed().compressed()
+        CPos { bits }.uncompressed(WHITE).compressed()
     }
 }
 
@@ -2628,6 +2881,6 @@ mod tests {
         .unsetFlags(castlingBits + whiteToMove)
         .rehash();
     assert!(p.validEndgame());
-    assert_eq!(p, p.compressed().uncompressed().rehash());
+    assert_eq!(p, p.compressed().uncompressed(p.turn()).rehash());
     }
 }

@@ -6,4 +6,5 @@ pub mod fieldset;
 pub mod mdb;
 pub mod opening;
 pub mod position;
+pub mod sortegtb;
 pub mod zobrist;
