@@ -74,7 +74,9 @@ impl Field {
     /// assert_eq!(A8.rank(), 8);
     /// assert_eq!(H8.rank(), 8);
     /// ```
-    pub fn rank(self) -> u8 { 1 + (self as u8 >> 3) }
+    pub fn rank(self) -> u8 {
+        1 + (self as u8 >> 3)
+    }
     /// The **file** of the field.
     ///
     /// ```
@@ -84,7 +86,9 @@ impl Field {
     /// assert_eq!(A8.file(), 'a');
     /// assert_eq!(H8.file(), 'h');
     /// ```
-    pub fn file(self) -> char { (b'a' + (self as u8 & 7)) as char }
+    pub fn file(self) -> char {
+        (b'a' + (self as u8 & 7)) as char
+    }
     /// The zone the field is part of.
     /// ```
     /// use rasch::fieldset::Field::*;
@@ -109,7 +113,9 @@ impl Field {
     ///
     /// assert_eq!(E7.show(), "e7");
     /// ```
-    pub fn show(self) -> String { self.file().to_string() + &self.rank().to_string() }
+    pub fn show(self) -> String {
+        self.file().to_string() + &self.rank().to_string()
+    }
 
     /// Make a Field from rank and file
     pub fn fromFR(f: char, r: u8) -> Field {
@@ -208,7 +214,9 @@ impl Field {
 }
 
 impl Display for Field {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result { write!(f, "{}", self.show()) }
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.show())
+    }
 }
 
 impl FromStr for Field {
@@ -249,15 +257,27 @@ impl FromStr for Field {
 }
 
 impl From<u8> for Field {
-    fn from(u: u8) -> Field { ALLFIELDS[(u & 0x3f) as usize] }
+    fn from(u: u8) -> Field {
+        ALLFIELDS[(u & 0x3f) as usize]
+    }
+}
+
+impl From<u64> for Field {
+    fn from(u: u64) -> Field {
+        ALLFIELDS[(u & 0x3f) as usize]
+    }
 }
 
 impl Into<u8> for Field {
-    fn into(self) -> u8 { self as u8 }
+    fn into(self) -> u8 {
+        self as u8
+    }
 }
 
 impl Into<usize> for Field {
-    fn into(self) -> usize { self as usize }
+    fn into(self) -> usize {
+        self as usize
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,45 +287,53 @@ pub struct BitSet {
 
 impl BitSet {
     /// The empty BitSet
-    pub const fn empty() -> BitSet { BitSet { bits: 0 } }
+    pub const fn empty() -> BitSet {
+        BitSet { bits: 0 }
+    }
     /// `true` if and only if this set is empty
-    pub const fn null(self) -> bool { self.bits == 0 }
+    pub const fn null(self) -> bool {
+        self.bits == 0
+    }
     /// `true` if and only if this set is not empty
-    pub const fn some(self) -> bool { self.bits != 0 }
+    pub const fn some(self) -> bool {
+        self.bits != 0
+    }
     /// A BitSet that contains all fields
-    pub const fn all() -> BitSet { BitSet { bits: !0 } }
+    pub const fn all() -> BitSet {
+        BitSet { bits: !0 }
+    }
     #[inline]
     /// A BitSet that contains just the given field
-    pub const fn singleton(m: Field) -> BitSet { BitSet { bits: 1 << m as u8 } }
+    pub const fn singleton(m: Field) -> BitSet {
+        BitSet { bits: 1 << m as u8 }
+    }
     #[inline]
     /// tue if and only if the given field is a member of this BitSet
-    pub const fn member(self, m: Field) -> bool { self.bits & BitSet::singleton(m).bits != 0 }
+    pub const fn member(self, m: Field) -> bool {
+        self.bits & BitSet::singleton(m).bits != 0
+    }
     #[inline]
     /// The set of fields that are members of this set or members of the
     /// other set
     pub const fn union(self, other: BitSet) -> BitSet {
-        BitSet {
-            bits: self.bits | other.bits,
-        }
+        BitSet { bits: self.bits | other.bits }
     }
     #[inline]
     /// The set of fields that are members of both sets
     pub const fn intersection(self, other: BitSet) -> BitSet {
-        BitSet {
-            bits: self.bits & other.bits,
-        }
+        BitSet { bits: self.bits & other.bits }
     }
     /// The set of fields that are mebers of this set and non-members of
     /// the other set
     #[inline]
     pub const fn difference(self, other: BitSet) -> BitSet {
-        BitSet {
-            bits: self.bits & !other.bits,
-        }
+        BitSet { bits: self.bits & !other.bits }
     }
     #[inline]
     /// the number of elements in this set
-    pub const fn card(self) -> u32 { self.bits.count_ones() }
+    pub const fn card(self) -> u32 {
+        self.bits.count_ones()
+    }
     /// The smallest field that is member of this set.
     ///
     /// Will panic when given the empty set.
@@ -321,39 +349,53 @@ impl BitSet {
     }
 
     /// `true` if this is a subset of some other set
-    pub fn subset(self, other: BitSet) -> bool { self * other == self }
+    pub fn subset(self, other: BitSet) -> bool {
+        self * other == self
+    }
 
     /// make a BitSet from a slice of Field
     /// usage: BitSet::new(&[Field::E3, Field::H7])
     /// or: BitSet::new(&v[..]) where v is a Vec<Field>
     /// (but use BitSet::empty() instead of BitSet::new(&[]) and
     /// BitSet::singleton(f) instead of BitSet::new(&[Field::D5])
-    pub fn new(flds: &[Field]) -> BitSet { flds.iter().fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f)) }
+    pub fn new(flds: &[Field]) -> BitSet {
+        flds.iter().fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f))
+    }
 }
 
 impl Add for BitSet {
     type Output = Self;
-    fn add(self, other: Self) -> Self::Output { self.union(other) }
+    fn add(self, other: Self) -> Self::Output {
+        self.union(other)
+    }
 }
 
 impl Sub for BitSet {
     type Output = Self;
-    fn sub(self, other: Self) -> Self::Output { self.difference(other) }
+    fn sub(self, other: Self) -> Self::Output {
+        self.difference(other)
+    }
 }
 
 impl Mul for BitSet {
     type Output = Self;
-    fn mul(self, other: Self) -> Self::Output { self.intersection(other) }
+    fn mul(self, other: Self) -> Self::Output {
+        self.intersection(other)
+    }
 }
 
 impl Not for BitSet {
     type Output = Self;
-    fn not(self) -> Self::Output { BitSet { bits: !self.bits } }
+    fn not(self) -> Self::Output {
+        BitSet { bits: !self.bits }
+    }
 }
 
 /// usage: BitSet.from(0xFF00)
 impl From<u64> for BitSet {
-    fn from(bits: u64) -> BitSet { BitSet { bits } }
+    fn from(bits: u64) -> BitSet {
+        BitSet { bits }
+    }
 }
 
 impl Iterator for BitSet {
@@ -428,9 +470,7 @@ mod tests {
 
     #[test]
     fn test_ops_empty() {
-        let b = BitSet {
-            bits: 0x1234_5678_9ABC_DEF0,
-        };
+        let b = BitSet { bits: 0x1234_5678_9ABC_DEF0 };
         let e = BitSet::empty();
         assert_eq!(b, b.union(e));
         assert_eq!(e, b.intersection(e));

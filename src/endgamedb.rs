@@ -80,7 +80,7 @@ fn formatu64(u: u64, result: &mut String) {
 /// assert_eq!(E::decodeSignature("KRP-KQ".to_string()), vec![(WHITE,ROOK),(WHITE,PAWN),(BLACK,QUEEN)]);
 /// assert_eq!(E::decodeSignature("blödsinn".to_string()), vec![]);
 /// ```
-pub fn decodeSignature(desc: &str) -> Vec<PlayerPiece> {
+pub fn decodeSignature(desc: &str) -> Result<Vec<PlayerPiece>, String> {
     let mut result = Vec::new();
     let mut wer = WHITE;
     for c in desc.chars() {
@@ -104,17 +104,13 @@ pub fn decodeSignature(desc: &str) -> Vec<PlayerPiece> {
             '-' if wer == WHITE => {
                 wer = BLACK;
             }
-            _ => {
-                write!(io::stderr(), "invalid signature '{}': at char '{}'\n", desc, c).expect("working stderr");
-                result.clear();
-                break;
-            }
+            _ => return Err(format!("invalid signature '{}': at char '{}'\n", desc, c)),
         }
     }
-    result
+    Ok(result)
 }
 
-pub fn fac(n: usize) -> usize {
+pub fn fac(n: u64) -> u64 {
     if n == 0 {
         1
     } else {
@@ -124,7 +120,7 @@ pub fn fac(n: usize) -> usize {
 /// over n 0 = 1
 /// over n 1 = n
 /// over n 2 = n * (n-1) / n!
-pub fn over(n: usize, k: usize) -> usize {
+pub fn over(n: u64, k: u64) -> u64 {
     if k == 0 {
         1
     } else if k == 1 {
@@ -165,20 +161,23 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     }?;
     let mut hash: P::EgtbMap = HashMap::new();
     let sig = cpos.signature();
+    println!("# {} is canonic {}", sig, sig.isCanonic());
     let none: Vec<CPos> = Vec::new();
-    let rpos = cpos.find(&none, "leer", &mut hash)?;
+    let rpos = cpos.find(&none, P::signatureKK, &mut hash)?;
     if rpos != cpos {
         println!(
-            "# {} looked up for 0x{:016x} ({})",
+            "# {} looked up for 0x{:016x}  ({:?})  ({})",
             sig,
             cpos.bits,
+            cpos,
             encodeFEN(&cpos.uncompressed(pos.turn()))
         );
     }
     println!(
-        "# {} found canonic 0x{:016x} ({})",
-        sig,
+        "# {} found canonic 0x{:016x}  ({:?})  ({})",
+        rpos.signature(),
         rpos.bits,
+        rpos,
         encodeFEN(&rpos.uncompressed(pos.turn()))
     );
 
@@ -198,7 +197,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&none, "leer", &mut hash) // Ok(rp) oder Err()
+                    .find(&none, P::signatureKK, &mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
                         MATE | CANNOT_AVOID_MATE => s == CAN_MATE,
@@ -224,7 +223,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             let mv = match moves.iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&none, "leer", &mut hash) // Ok(rp) oder Err()
+                    .find(&none, P::signatureKK, &mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
                         CAN_MATE => false,
@@ -325,54 +324,27 @@ const maxHashed: usize = 32 * 1024 * 1024;
 
 /// Generate an endgame table base
 pub fn gen(sig: String) -> Result<(), String> {
-    let pps = decodeSignature(&sig);
-    let mut wPawns = 0;
-    let mut bPawns = 0;
-    let mut wKnights = 0;
-    let mut bKnights = 0;
-    let mut wBishops = 0;
-    let mut bBishops = 0;
-    let mut wRooks = 0;
-    let mut bRooks = 0;
-    let mut wQueens = 0;
-    let mut bQueens = 0;
+    let ppsu = decodeSignature(&sig)?;
+    let ppssig = P::Signature::fromVec(&ppsu);
+    let pps = if ppssig.isCanonic() {
+        ppsu
+    } else {
+        // let's switch the colours
+        ppsu.iter().copied().map(|(p, x)| (p.opponent(), x)).collect::<Vec<_>>()
+    };
+    let signature = ppssig.mkCanonic();
+    let sig = signature.display();
 
-    // find count of each colour and kind
-    for x in &pps {
-        match x {
-            (WHITE, PAWN) => {
-                wPawns += 1;
-            }
-            (BLACK, PAWN) => {
-                bPawns += 1;
-            }
-            (WHITE, KNIGHT) => {
-                wKnights += 1;
-            }
-            (BLACK, KNIGHT) => {
-                bKnights += 1;
-            }
-            (WHITE, BISHOP) => {
-                wBishops += 1;
-            }
-            (BLACK, BISHOP) => {
-                bBishops += 1;
-            }
-            (WHITE, ROOK) => {
-                wRooks += 1;
-            }
-            (BLACK, ROOK) => {
-                bRooks += 1;
-            }
-            (WHITE, QUEEN) => {
-                wQueens += 1;
-            }
-            (BLACK, QUEEN) => {
-                bQueens += 1;
-            }
-            (_, _) => {}
+    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    match File::open(&path) {
+        Err(_) => {}
+        Ok(_) => {
+            return Err(format!(
+                "{} seems to exist already, please remove manually to re-create",
+                path
+            ))
         }
-    }
+    };
     // Places to use for the white king.
     // If there are no pawns, it is enough to compute the positions where
     // the king is in the lower left quarter. The remaining positions
@@ -384,29 +356,82 @@ pub fn gen(sig: String) -> Result<(), String> {
 
     #[rustfmt::skip]
     // positions of the two kings, less than 32*64 or 16*64
-    let vecbase = if wPawns > 0 || bPawns > 0 { 1806 } else { 903 };
+    let vecbase = if signature.whitePawns() > 0 || signature.blackPawns() > 0 { 1806 } else { 903 };
+    // compute estimated number of moves, taking kind and number into account as well as already
+    // hypothetically
+    // for example, assuming 2 queens would yield a factor of 64*64 would be a great overestimation
+    // The computed number is in most cases a slight over-estimation because positions where both
+    // kings are not considered in further computations.
     let vecmax = vecbase
-        * over(56, wPawns)
-        * over(56 - wPawns, bPawns)
-        * over(62 - wPawns - bPawns, wKnights)
-        * over(62 - wPawns - bPawns - wKnights, bKnights)
-        * over(62 - wPawns - bPawns - wKnights - bKnights, wBishops)
-        * over(62 - wPawns - bPawns - wKnights - bKnights - wBishops, bBishops)
-        * over(62 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops, wRooks)
+        * over(56, signature.whitePawns() as u64)
+        * over(56 - signature.whitePawns() as u64, signature.blackPawns() as u64)
         * over(
-            62 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks,
-            bRooks,
+            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64,
+            signature.whiteKnights() as u64,
         )
         * over(
-            62 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks - bRooks,
-            wQueens,
+            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64 - signature.whiteKnights() as u64,
+            signature.blackKnights() as u64,
         )
         * over(
-            62 - wPawns - bPawns - wKnights - bKnights - wBishops - bBishops - wRooks - bRooks - wQueens,
-            bQueens,
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64,
+            signature.whiteBishops() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64,
+            signature.blackBishops() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64,
+            signature.whiteRooks() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64,
+            signature.blackRooks() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64
+                - signature.blackRooks() as u64,
+            signature.whiteQueens() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64
+                - signature.blackRooks() as u64
+                - signature.whiteQueens() as u64,
+            signature.blackQueens() as u64,
         );
 
-    println!("{} We're expecting {} positions.", sig, formattedSZ(vecmax));
+    println!("{} We're expecting {} positions.", sig, formattedSZ(vecmax as usize));
     let mut positions = Vec::with_capacity(0);
     let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
 
@@ -414,9 +439,13 @@ pub fn gen(sig: String) -> Result<(), String> {
     print!("{} Pass 1 - create all positions ... ", sig);
     io::stdout().flush().unwrap_or_default();
 
-    let wKbits = if wPawns > 0 || bPawns > 0 { P::leftHalf } else { P::lowerLeftQuarter };
+    let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
+        P::leftHalf
+    } else {
+        P::lowerLeftQuarter
+    };
     let inMemory = {
-        let mut sink = match positions.try_reserve_exact(vecmax) {
+        let mut sink = match positions.try_reserve_exact(vecmax as usize) {
             Ok(_) => Sink::V(&mut positions),
             Err(_) => {
                 print!("writing to {} ... ", rawPath);
@@ -440,6 +469,9 @@ pub fn gen(sig: String) -> Result<(), String> {
 
         if let Sink::V(_) = sink {
             println!("done: found {} possible positions.", formattedSZ(positions.len()));
+            if positions.len() > vecmax as usize {
+                eprintln!("WARNING: vecmax was calculated too low!");
+            }
             true
         } else {
             println!("done");
@@ -452,17 +484,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         return Err(String::from("the rest of the processing is not implemented yet."));
     }
 
-    let sig = if positions.len() > 0 { positions[0].signature() } else { String::from("K-K") };
-    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    match File::open(&path) {
-        Err(_) => {}
-        Ok(_) => {
-            return Err(format!(
-                "{} seems to exist already, please remove manually to re-create",
-                path
-            ))
-        }
-    };
+    // let sig = if positions.len() > 0 { positions[0].signature() } else { String::from("K-K") };
     println!("    Generating EGTB for {} in {}", sig, path);
 
     // Pass2 - sort
@@ -552,14 +574,15 @@ pub fn gen(sig: String) -> Result<(), String> {
                     } else {
                         'children: for u in 0..reached.len() {
                             let rp = if reached[u].state(other) == UNKNOWN {
-                                reached[u].find(&positions, &sig, &mut openFiles).map_err(|s| {
+                                reached[u].find(&positions, signature, &mut openFiles).map_err(|s| {
+                                    let xpos = reached[u].canonical(reached[u].signature());
                                     format!(
                                         "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
                                     0x{:016x}",
                                         s,
                                         encodeFEN(&reached[u].uncompressed(other)),
-                                        encodeFEN(&reached[u].canonical().uncompressed(other)),
-                                        reached[u].canonical().bits
+                                        encodeFEN(&xpos.uncompressed(other)),
+                                        xpos.bits
                                     )
                                 })
                             } else {
@@ -669,10 +692,10 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
         if cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
             cpos = cpos.withStateFor(WHITE, OTHER_DRAW);
-        }
-        if cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
+        } else if cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
             cpos = cpos.withStateFor(BLACK, OTHER_DRAW);
         }
+        /*
         if cpos.state(WHITE) == UNKNOWN || cpos.state(BLACK) == UNKNOWN {
             return Err(format!(
                 "bad state combination: {:?}/{:?} in {}th position: {}",
@@ -681,7 +704,8 @@ pub fn gen(sig: String) -> Result<(), String> {
                 i,
                 encodeFEN(&cpos.uncompressed(WHITE)),
             ));
-        } else {
+        } */
+        if cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
             match cpos.write_seq(&mut bufWriter) {
                 Err(ioe) => {
                     return Err(format!(

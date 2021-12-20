@@ -15,6 +15,7 @@
 // use standard packages
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
@@ -2087,7 +2088,7 @@ pub fn initialBoard() -> Position {
 /// 
 /// The rule will be: a position must be colour changed before lookup if it is lower than the position with opposite colours.
 /// 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Signature {
     /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
     /// significant ones the number of pawns.
@@ -2097,6 +2098,8 @@ pub struct Signature {
     black: u32,
 }
 
+/// the signature for K-K, can be used in `find` with empty Vec
+pub const signatureKK : Signature = Signature { white: 0, black: 0 };
 pub const sigPawnBits: u32 = 0x3f;
 pub const sigPawnShift: u32 = 0;
 pub const sigKnightBits: u32 = sigPawnBits << 6;
@@ -2109,63 +2112,91 @@ pub const sigQueenBits: u32 = sigRookBits << 6;
 pub const sigQueenShift: u32 = 24;
 
 impl Signature {
-    pub fn new(cpos: CPos) {
+    pub fn new(cpos: CPos) -> Signature {
         let mut white = 0u32;
         let mut black = 0u32;
-        // do this 3 times for each piece code
+        // do this 4 times for each piece code
         // (yes, this is how an unrolled loop looks)
         match (cpos.bits & cposCode1) >> cposCode1Shift {
-            1 | 7 => { white += 1 /* << sigPawnShift */; } 
-            9 | 15 => { black += 1 /* << sigPawnShift */; }
-            2 => { white += 1 << sigKnightShift; }
-            3 => { white += 1 << sigBishopShift; }
-            4 => { white += 1 << sigRookShift; }
-            5 => { white += 1 << sigQueenShift; }
-            10 => { black += 1 << sigKnightShift; }
-            11 => { black += 1 << sigBishopShift; }
-            12 => { black += 1 << sigRookShift; }
-            13 => { black += 1 << sigQueenShift; }
+            1 | 7 => { black += 1 /* << sigPawnShift */; } 
+            9 | 15 => { white += 1 /* << sigPawnShift */; }
+            2 => { black += 1 << sigKnightShift; }
+            3 => { black += 1 << sigBishopShift; }
+            4 => { black += 1 << sigRookShift; }
+            5 => { black += 1 << sigQueenShift; }
+            10 => { white += 1 << sigKnightShift; }
+            11 => { white += 1 << sigBishopShift; }
+            12 => { white += 1 << sigRookShift; }
+            13 => { white += 1 << sigQueenShift; }
             _ => {}
         }
         match (cpos.bits & cposCode2) >> cposCode2Shift {
-            1 | 7 => { white += 1 /* << sigPawnShift */; } 
-            9 | 15 => { black += 1 /* << sigPawnShift */; }
-            2 => { white += 1 << sigKnightShift; }
-            3 => { white += 1 << sigBishopShift; }
-            4 => { white += 1 << sigRookShift; }
-            5 => { white += 1 << sigQueenShift; }
-            10 => { black += 1 << sigKnightShift; }
-            11 => { black += 1 << sigBishopShift; }
-            12 => { black += 1 << sigRookShift; }
-            13 => { black += 1 << sigQueenShift; }
+            1 | 7 => { black += 1 /* << sigPawnShift */; } 
+            9 | 15 => { white += 1 /* << sigPawnShift */; }
+            2 => { black += 1 << sigKnightShift; }
+            3 => { black += 1 << sigBishopShift; }
+            4 => { black += 1 << sigRookShift; }
+            5 => { black += 1 << sigQueenShift; }
+            10 => { white += 1 << sigKnightShift; }
+            11 => { white += 1 << sigBishopShift; }
+            12 => { white += 1 << sigRookShift; }
+            13 => { white += 1 << sigQueenShift; }
             _ => {}
         }
         match (cpos.bits & cposCode3) >> cposCode3Shift {
-            1 | 7 => { white += 1 /* << sigPawnShift */; } 
-            9 | 15 => { black += 1 /* << sigPawnShift */; }
-            2 => { white += 1 << sigKnightShift; }
-            3 => { white += 1 << sigBishopShift; }
-            4 => { white += 1 << sigRookShift; }
-            5 => { white += 1 << sigQueenShift; }
-            10 => { black += 1 << sigKnightShift; }
-            11 => { black += 1 << sigBishopShift; }
-            12 => { black += 1 << sigRookShift; }
-            13 => { black += 1 << sigQueenShift; }
+            1 | 7 => { black += 1 /* << sigPawnShift */; } 
+            9 | 15 => { white += 1 /* << sigPawnShift */; }
+            2 => { black += 1 << sigKnightShift; }
+            3 => { black += 1 << sigBishopShift; }
+            4 => { black += 1 << sigRookShift; }
+            5 => { black += 1 << sigQueenShift; }
+            10 => { white += 1 << sigKnightShift; }
+            11 => { white += 1 << sigBishopShift; }
+            12 => { white += 1 << sigRookShift; }
+            13 => { white += 1 << sigQueenShift; }
             _ => {}
         }
         match (cpos.bits & cposCode4) >> cposCode4Shift {
-            1 | 7 => { white += 1 /* << sigPawnShift */; } 
-            9 | 15 => { black += 1 /* << sigPawnShift */; }
-            2 => { white += 1 << sigKnightShift; }
-            3 => { white += 1 << sigBishopShift; }
-            4 => { white += 1 << sigRookShift; }
-            5 => { white += 1 << sigQueenShift; }
-            10 => { black += 1 << sigKnightShift; }
-            11 => { black += 1 << sigBishopShift; }
-            12 => { black += 1 << sigRookShift; }
-            13 => { black += 1 << sigQueenShift; }
+            1 | 7 => { black += 1 /* << sigPawnShift */; } 
+            9 | 15 => { white += 1 /* << sigPawnShift */; }
+            2 => { black += 1 << sigKnightShift; }
+            3 => { black += 1 << sigBishopShift; }
+            4 => { black += 1 << sigRookShift; }
+            5 => { black += 1 << sigQueenShift; }
+            10 => { white += 1 << sigKnightShift; }
+            11 => { white += 1 << sigBishopShift; }
+            12 => { white += 1 << sigRookShift; }
+            13 => { white += 1 << sigQueenShift; }
             _ => {}
         }
+        Signature { white, black }
+    }
+    pub fn fromVec(vec: &Vec<(Player, Piece)>) -> Signature {
+        let mut white = 0u32;
+        let mut black = 0u32;
+        for pp in vec {
+            match pp {
+                (WHITE, QUEEN)  => { white += 1 << sigQueenShift; }
+                (WHITE, ROOK)   => { white += 1 << sigRookShift; }
+                (WHITE, BISHOP) => { white += 1 << sigBishopShift; }
+                (WHITE, KNIGHT) => { white += 1 << sigKnightShift; }
+                (WHITE, PAWN)   => { white += 1 << sigPawnShift; }
+                (BLACK, QUEEN)  => { black += 1 << sigQueenShift; }
+                (BLACK, ROOK)   => { black += 1 << sigRookShift; }
+                (BLACK, BISHOP) => { black += 1 << sigBishopShift; }
+                (BLACK, KNIGHT) => { black += 1 << sigKnightShift; }
+                (BLACK, PAWN)   => { black += 1 << sigPawnShift; }
+                _other => {}
+            }
+        }
+        Signature { white, black }
+    }
+    /// If the `Signature` of a `CPos` is **not** canonic, then the corresponding CPos will have the 
+    /// colours of the pieces changed and a possible search result needs the flags switched.
+    pub fn isCanonic(&self) -> bool { self.white >= self.black }
+    pub fn mkCanonic(&self) -> Signature { 
+        if self.isCanonic() { *self }
+        else { Signature {white: self.black, black: self.white } }
     }
     pub fn whiteQueens(&self) -> u32 {
         (self.white & sigQueenBits) >> sigQueenShift
@@ -2173,7 +2204,7 @@ impl Signature {
     pub fn whiteRooks(&self) -> u32 {
         (self.white & sigRookBits) >> sigRookShift
     }
-    pub fn whiteBishop(&self) -> u32 {
+    pub fn whiteBishops(&self) -> u32 {
         (self.white & sigBishopBits) >> sigBishopShift
     }
     pub fn whiteKnights(&self) -> u32 {
@@ -2188,7 +2219,7 @@ impl Signature {
     pub fn blackRooks(&self) -> u32 {
         (self.black & sigRookBits) >> sigRookShift
     }
-    pub fn blackBishop(&self) -> u32 {
+    pub fn blackBishops(&self) -> u32 {
         (self.black & sigBishopBits) >> sigBishopShift
     }
     pub fn blackKnights(&self) -> u32 {
@@ -2196,7 +2227,31 @@ impl Signature {
     }
     pub fn blackPawns(&self) -> u32 {
         self.black & sigPawnBits
-    } 
+    }
+    
+    pub fn display(&self) -> String {
+        let mut result = String::with_capacity(10);
+        result.push('K');
+        for _ in 0..self.whiteQueens() { result.push('Q'); }
+        for _ in 0..self.whiteRooks() { result.push('R'); }
+        for _ in 0..self.whiteBishops() { result.push('B'); }
+        for _ in 0..self.whiteKnights() { result.push('N'); }
+        for _ in 0..self.whitePawns() { result.push('P'); }
+        result.push('-');
+        result.push('K');
+        for _ in 0..self.blackQueens() { result.push('Q'); }
+        for _ in 0..self.blackRooks() { result.push('R'); }
+        for _ in 0..self.blackBishops() { result.push('B'); }
+        for _ in 0..self.blackKnights() { result.push('N'); }
+        for _ in 0..self.blackPawns() { result.push('P'); }
+        result
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
 }
 
 #[rustfmt::skip]
@@ -2263,7 +2318,7 @@ impl Signature {
 
 #[rustfmt::allow]
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct CPos {
     pub bits: u64
 }
@@ -2369,9 +2424,11 @@ pub const cposBlackKingShift : u64 = 6;
 pub const cposWhiteKingShift : u64 = 0;
 /// Mask the field of the white king
 pub const cposBlackKing : u64 = cposWhiteKing << cposBlackKingShift;
+/// Mask for both kings, useful when we need to swap them
+pub const cposKings : u64 = cposWhiteKing | cposBlackKing;
 
-/// list of masks that extract field numbers
-const cposFieldMasks : [u64; 6] = [cposBlackKing, cposWhiteKing, cposFld1, cposFld2, cposFld3, cposFld4];
+// list of masks that extract field numbers
+// const cposFieldMasks : [u64; 6] = [cposBlackKing, cposWhiteKing, cposFld1, cposFld2, cposFld3, cposFld4];
 
 
 /// Mask the lower left quarter fields (A..D, 1..4)
@@ -2383,7 +2440,7 @@ pub const lowerHalf: BitSet = BitSet { bits: lowerLeftQuarter.bits | lowerRightQ
 /// Mask the fields on files A to D
 pub const leftHalf: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
 
-pub type EgtbMap = HashMap<String, Box<(File, u64, CPos)>>;
+pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
 
 impl CPos {
 
@@ -2482,81 +2539,10 @@ impl CPos {
         pos
     }
 
-    pub fn signature(&self) -> String {
-        let mut result = String::with_capacity(10);
-        result.push('K');
-        let p1 = (self.bits & cposCode1) >> cposCode1Shift;
-        let p2 = (self.bits & cposCode2) >> cposCode2Shift;
-        let p3 = (self.bits & cposCode3) >> cposCode3Shift;
-        let p4 = (self.bits & cposCode4) >> cposCode4Shift;
-        if p1==13 { result.push('Q') }
-        if p2==13 { result.push('Q') }
-        if p3==13 { result.push('Q') }
-        if p4==13 { result.push('Q') }
-        if p1==12 { result.push('R') }
-        if p2==12 { result.push('R') }
-        if p3==12 { result.push('R') }
-        if p4==12 { result.push('R') }
-        if p1==11 { result.push('B') }
-        if p2==11 { result.push('B') }
-        if p3==11 { result.push('B') }
-        if p4==11 { result.push('B') }
-        if p1==10 { result.push('N') }
-        if p2==10 { result.push('N') }
-        if p3==10 { result.push('N') }
-        if p4==10 { result.push('N') }
-        if p1==9 || p1 == 15 { result.push('P') }
-        if p2==9 || p2 == 15 { result.push('P') }
-        if p3==9 || p3 == 15 { result.push('P') }
-        if p4==9 || p4 == 15 { result.push('P') }
-        result.push('-');
-        result.push('K');
-        if p1==5 { result.push('Q') }
-        if p2==5 { result.push('Q') }
-        if p3==5 { result.push('Q') }
-        if p4==5 { result.push('Q') }
-        if p1==4 { result.push('R') }
-        if p2==4 { result.push('R') }
-        if p3==4 { result.push('R') }
-        if p4==4 { result.push('R') }
-        if p1==3 { result.push('B') }
-        if p2==3 { result.push('B') }
-        if p3==3 { result.push('B') }
-        if p4==3 { result.push('B') }
-        if p1==2 { result.push('N') }
-        if p2==2 { result.push('N') }
-        if p3==2 { result.push('N') }
-        if p4==2 { result.push('N') }
-        if p1==1 || p1 == 7 { result.push('P') }
-        if p2==1 || p2 == 7 { result.push('P') }
-        if p3==1 || p3 == 7 { result.push('P') }
-        if p4==1 || p4 == 7 { result.push('P') }
-        result
-    }
-
-    pub fn signature_slow(&self) -> String {
-        let mut result = String::from("");
-        let pos = self.uncompressed(WHITE); 
-        result.push('K');
-        // look for white queens, etc.
-        for _i in 0 .. (pos.queens()  * pos.whites).card() { result.push('Q'); }
-        for _i in 0 .. (pos.rooks()   * pos.whites).card() { result.push('R'); }
-        for _i in 0 .. (pos.bishops() * pos.whites).card() { result.push('B'); }
-        for _i in 0 .. (pos.knights() * pos.whites).card() { result.push('N'); }
-        for _i in 0 .. (pos.pawns()   * pos.whites).card() { result.push('P'); }
-        result.push('-');
-        result.push('K');
-        for _i in 0 .. (pos.queens()  - pos.whites).card() { result.push('Q'); }
-        for _i in 0 .. (pos.rooks()   - pos.whites).card() { result.push('R'); }
-        for _i in 0 .. (pos.bishops() - pos.whites).card() { result.push('B'); }
-        for _i in 0 .. (pos.knights() - pos.whites).card() { result.push('N'); }
-        for _i in 0 .. (pos.pawns()   - pos.whites).card() { result.push('P'); }
-        result
-    }
-
+    pub fn signature(&self) -> Signature { Signature::new(*self) }
 
     /// Does this position have pawns?
-    pub fn hasPawns(&self) -> bool {
+    pub fn hasSomePawns(&self) -> bool {
         let f = (self.bits & cposCode1) >> cposCode1.trailing_zeros();
         if f == 1 || f == 9 || f == 7 || f == 15 { true }
         else {
@@ -2570,6 +2556,36 @@ impl CPos {
                     f == 1 || f == 9 || f == 7 || f == 15
                 }
             }
+        }
+    }
+
+    pub fn playerAt(&self, n: usize) -> Player {
+        match n {
+            1 => if (self.bits & cposCode1) >> cposCode1Shift >= 8 { WHITE } else { BLACK }
+            2 => if (self.bits & cposCode2) >> cposCode2Shift >= 8 { WHITE } else { BLACK }
+            3 => if (self.bits & cposCode3) >> cposCode3Shift >= 8 { WHITE } else { BLACK }
+            4 => if (self.bits & cposCode4) >> cposCode4Shift >= 8 { WHITE } else { BLACK }
+            _ => { panic!("only arguments 1..4 allowed"); }
+        }
+    }
+
+    pub fn pieceAt(&self, n: usize) -> Piece {
+        match n {
+            1 => match ((self.bits & cposCode1) >> cposCode1Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            2 => match ((self.bits & cposCode2) >> cposCode2Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            3 => match ((self.bits & cposCode3) >> cposCode3Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            4 => match ((self.bits & cposCode4) >> cposCode4Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            _ => { panic!("only arguments 1..4 allowed"); }
+        }
+    }
+
+    pub fn fieldAt(&self, n: usize) -> Field {
+        match n {
+            1 => Field::from((self.bits & cposFld1) >> cposFld1.trailing_zeros()),
+            2 => Field::from((self.bits & cposFld2) >> cposFld2.trailing_zeros()),
+            3 => Field::from((self.bits & cposFld3) >> cposFld3.trailing_zeros()),
+            4 => Field::from((self.bits & cposFld4) >> cposFld4.trailing_zeros()),
+            _ => { panic!("only arguments 1..4 allowed"); }
         }
     }
 
@@ -2602,12 +2618,12 @@ impl CPos {
 
     /// get the field number of the white king
     pub fn whiteKing(&self) -> Field {
-        Field::from((self.bits & cposWhiteKing) as u8)
+        Field::from(self.bits & cposWhiteKing)
     }
 
-    /// get the field number of the white king
+    /// get the field number of the black king
     pub fn blackKing(&self) -> Field {
-        Field::from(((self.bits & cposBlackKing) >> cposBlackKingShift) as u8)
+        Field::from((self.bits & cposBlackKing) >> cposBlackKingShift)
     }
 
     /// get a bitset with the psoition of the white king set
@@ -2616,27 +2632,112 @@ impl CPos {
     }
 
     /// Make a canonical CPos for lookup in the DB
-    /// A canonical CPos has the white king in the left half and, if the position has no pawns,
-    /// in the lower left quarter.
+    /// A canonical CPos has a canonic signature and 
+    /// the white king is in the left half and,
+    /// if there are now pawns, in the lower half.
+    /// 
+    /// We pass the signature here explicitely to save calls to signature(), this way
+    /// a client can store it when it is needed more than once.
+    /// It is to be understood that only calls semantically equivalent to
+    /// ```
+    /// x.canonical(x.signature)
+    /// ```
+    /// make any sense.
     
-    pub fn canonical(&self) -> CPos {
-        let kf = self.whiteKing();
-        if self.hasPawns() {
-            if leftHalf.member(kf) { *self }
+    pub fn canonical(&self, sig: Signature) -> CPos {
+        let hasPawns = sig.whitePawns() + sig.blackPawns() > 0;
+        let mut bits = self.bits;
+        let mut mirrored = false;                  // keep track of mirroring
+        let mut this = if sig.isCanonic() { *self }
             else {
-                self.mirrorV()
-            }
+                // we need to flip the WHITE/BLACK bits on occupied positions
+                if bits & cposCode1 != 0 { bits ^= 8 << cposCode1Shift; }
+                if bits & cposCode2 != 0 { bits ^= 8 << cposCode2Shift; }
+                if bits & cposCode3 != 0 { bits ^= 8 << cposCode3Shift; }
+                if bits & cposCode4 != 0 { bits ^= 8 << cposCode4Shift; }
+                // we also need to exchange kings
+                bits = (bits & !(cposKings)) | ((bits & cposKings)>>6) | ((bits & cposWhiteKing)<<6);
+                if hasPawns {
+                    // we need to mirror the board horizontally when pawns are present
+                    mirrored = true;
+                    CPos { bits }.mirrorH()
+                }
+                else {
+                    CPos { bits }
+                }
+            };
+        let kf = this.whiteKing();
+        if !leftHalf.member(kf) {
+            mirrored = true;
+            this = this.mirrorV();
         }
-        else {
-            if lowerLeftQuarter.member(kf) { *self }
-            else if lowerHalf.member(kf) { self.mirrorV() }
-            else if leftHalf.member(kf) {
-                self.mirrorH() 
-            }
-            else /* upper right quarter */ {
-                self.mirrorH().mirrorV()
-            }
+        // the king is now in the left half
+        if !hasPawns && !lowerHalf.member(kf) {
+            this = this.mirrorH();
+            mirrored = true;
         }
+        if mirrored { this.ordered() } else { this }
+    }
+
+    /// Returns this CPos with the flags flipped
+    /// This is needed on a search result of a position that needed color changes to become canonical
+    pub fn flippedFlags(&self) -> CPos {
+        CPos { bits: (self.bits & !cposFlags) // the bits with all flags zeroed
+            | ((self.bits & cposBlackFlags) >> 4) // add the black flags in the white flag bits
+            | ((self.bits & cposWhiteFlags) << 4) // and the white flags in the black flag bits
+        }
+    }
+
+    fn swap(bits: u64, m1: u64, m2: u64) -> u64 {
+        (bits & !(m1|m2)) // zero affected bits
+        | (((bits&m1) >> m1.trailing_zeros()) << m2.trailing_zeros())
+        | (((bits&m2) >> m2.trailing_zeros()) << m1.trailing_zeros())
+    }
+
+    /// order position 1 2 and 3 in a CPos, at max 3 swaps
+    fn order3(mut bits: u64) -> u64 {
+        // move the smallest to position 3
+        if ((bits & cposFld3) >> cposFld3.trailing_zeros()) > ((bits & cposFld2) >> cposFld2.trailing_zeros()) {
+            bits = CPos::swap(bits, cposCode3|cposFld3, cposCode2|cposFld2);
+        }
+        if ((bits & cposFld3) >> cposFld3.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
+            bits = CPos::swap(bits, cposCode3|cposFld3, cposCode1|cposFld1);
+        }
+        // ... and bring 1 and 2 in the correct order
+        // swap 2 and 1, if 2 is greater
+        if ((bits & cposFld2) >> cposFld2.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
+            bits = CPos::swap(bits, cposCode2|cposFld2, cposCode1|cposFld1);
+        }
+        bits
+    }
+
+    /// Order the pieces of a CPos in such a way that field numbers are ascending from left to right.
+    /// This is crucial for sorting.
+    /// Could be done by uncompressing and compressing, but this should be faster. It does at max 6 swaps.
+    pub fn ordered(&self) -> CPos { 
+        let mut bits = self.bits;
+        if (bits & cposCode4) != 0 {
+            // swap the minimum to 4 and sort the remaining 3
+            if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld3) >> cposFld3.trailing_zeros()) {
+                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode3|cposFld3);
+            }
+            if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld2) >> cposFld2.trailing_zeros()) {
+                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode2|cposFld2);
+            }
+            if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
+                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode1|cposFld1);
+            }
+            CPos { bits: CPos::order3(bits) }
+        }
+        else if (bits & cposCode3) != 0 { CPos { bits: CPos::order3(bits) }}
+        else if (bits & cposCode2) != 0 {
+            // swap 2 and 1, if 2 is greater
+            if ((bits & cposFld2) >> cposFld2.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
+                bits = CPos::swap(bits, cposCode2|cposFld2, cposCode1|cposFld1);
+            }
+            CPos { bits } 
+        }
+        else { CPos { bits }}
     }
 
     /// read a CPos at the current position
@@ -2688,14 +2789,6 @@ impl CPos {
         self.write(file)
     }
 
-    /// find a CPos in a sorted vector
-    pub fn lookup(&self, vec: &Vec<CPos>) -> Option<CPos> {
-        match vec.binary_search(&self.canonical()) {
-            Ok(p) => Some(vec[p]),
-            Err(_) => None,
-        }
-    }
-
     /// Find a CPos in a sorted vector that holds the positions for a certain signature
     /// or look in the actual database in file system.
     /// 
@@ -2706,19 +2799,23 @@ impl CPos {
     /// 
     /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
     /// already opened files, but a real difference is seen with many thousand lookups only.
-    pub fn find(&self, vec: &Vec<CPos>, sig: &str, hash: &mut EgtbMap) -> Result<CPos, String> {
-
-        let canon   = self.canonical();
+    pub fn find(&self, vec: &Vec<CPos>, sig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
+        let selfsig = self.signature();
+        let canon = self.canonical(selfsig);
 
         match vec.binary_search(&canon) {
-            Ok(p) => { return Ok(vec[p]); }
-            Err(_) => if self.signature() == sig { return Err(String::from("not found in memory")) }
+            Ok(p) => return Ok(
+                if selfsig.isCanonic() { vec[p] } else { vec[p].flippedFlags() }
+            ),
+            Err(_) => if canon.signature() == sig { return Err(String::from("not found in memory")) }
         };
 
-        // need to look into files
-        let selfsig = self.signature();
-        let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), selfsig);
-        let mut blubb = hash.entry(selfsig).or_insert( {
+        // Need to look into files.
+        // We avoid to generate the string form of the signature at all costs
+        // This is done only on errors and to find the name of the file to open.
+        let canonsig = canon.signature();
+        let mut blubb = hash.entry(canonsig).or_insert( {
+                let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display());
                 let mut rfile = File::open(&path)
                                 .map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
                 let upper = rfile.seek(SeekFrom::End(0))
@@ -2743,13 +2840,14 @@ impl CPos {
         let maxpos  = blubb.1;
         let midCPos = blubb.2;
         let mut upper = maxpos;
-        // eprintln!("There are {} positions in {}", u, self.signature());
+        
         let mut lower = 0;
         while lower < upper {
             let mid = lower + (upper-lower) / 2;
             match if mid == maxpos/2 { Ok(midCPos) } 
                     else { CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid)) } {
-                Err(ioe) => { 
+                Err(ioe) => {
+                    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display()); 
                     return Err(format!("error reading EGTB file {} at {} ({})", 
                         path, 8*mid, ioe)); 
                 }
@@ -2758,12 +2856,15 @@ impl CPos {
                         // if this was the middle one, we better re-read it
                         if mid == maxpos/2 {
                             blubb.2 = CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid))
-                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", 
-                                path, 8*mid, ioe))?;
-                            return Ok(blubb.2);
+                                .map_err(|ioe| {
+                                    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display());
+                                    format!("error reading EGTB file {} at {} ({})", 
+                                        path, 8*mid, ioe)
+                                })?;
+                            return Ok(if selfsig.isCanonic() {blubb.2} else {blubb.2.flippedFlags()});
 
                         }
-                        else { return Ok(c); }
+                        else { return Ok(if selfsig.isCanonic() { c } else { c.flippedFlags() }); }
                     }
                     else if c <  canon      { lower = mid + 1; }
                     else /* c >  canon */   { upper = mid; }
@@ -2771,10 +2872,32 @@ impl CPos {
             }
         }
         // pretend we found a DRAW
-        Ok(self.withState(OTHER_DRAW, OTHER_DRAW))
+        Ok(canon.withState(OTHER_DRAW, OTHER_DRAW))
 
     }
  }
+
+
+impl fmt::Debug for CPos {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&format!("{:?}/{:?}", 
+            self.state(BLACK),
+            self.state(WHITE)))?;
+        if self.pieceAt(4) != EMPTY {
+            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(4), self.pieceAt(4), self.fieldAt(4)))?;
+        }
+        if self.pieceAt(3) != EMPTY {
+            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(3), self.pieceAt(3), self.fieldAt(3)))?;
+        }
+        if self.pieceAt(2) != EMPTY {
+            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(2), self.pieceAt(2), self.fieldAt(2)))?;
+        }
+        if self.pieceAt(1) != EMPTY {
+            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(1), self.pieceAt(1), self.fieldAt(1)))?;
+        }
+        f.write_str(&format!(", BK/WK {}/{}", self.blackKing(), self.whiteKing()))
+    }
+}
 
 impl PartialEq for CPos {
     fn eq(&self, other: &CPos) -> bool {
@@ -2829,39 +2952,96 @@ impl Mirrorable for Field {
 }
 
 impl Mirrorable for CPos {
+    /// NOTE! After calling this, the fields must be ordered by ascending field numbers,
+    /// (see `CPos::ordered`) **if** the position
+    /// takes part in comparisions (including hashing!).
     fn mirrorH(&self) -> CPos {
-        if self.hasPawns() {
-            panic!("can't mirror a position with pawns horizontally");
-        };
         let mut bits = self.bits;
-        for m in &cposFieldMasks {
-            if     *m == cposFld1 && (bits&cposCode1) == 0 
-                || *m == cposFld2 && (bits&cposCode2) == 0 
-                || *m == cposFld3 && (bits&cposCode3) == 0 
-                || *m == cposFld4 && (bits&cposCode4) == 0 { /* don't mirror unused fields */ } 
-            else {
-                let f = Field::from(((bits & m) >> m.trailing_zeros()) as u8).mirrorH();
-                bits &= !m;
-                bits |= (f as u64) << m.trailing_zeros();
-            }
+        // for efficiency, we do this as an unrolled loop
+        if bits&cposCode1 != 0 {
+            let m = cposFld1;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
         }
-        CPos { bits }.uncompressed(WHITE).compressed()
+        if bits&cposCode2 != 0 {
+            let m = cposFld2;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits&cposCode3 != 0 {
+            let m = cposFld3;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits&cposCode4 != 0 {
+            let m = cposFld4;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        // the kings must be done unconditionally as they are always valid
+        {
+            let m = cposBlackKing;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        {
+            let m = cposWhiteKing;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        CPos { bits }
     }
+
+    /// NOTE! After calling this, the fields must be ordered by ascending field numbers,
+    /// where the leftmost field (field4) has the lowest field number **if** the position
+    /// takes part in comparisions (including hashing!).
     fn mirrorV(&self) -> CPos {
-        // we can always do this
         let mut bits = self.bits;
-        for m in &cposFieldMasks {
-            if     *m == cposFld1 && (bits&cposCode1) == 0 
-                || *m == cposFld2 && (bits&cposCode2) == 0 
-                || *m == cposFld3 && (bits&cposCode3) == 0 
-                || *m == cposFld4 && (bits&cposCode4) == 0 { /* don't mirror unused fields */ } 
-            else {
-                let f = Field::from(((bits & m) >> m.trailing_zeros()) as u8).mirrorV();
-                bits &= !m;
-                bits |= (f as u64) << m.trailing_zeros();
-            }
+        // for efficiency, we do this as an unrolled loop
+        if bits&cposCode1 != 0 {
+            let m = cposFld1;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
         }
-        CPos { bits }.uncompressed(WHITE).compressed()
+        if bits&cposCode2 != 0 {
+            let m = cposFld2;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits&cposCode3 != 0 {
+            let m = cposFld3;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits&cposCode4 != 0 {
+            let m = cposFld4;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        // the kings must be done unconditionally as they are always present
+        {
+            let m = cposBlackKing;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        {
+            let m = cposWhiteKing;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        CPos { bits }
     }
 }
 
