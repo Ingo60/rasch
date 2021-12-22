@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export EGTB=./egtb
+set -e
 
 cargo build && cargo build --release
 ./target/release/rasch gen K-K

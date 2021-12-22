@@ -72,6 +72,7 @@ fn main() {
             Ok(_) => {}
             Err(s) => {
                 println!("error: {}", s);
+                std::process::exit(1)
             }
         }
     } else if argv[1].starts_with("stats") && argv.len() >= 3 {

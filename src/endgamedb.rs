@@ -458,7 +458,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 128;
+const SIZE_CACHE_ENTRY_AVG: usize = 200;
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
@@ -511,10 +511,8 @@ pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut HashMap<usize
 /// In case 1, if the processing is interrupted with Ctrl+C, a sorted file of positions processed so far
 /// is written and will be found and continued to get processed the next time.
 ///
-/// An EGTB counts as small if we can allocate a vector of the required size. Anything greater than `MAX_VECSIZE`
-/// will always count as large. In addition to the vector, we will also need some space for a cache where the maximum
-/// should not exceed `MAX_CACHE_SIZE`. Appropriate values are to be tuned according to memory size.
-/// This is so that we don't start paging, as this woul finally slow things down.
+/// An EGTB basically counts as small if we can allocate a vector of the required size.
+/// However, for smooth processing we also want to have a hash.
 ///
 pub fn gen(sig: String) -> Result<(), String> {
     let ppsu = decodeSignature(&sig)?;
@@ -533,15 +531,13 @@ pub fn gen(sig: String) -> Result<(), String> {
     let sortPath = format!("{}/{}.sorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
 
     if Path::new(&egtbPath).is_file() {
-        return Err(format!(
+        eprintln!(
             "{} seems to exist already, please remove manually to re-create",
             egtbPath
-        ));
+        );
+        return Ok(());
     };
     let restart = Path::new(&sortPath).is_file();
-    if restart {
-        return Err(String::from("can't handle restart yet."));
-    }
     // Places to use for the white king.
     // If there are no pawns, it is enough to compute the positions where
     // the king is in the lower left quarter. The remaining positions
@@ -891,7 +887,11 @@ pub fn gen(sig: String) -> Result<(), String> {
     if restart && !interrupted {
         remove_file(&sortPath).map_err(|ioe| format!("Can't remove {} ({})", &sortPath, ioe))?;
     }
-    Ok(())
+    if interrupted {
+        Err(String::from("terminated by SIGINT"))
+    } else {
+        Ok(())
+    }
 }
 
 enum Sink<'a> {
