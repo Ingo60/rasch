@@ -16,8 +16,8 @@ use rasch::common::Protocol::*;
 // use rasch::common::StrategyState;
 // use rasch::common::Variation;
 use rasch::common::*;
-// use rasch::fen;
 use rasch::computing;
+use rasch::fen::decodeFEN;
 // use rasch::fieldset::*;
 use rasch::mdb;
 use rasch::position as P;
@@ -90,6 +90,25 @@ fn main() {
             fen.push_str(&argv[i]);
         }
         match E::play(&fen) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("move") && argv.len() == 3 {
+        match decodeFEN(&String::from(argv[2].clone())).and_then(|p| E::findEndgameMove(&p)) {
+            Ok(_) => {}
+            Err(s) => {
+                println!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("move") && argv.len() == 8 {
+        let mut fen = String::from(argv[2].clone());
+        for i in 3..8 {
+            fen.push(' ');
+            fen.push_str(&argv[i]);
+        }
+        match decodeFEN(&fen).and_then(|p| E::findEndgameMove(&p)) {
             Ok(_) => {}
             Err(s) => {
                 println!("error: {}", s);

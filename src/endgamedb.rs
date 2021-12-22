@@ -15,7 +15,7 @@ use super::position::Player::*;
 use super::position::Position;
 // use crate::position::Mirrorable;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::File;
 use std::io;
@@ -24,6 +24,9 @@ use std::io::BufWriter;
 use std::io::ErrorKind::*;
 use std::io::Write;
 // use std::iter::FromIterator;
+use std::sync::atomic;
+
+static sigint_received: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
 pub type PlayerPiece = (Player, Piece);
 
@@ -147,10 +150,124 @@ pub fn play(fen: &str) -> Result<(), String> {
     Err(String::from("DRAW (50 moves)"))
 }
 
-/// find distance to mate in half moves for some position
-/// must have status MATE, CAN_MATE or CANNOT_AVOID_MATE
-fn dist_to_mate(player: Player, cpos: CPos, hash: &mut HashMap<CPos, Option<u32>>) -> u32 {
-    0
+#[derive(Copy, Debug, Clone, PartialEq, Eq)]
+struct Dtm {
+    state: P::CPosState,
+    pos: P::Position,
+}
+
+/// Expand a list of CAN_MATE positions. Replace each position by the ones reached
+/// that are MATE or CANNOT_AVOID_MATE
+fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut P::EgtbMap) -> Vec<Dtm> {
+    let nullvec = Vec::with_capacity(0);
+    let mut result = Vec::with_capacity(10 * positions.len());
+    for d in positions {
+        // println!("# d.pos fen {}", encodeFEN(&d.pos));
+        let moves = d.pos.moves();
+        let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
+        let states = reached
+            .iter()
+            .map(|p| {
+                p.compressed()
+                    .find(&nullvec, P::signatureKK, dbhash)
+                    .map(|c| c.state(p.turn()))
+            })
+            .collect::<Vec<_>>();
+        for rx in 0..reached.len() {
+            match &states[rx] {
+                Ok(s @ MATE) | Ok(s @ CANNOT_AVOID_MATE) => result.push(Dtm { state: *s, pos: reached[rx] }),
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("{}", e)
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Expand a list of CANNOT_AVOID_MATE positions. Make sure to collect only those that have not been
+/// visited yet, nor equivalent positions judged by the canonical compressed position
+fn expand_cannot_avoid_mate(positions: &Vec<Dtm>, visited: &mut HashSet<P::CPos>) -> Vec<Dtm> {
+    let mut result = Vec::with_capacity(10 * positions.len());
+    for d in positions {
+        let moves = d.pos.moves();
+        let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
+        for r in reached {
+            let cu = r.compressed();
+            let cc = cu.canonical(cu.signature());
+            if let Some(_) = visited.get(&cc) {
+                /* noooo */
+            } else {
+                visited.insert(cc);
+                result.push(Dtm { state: CAN_MATE, pos: r })
+            }
+        }
+    }
+    result
+}
+
+/// must absolutely have status CANNOT_AVOID_MATE
+fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut P::EgtbMap) -> Option<u32> /* or die! */ {
+    let mut visited: HashSet<CPos> = HashSet::with_capacity(1000);
+    let ssig = start.compressed().signature();
+    let ccpos = start.compressed().mk_canonical();
+    let mut vec0 = vec![Dtm {
+        state: CANNOT_AVOID_MATE,
+        pos: ccpos.uncompressed(if ssig.isCanonic() { start.turn() } else { start.turn().opponent() }),
+    }];
+    let mut u = 0u32;
+    println!("# dist-to-mate: start={}", encodeFEN(&start));
+    println!("# dist-to-mate:   vec={}", encodeFEN(&vec0[0].pos));
+    loop {
+        let vec1 = expand_cannot_avoid_mate(&vec0, &mut visited);
+        vec0 = expand_can_mate(&vec1, dbhash);
+        u += 1;
+        println!("# dist-to-mate in {}: found {} new CAN-MATE positions.", u, vec0.len());
+        match vec0.iter().find(|x| x.state == MATE) {
+            Some(_) => break Some(u),
+            None => {}
+        }
+        if u >= limit {
+            break None;
+        }
+    }
+}
+
+/// we absolutely must have status CAN_MATE here!
+fn move_to_mate(start: &P::Position, dbhash: &mut P::EgtbMap) -> (P::Move, u32) {
+    let nullvec = Vec::with_capacity(0);
+    let mut result = None;
+    for m in start.moves() {
+        let reached = start.apply(m);
+        match reached
+            .compressed()
+            .find(&nullvec, P::signatureKK, dbhash)
+            .map(|c| c.state(reached.turn()))
+        {
+            Ok(MATE) => return (m, 1),
+            Ok(CANNOT_AVOID_MATE) => match result {
+                None => {
+                    for u in 10.. {
+                        if let Some(n) = dist_to_mate(u, reached, dbhash) {
+                            result = Some((m, n + 1));
+                            println!("# move-to-mate: initial move {} in {}", m.showSAN(*start), n + 1);
+                            break;
+                        };
+                    }
+                }
+                Some((_, r)) => match dist_to_mate(r, reached, dbhash) {
+                    Some(n) if n + 1 < r => {
+                        println!("# move-to-mate: better move {} in {}", m.showSAN(*start), n + 1);
+                        result = Some((m, n + 1))
+                    }
+                    _ => {}
+                },
+            },
+            _ => {}
+        }
+    }
+    result.unwrap()
 }
 
 pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
@@ -166,23 +283,26 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     let rpos = cpos.find(&none, P::signatureKK, &mut hash)?;
     if rpos != cpos {
         println!(
-            "# {} looked up for 0x{:016x}  ({:?})  ({})",
+            "# {} looked for    0x{:016x}  {:?}/{:?}  fen: {}",
             sig,
             cpos.bits,
-            cpos,
+            cpos.state(BLACK),
+            cpos.state(WHITE),
             encodeFEN(&cpos.uncompressed(pos.turn()))
         );
     }
     println!(
-        "# {} found canonic 0x{:016x}  ({:?})  ({})",
+        "# {} found canonic 0x{:016x}  {:?}/{:?}  fen: {}",
         rpos.signature(),
         rpos.bits,
-        rpos,
+        rpos.state(BLACK),
+        rpos.state(WHITE),
         encodeFEN(&rpos.uncompressed(pos.turn()))
     );
 
     let s = rpos.state(pos.turn());
     let other = pos.turn().opponent();
+
     match s {
         UNKNOWN | INVALID_POS => Err(format!("illegal {:?} state for this position", s)),
         MATE => {
@@ -193,15 +313,25 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             println!("# {:?} to play finds stale mate", pos.turn());
             Err(String::from("STALEMATE"))
         }
-        CAN_MATE | CAN_DRAW => {
+        CAN_MATE => match move_to_mate(pos, &mut hash) {
+            (mv, u) => {
+                println!(
+                    "# {:?} to play will enforce mate in {:?} with {}",
+                    pos.turn(),
+                    u,
+                    mv.showSAN(*pos)
+                );
+                Ok(mv)
+            }
+        },
+        CAN_DRAW => {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
                     .find(&none, P::signatureKK, &mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
-                        MATE | CANNOT_AVOID_MATE => s == CAN_MATE,
-                        STALEMATE | OTHER_DRAW | CANNOT_AVOID_DRAW => s == CAN_DRAW,
+                        STALEMATE | OTHER_DRAW | CANNOT_AVOID_DRAW => true,
                         _other => false,
                     })
                     .unwrap_or(false)
@@ -335,13 +465,16 @@ pub fn gen(sig: String) -> Result<(), String> {
     let signature = ppssig.mkCanonic();
     let sig = signature.display();
 
-    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    match File::open(&path) {
+    let egtbPath = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let sortPath = format!("{}/{}.sorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+
+    match File::open(&egtbPath) {
         Err(_) => {}
         Ok(_) => {
             return Err(format!(
                 "{} seems to exist already, please remove manually to re-create",
-                path
+                egtbPath
             ))
         }
     };
@@ -433,7 +566,6 @@ pub fn gen(sig: String) -> Result<(), String> {
 
     println!("{} We're expecting {} positions.", sig, formattedSZ(vecmax as usize));
     let mut positions = Vec::with_capacity(0);
-    let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
 
     // Pass1 - create all positions
     print!("{} Pass 1 - create all positions ... ", sig);
@@ -485,7 +617,7 @@ pub fn gen(sig: String) -> Result<(), String> {
     }
 
     // let sig = if positions.len() > 0 { positions[0].signature() } else { String::from("K-K") };
-    println!("    Generating EGTB for {} in {}", sig, path);
+    println!("    Generating EGTB for {} in {}", sig, egtbPath);
 
     // Pass2 - sort
     print!("{} Pass 2 (sorting) ... ", sig);
@@ -517,7 +649,13 @@ pub fn gen(sig: String) -> Result<(), String> {
         return Err(format!("Cannot reserve memory for {} hash entries.", maxHashCap));
     }
 
-    loop {
+    ctrlc::set_handler(move || {
+        sigint_received.store(true, atomic::Ordering::SeqCst);
+        println!("Interrupted! We'll save the work done before termination ...");
+    })
+    .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
+
+    while !sigint_received.load(atomic::Ordering::SeqCst) {
         let mut cacheHits = 0usize;
         let mut cacheLookups = 0usize;
         pass += 1;
@@ -674,44 +812,40 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     }
 
-    print!("{} Pass {} - writing database ...    0% ", sig, pass + 1);
+    let interrupted = sigint_received.load(atomic::Ordering::SeqCst);
+    let fkind = if interrupted { "checkpoint" } else { "EGBT" };
+    let writePath = if interrupted { sortPath } else { egtbPath };
+    print!("{} Pass {} - writing {} ...    0% ", sig, fkind, pass + 1);
     io::stdout().flush().unwrap_or_default();
-    let file = match File::create(&path) {
-        Err(ioe) => {
-            return Err(format!("could not create EGTB file {} ({})", path, ioe));
-        }
-        Ok(f) => f,
-    };
+    let file =
+        File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
     let mut bufWriter = BufWriter::new(file);
     let mut npos = 0usize;
+    let mut excl = 0usize;
     for i in 0..positions.len() {
         let mut cpos = positions[i];
         if i % 1_000_000 == 0 || i + 1 == positions.len() {
             print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
             io::stdout().flush().unwrap_or_default();
         }
-        if cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
+        // make states sane
+        if !interrupted && cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
             cpos = cpos.withStateFor(WHITE, OTHER_DRAW);
-        } else if cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
+        } else if !interrupted && cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
             cpos = cpos.withStateFor(BLACK, OTHER_DRAW);
         }
-        /*
-        if cpos.state(WHITE) == UNKNOWN || cpos.state(BLACK) == UNKNOWN {
-            return Err(format!(
-                "bad state combination: {:?}/{:?} in {}th position: {}",
-                cpos.state(BLACK),
-                cpos.state(WHITE),
-                i,
-                encodeFEN(&cpos.uncompressed(WHITE)),
-            ));
-        } */
-        if cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
+        // filter superfluous
+        if !interrupted && cpos.state(WHITE) == OTHER_DRAW && cpos.state(BLACK) == OTHER_DRAW {
+            // we don't need them
+            excl += 1;
+        } else if interrupted || cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
             match cpos.write_seq(&mut bufWriter) {
                 Err(ioe) => {
                     return Err(format!(
-                        "error writing {}th position to EGTB file {} ({})",
-                        npos + 1,
-                        path,
+                        "error writing {}th position to {} file {} ({})",
+                        i + 1,
+                        fkind,
+                        writePath,
                         ioe
                     ));
                 }
@@ -724,7 +858,13 @@ pub fn gen(sig: String) -> Result<(), String> {
     bufWriter
         .flush()
         .map_err(|x| format!("couldn't flush buffer ({})", x))?;
-    println!("done, {} positions written to EGTB file {}.", formattedSZ(npos), path);
+    println!(
+        "done, {} positions written to {} file {}, excluded {}.",
+        formattedSZ(npos),
+        fkind,
+        writePath,
+        formattedSZ(excl)
+    );
     Ok(())
 }
 

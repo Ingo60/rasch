@@ -2497,11 +2497,11 @@ impl CPos {
         }
         */
         let mut pos = Position {
-            flags: BitSet::empty(), whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
+            flags: if player == WHITE { whiteToMove } else { BitSet::empty() }, 
+            whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
 
         };
-        // establish whose turn it is
-        if player == WHITE { pos.flags = whiteToMove; }
+        
         // place the kings
         pos = pos.place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
                 .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
@@ -2678,6 +2678,9 @@ impl CPos {
         }
         if mirrored { this.ordered() } else { this }
     }
+
+    /// convenience for `x.canonical(x.signature)`
+    pub fn mk_canonical(&self) -> CPos {  self.canonical(self.signature())  }
 
     /// Returns this CPos with the flags flipped
     /// This is needed on a search result of a position that needed color changes to become canonical
