@@ -17,16 +17,16 @@ use super::position::Position;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::File;
+use std::fs::{remove_file, File};
 use std::io;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::ErrorKind::*;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 // use std::iter::FromIterator;
-use std::sync::atomic;
-
-static sigint_received: atomic::AtomicBool = atomic::AtomicBool::new(false);
+use std::path::Path;
+use std::sync::{atomic, Arc};
+use sysinfo::SystemExt;
 
 pub type PlayerPiece = (Player, Piece);
 
@@ -450,9 +450,72 @@ pub fn stats(sig: String) -> Result<(), String> {
     Ok(())
 }
 
-const maxHashed: usize = 32 * 1024 * 1024;
+/// How much memory we may allocate for the compressed positions vector and the position hash map
+const MAX_USE_MEMORY_PERCENT: usize = 75;
+/// Size of a CPos
+const SIZE_CPOS: usize = 8;
+/// Average estimated size of an entry in the cache. If you expierience paging,
+/// - decrease `MAX_USE_MEMORY_PERCENT` or
+/// - increace this one so that less cache entries get allocated or
+/// - close google and vscode during runs :)
+const SIZE_CACHE_ENTRY_AVG: usize = 128;
 
-/// Generate an endgame table base
+/// Computes number of entries for allocation in positions vector and cache for memory processing.
+/// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
+
+pub fn compute_sizes() -> (usize, usize) {
+    let mut info = sysinfo::System::new();
+    info.refresh_memory();
+    let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
+    // RAM = t * MAX_USE_MEMORY_PERCENT / 100
+    // (a * P + a/4 * C) / 1024 = total
+    // (a*P) = 3 *
+    let a = ((3 * total) / 4) / SIZE_CPOS;
+    let b = (total / 4) / SIZE_CACHE_ENTRY_AVG;
+    (a, b)
+}
+
+/// Compute the number of possible cache entries when we need `vecmax` vector entries.
+pub fn compute_hash(vecmax: usize) -> usize {
+    let mut info = sysinfo::System::new();
+    info.refresh_memory();
+    let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
+    if vecmax * SIZE_CPOS > total as usize {
+        0
+    } else {
+        (total as usize - vecmax * SIZE_CPOS) / SIZE_CACHE_ENTRY_AVG
+    }
+}
+
+/// Allocate the memory needed for in-memory processing.
+pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut HashMap<usize, Vec<CPos>>) -> Result<usize, String> {
+    let hsize = compute_hash(vec.len()).min(vec.len());
+    hash.try_reserve(hsize).map_err(|ioe| {
+        format!(
+            "Cannot reserve space for {} hasmap entries ({}).",
+            formattedSZ(hsize),
+            ioe
+        )
+    })?;
+    println!("{} reserved space for {} hash entries.", sig, formattedSZ(hsize));
+    Ok(hsize)
+}
+
+/// Generate an endgame table base.
+///
+/// We have 3 modi here:
+/// 1. A small EGTB is computed in memory and written to disk
+/// 2. the positions of a large EGTB are written to disk file, unsorted.
+/// 3. A sorted file of compressed files is found and subsequently processed in either memory or on disk.
+///
+/// In case 1, if the processing is interrupted with Ctrl+C, a sorted file of positions processed so far
+/// is written and will be found and continued to get processed the next time.
+///
+/// An EGTB counts as small if we can allocate a vector of the required size. Anything greater than `MAX_VECSIZE`
+/// will always count as large. In addition to the vector, we will also need some space for a cache where the maximum
+/// should not exceed `MAX_CACHE_SIZE`. Appropriate values are to be tuned according to memory size.
+/// This is so that we don't start paging, as this woul finally slow things down.
+///
 pub fn gen(sig: String) -> Result<(), String> {
     let ppsu = decodeSignature(&sig)?;
     let ppssig = P::Signature::fromVec(&ppsu);
@@ -469,15 +532,16 @@ pub fn gen(sig: String) -> Result<(), String> {
     let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     let sortPath = format!("{}/{}.sorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
 
-    match File::open(&egtbPath) {
-        Err(_) => {}
-        Ok(_) => {
-            return Err(format!(
-                "{} seems to exist already, please remove manually to re-create",
-                egtbPath
-            ))
-        }
+    if Path::new(&egtbPath).is_file() {
+        return Err(format!(
+            "{} seems to exist already, please remove manually to re-create",
+            egtbPath
+        ));
     };
+    let restart = Path::new(&sortPath).is_file();
+    if restart {
+        return Err(String::from("can't handle restart yet."));
+    }
     // Places to use for the white king.
     // If there are no pawns, it is enough to compute the positions where
     // the king is in the lower left quarter. The remaining positions
@@ -487,97 +551,56 @@ pub fn gen(sig: String) -> Result<(), String> {
     // where the king is in the left half, since a single vertical
     // reflection is in order.
 
-    #[rustfmt::skip]
-    // positions of the two kings, less than 32*64 or 16*64
-    let vecbase = if signature.whitePawns() > 0 || signature.blackPawns() > 0 { 1806 } else { 903 };
-    // compute estimated number of moves, taking kind and number into account as well as already
-    // hypothetically
-    // for example, assuming 2 queens would yield a factor of 64*64 would be a great overestimation
-    // The computed number is in most cases a slight over-estimation because positions where both
-    // kings are not considered in further computations.
-    let vecmax = vecbase
-        * over(56, signature.whitePawns() as u64)
-        * over(56 - signature.whitePawns() as u64, signature.blackPawns() as u64)
-        * over(
-            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64,
-            signature.whiteKnights() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64 - signature.whiteKnights() as u64,
-            signature.blackKnights() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64,
-            signature.whiteBishops() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64,
-            signature.blackBishops() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64,
-            signature.whiteRooks() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64,
-            signature.blackRooks() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64
-                - signature.blackRooks() as u64,
-            signature.whiteQueens() as u64,
-        )
-        * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64
-                - signature.blackRooks() as u64
-                - signature.whiteQueens() as u64,
-            signature.blackQueens() as u64,
-        );
-
-    println!("{} We're expecting {} positions.", sig, formattedSZ(vecmax as usize));
     let mut positions = Vec::with_capacity(0);
 
     // Pass1 - create all positions
-    print!("{} Pass 1 - create all positions ... ", sig);
+    print!(
+        "{} Pass 1 - {} ",
+        sig,
+        if restart { "restore previous positions" } else { "create all positions" }
+    );
     io::stdout().flush().unwrap_or_default();
 
-    let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
-        P::leftHalf
+    let inMemory = if restart {
+        let mut file =
+            File::open(&sortPath).map_err(|ioe| format!("Can't read source file {} ({})", &sortPath, ioe))?;
+        let bytes = file
+            .seek(SeekFrom::End(0))
+            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sortPath, ioe))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sortPath, ioe))?;
+        let vecmax = (bytes as usize) / SIZE_CPOS;
+        let mut brdr = BufReader::new(file);
+        match positions.try_reserve_exact(vecmax) {
+            Ok(_) => {
+                loop {
+                    match CPos::read_seq_with_eof(&mut brdr) {
+                        Ok(None) => break,
+                        Ok(Some(cp)) => positions.push(cp),
+                        Err(ioe) => return Err(format!("error reading checkpoint file {} ({})", &sortPath, ioe)),
+                    }
+                }
+                true
+            }
+            Err(_) => {
+                println!(
+                    "restart failed, {} too big ({} positions).",
+                    sortPath,
+                    formattedSZ(vecmax)
+                );
+                false
+            }
+        }
     } else {
-        P::lowerLeftQuarter
-    };
-    let inMemory = {
-        let mut sink = match positions.try_reserve_exact(vecmax as usize) {
+        let vecmax = expected_positions(signature);
+        print!("({} are expected) ... ", formattedSZ(vecmax));
+        io::stdout().flush().unwrap_or_default();
+        let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
+            P::leftHalf
+        } else {
+            P::lowerLeftQuarter
+        };
+        let mut sink = match positions.try_reserve_exact(vecmax) {
             Ok(_) => Sink::V(&mut positions),
             Err(_) => {
                 print!("writing to {} ... ", rawPath);
@@ -603,6 +626,8 @@ pub fn gen(sig: String) -> Result<(), String> {
             println!("done: found {} possible positions.", formattedSZ(positions.len()));
             if positions.len() > vecmax as usize {
                 eprintln!("WARNING: vecmax was calculated too low!");
+            } else if positions.len() < vecmax as usize {
+                positions.shrink_to_fit();
             }
             true
         } else {
@@ -630,32 +655,18 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut mateonly = true;
     let mut openFiles: P::EgtbMap = HashMap::new();
     let npositions = positions.len();
-    let mut maxHashCap = (2 * npositions).min(maxHashed);
     let mut posHash: HashMap<usize, Vec<CPos>> = HashMap::with_capacity(0);
+    let maxHashCap = alloc_working_memory(&sig, &positions, &mut posHash)?;
 
-    // create and size our hash
-    while maxHashCap > (2 * npositions).min(100_000) {
-        match posHash.try_reserve(maxHashCap) {
-            Ok(_) => break,
-            Err(_) => {
-                maxHashCap /= 2;
-                continue;
-            }
-        }
-    }
-    if maxHashCap >= (2 * npositions).min(100_000) {
-        println!("{} reserved space for {} hash entries.", sig, formattedSZ(maxHashCap));
-    } else {
-        return Err(format!("Cannot reserve memory for {} hash entries.", maxHashCap));
-    }
+    let sigint_received = Arc::new(atomic::AtomicBool::new(false));
+    let handler_ref = Arc::clone(&sigint_received);
 
     ctrlc::set_handler(move || {
-        sigint_received.store(true, atomic::Ordering::SeqCst);
-        println!("Interrupted! We'll save the work done before termination ...");
+        handler_ref.store(true, atomic::Ordering::SeqCst);
     })
     .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
 
-    while !sigint_received.load(atomic::Ordering::SeqCst) {
+    'pass: while !sigint_received.load(atomic::Ordering::SeqCst) {
         let mut cacheHits = 0usize;
         let mut cacheLookups = 0usize;
         pass += 1;
@@ -668,9 +679,16 @@ pub fn gen(sig: String) -> Result<(), String> {
         io::stdout().flush().unwrap_or_default();
 
         for i in 0..npositions {
+            if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
+                println!("canceled.");
+                continue 'pass;
+            }
             if i % 500_000 == 0 || i + 1 == npositions {
                 print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
                 io::stdout().flush().unwrap_or_default();
+            }
+            if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
+                continue 'pass;
             }
 
             // do the following for BLACK, then for WHITE, just without iter()
@@ -814,8 +832,8 @@ pub fn gen(sig: String) -> Result<(), String> {
 
     let interrupted = sigint_received.load(atomic::Ordering::SeqCst);
     let fkind = if interrupted { "checkpoint" } else { "EGBT" };
-    let writePath = if interrupted { sortPath } else { egtbPath };
-    print!("{} Pass {} - writing {} ...    0% ", sig, fkind, pass + 1);
+    let writePath = if interrupted { sortPath.clone() } else { egtbPath.clone() };
+    print!("{} Pass {} - writing {} ...    0% ", sig, pass + 1, fkind);
     io::stdout().flush().unwrap_or_default();
     let file =
         File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
@@ -859,12 +877,20 @@ pub fn gen(sig: String) -> Result<(), String> {
         .flush()
         .map_err(|x| format!("couldn't flush buffer ({})", x))?;
     println!(
-        "done, {} positions written to {} file {}, excluded {}.",
+        "done, {} positions written to file {}.",
         formattedSZ(npos),
-        fkind,
         writePath,
-        formattedSZ(excl)
+        // formattedSZ(excl)
     );
+    if excl > 0 {
+        println!(
+            "    Warning! {} positions were excluded because of OTHER_DRAW/OTHER_DRAW state.",
+            excl
+        );
+    }
+    if restart && !interrupted {
+        remove_file(&sortPath).map_err(|ioe| format!("Can't remove {} ({})", &sortPath, ioe))?;
+    }
     Ok(())
 }
 
@@ -919,19 +945,6 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
             None => BitSet::all(),
         };
 
-    // alert if we have the position wKd1, bKb1, wQg1 and placing a bQ
-    // it looks like h1 is not in used?
-    /*
-    let alert = pos.kings() * pos.whites == P::bit(D1)
-        && pos.kings() - pos.whites == P::bit(B1)
-        && pos.queens() * pos.whites == P::bit(G1)
-        && pl == BLACK
-        && pc == QUEEN;
-    if alert {
-        println!("\nAlert: placing {:?} {:?} onto {}", pl, pc, used);
-    }
-    */
-
     for f in used {
         if pos.isEmpty(f) {
             let p = pos.place(pl, pc, P::bit(f));
@@ -977,4 +990,88 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
             }
         }
     }
+}
+
+/// Estimate the number of positions we will find.
+pub fn expected_positions(signature: P::Signature) -> usize {
+    // positions of the two kings, less than 32*64 or 16*64
+    let vecbase = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
+        1806
+    } else {
+        903
+    };
+    // compute estimated number of moves, taking kind and number into account as well as already
+    // hypothetically
+    // for example, assuming 2 queens would yield a factor of 64*64 would be a great overestimation
+    // The computed number is in most cases a slight over-estimation because positions where both
+    // kings are not considered in further computations.
+    let vecmax = vecbase
+        * over(56, signature.whitePawns() as u64)
+        * over(56 - signature.whitePawns() as u64, signature.blackPawns() as u64)
+        * over(
+            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64,
+            signature.whiteKnights() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64 - signature.whiteKnights() as u64,
+            signature.blackKnights() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64,
+            signature.whiteBishops() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64,
+            signature.blackBishops() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64,
+            signature.whiteRooks() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64,
+            signature.blackRooks() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64
+                - signature.blackRooks() as u64,
+            signature.whiteQueens() as u64,
+        )
+        * over(
+            62 - signature.whitePawns() as u64
+                - signature.blackPawns() as u64
+                - signature.whiteKnights() as u64
+                - signature.blackKnights() as u64
+                - signature.whiteBishops() as u64
+                - signature.blackBishops() as u64
+                - signature.whiteRooks() as u64
+                - signature.blackRooks() as u64
+                - signature.whiteQueens() as u64,
+            signature.blackQueens() as u64,
+        );
+    vecmax as usize
 }

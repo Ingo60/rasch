@@ -28,6 +28,7 @@ use rasch::position::Position;
 // use rasch::zobrist as Z;
 use rasch::endgamedb as E;
 use rasch::sortegtb as S;
+use sysinfo::SystemExt;
 
 fn main() {
     mdb::initStatic();
@@ -62,6 +63,10 @@ fn main() {
     } else if argv[1].starts_with("mtdf") {
         gs.oracleDiff = 0; // take no chances
         gs.mainLoop(strategy_mtdf)
+    } else if argv[1] == "sysinfo" {
+        let mut info = sysinfo::System::new_all();
+        info.refresh_memory();
+        println!("We have {}M memory.", info.total_memory() / 1024);
     } else if argv[1].starts_with("gen") && argv.len() >= 3 {
         match E::gen(String::from(argv[2].clone())) {
             Ok(_) => {}

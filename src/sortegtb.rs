@@ -45,7 +45,7 @@ pub fn sort(sig: &str) -> Result<(), String> {
     let u_path = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     let c_path = format!("{}/{}.chunk", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     let path = Path::new(&s_path);
-    if path.exists() {
+    if path.is_file() {
         return Err(format!("Destination file {} already exists.", &path.display()));
     }
     split(&u_path, &c_path).and_then(|v| {
