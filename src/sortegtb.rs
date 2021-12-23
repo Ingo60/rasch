@@ -168,7 +168,7 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
             let name2 = chunks.remove(0);
             let name3 = format!("{}{}", c_path, suffix);
             suffix += 1;
-            print!("merging {} and {} into {} ... - ", name1, name2, name2);
+            print!("merging {} and {} into {} ... - ", name1, name2, name3);
             io::stdout().flush().unwrap_or_default();
             let file1 = File::open(&name1).map_err(|ioe| format!("Can't read chunk file {} ({})", name1, ioe))?;
             let mut bufr1 = BufReader::with_capacity(BUFSZ, file1);
@@ -227,7 +227,7 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
                 }
             }
             bufw.flush()
-                .map_err(|x| format!("Can't flush buffer, output file may be corrupt ({})", x))?;
+                .map_err(|x| format!("Can't flush buffer, {} may be corrupt ({})", x, name3))?;
             chunks.push(name3);
             remove_file(&name1).map_err(|ioe| format!("Can't remove {} ({})", name1, ioe))?;
             remove_file(&name2).map_err(|ioe| format!("Can't remove {} ({})", name2, ioe))?;

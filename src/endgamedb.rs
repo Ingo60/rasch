@@ -447,7 +447,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 256;
+const SIZE_CACHE_ENTRY_AVG: usize = 240;
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.

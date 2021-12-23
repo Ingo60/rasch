@@ -2347,7 +2347,8 @@ pub enum CPosState {
     CAN_MATE,
     /// there is a move in this position that reaches a position that is OTHER_DRAW, STALEMATE or CANNOT_AVOID_DRAW
     CAN_DRAW,
-    /// for every possible move, the opponent can answer with a move that forces a draw or a mate
+    /// for every possible move, the opponent can answer with a move that forces a draw or a mate,
+    /// but for at least one move only a draw can be enforced.
     CANNOT_AVOID_DRAW,
     /// for every possible move, the opponent can answer with a move that forces mate
     CANNOT_AVOID_MATE,
