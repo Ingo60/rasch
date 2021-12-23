@@ -458,7 +458,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 200;
+const SIZE_CACHE_ENTRY_AVG: usize = 208;
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
@@ -576,6 +576,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                         Err(ioe) => return Err(format!("error reading checkpoint file {} ({})", &sortPath, ioe)),
                     }
                 }
+                println!("{} positions found.", formattedSZ(vecmax));
                 true
             }
             Err(_) => {
@@ -682,9 +683,6 @@ pub fn gen(sig: String) -> Result<(), String> {
             if i % 500_000 == 0 || i + 1 == npositions {
                 print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
                 io::stdout().flush().unwrap_or_default();
-            }
-            if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
-                continue 'pass;
             }
 
             // do the following for BLACK, then for WHITE, just without iter()
