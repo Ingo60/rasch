@@ -2792,8 +2792,11 @@ impl CPos {
         self.write(file)
     }
 
-    /// Find a CPos in a sorted vector that holds the positions for a certain signature
-    /// or look in the actual database in file system.
+    /// Find a CPos in the database files.
+    /// 
+    /// Absent I/O errors, the result will be the canonical `CPos` that is the same as the one searched for, 
+    /// with appropriately set flags. Even if the entry is not in the database, this just means that the state 
+    /// for both colours is OTHER_DRAW and a canonical CPos with this state is returned.
     /// 
     /// The databse consists of a number of files, each named after the signature of the `CPos`s it contains.
     /// To avoid frequent opening and closing of several files, `File` objects of files 
@@ -2802,22 +2805,22 @@ impl CPos {
     /// 
     /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
     /// already opened files, but a real difference is seen with many thousand lookups only.
-    pub fn find(&self, vec: &Vec<CPos>, sig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
+    pub fn find(&self, hash: &mut EgtbMap) -> Result<CPos, String> {
         let selfsig = self.signature();
         let canon = self.canonical(selfsig);
+        if selfsig.isCanonic() {
+            canon.find_canonic(selfsig, hash)
+        }
+        else {
+            canon.find_canonic(selfsig.mkCanonic(), hash).map(|r| r.flippedFlags())
+        }
+    }
 
-        match vec.binary_search(&canon) {
-            Ok(p) => return Ok(
-                if selfsig.isCanonic() { vec[p] } else { vec[p].flippedFlags() }
-            ),
-            Err(_) => if canon.signature() == sig { return Err(String::from("not found in memory")) }
-        };
-
-        // Need to look into files.
+    /// A variant of `find` where the searched `CPos` is guaranteed canonical.
+    pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
         // We avoid to generate the string form of the signature at all costs
         // This is done only on errors and to find the name of the file to open.
-        let canonsig = canon.signature();
-        let mut blubb = hash.entry(canonsig).or_insert( {
+        let blubb = hash.entry(canonsig).or_insert( {
                 let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display());
                 let mut rfile = File::open(&path)
                                 .map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
@@ -2855,28 +2858,16 @@ impl CPos {
                         path, 8*mid, ioe)); 
                 }
                 Ok(c) => {
-                    if      c == canon      {
-                        // if this was the middle one, we better re-read it
-                        if mid == maxpos/2 {
-                            blubb.2 = CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid))
-                                .map_err(|ioe| {
-                                    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display());
-                                    format!("error reading EGTB file {} at {} ({})", 
-                                        path, 8*mid, ioe)
-                                })?;
-                            return Ok(if selfsig.isCanonic() {blubb.2} else {blubb.2.flippedFlags()});
-
-                        }
-                        else { return Ok(if selfsig.isCanonic() { c } else { c.flippedFlags() }); }
+                    if      c == self      {
+                        return Ok(self);
                     }
-                    else if c <  canon      { lower = mid + 1; }
+                    else if c <  self       { lower = mid + 1; }
                     else /* c >  canon */   { upper = mid; }
                 }
             }
         }
         // pretend we found a DRAW
-        Ok(canon.withState(OTHER_DRAW, OTHER_DRAW))
-
+        Ok(self.withState(OTHER_DRAW, OTHER_DRAW))
     }
  }
 

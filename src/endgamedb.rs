@@ -159,7 +159,6 @@ struct Dtm {
 /// Expand a list of CAN_MATE positions. Replace each position by the ones reached
 /// that are MATE or CANNOT_AVOID_MATE
 fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut P::EgtbMap) -> Vec<Dtm> {
-    let nullvec = Vec::with_capacity(0);
     let mut result = Vec::with_capacity(10 * positions.len());
     for d in positions {
         // println!("# d.pos fen {}", encodeFEN(&d.pos));
@@ -167,11 +166,7 @@ fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut P::EgtbMap) -> Vec<Dtm> {
         let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
         let states = reached
             .iter()
-            .map(|p| {
-                p.compressed()
-                    .find(&nullvec, P::signatureKK, dbhash)
-                    .map(|c| c.state(p.turn()))
-            })
+            .map(|p| p.compressed().find(dbhash).map(|c| c.state(p.turn())))
             .collect::<Vec<_>>();
         for rx in 0..reached.len() {
             match &states[rx] {
@@ -236,15 +231,10 @@ fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut P::EgtbMap) -> Opti
 
 /// we absolutely must have status CAN_MATE here!
 fn move_to_mate(start: &P::Position, dbhash: &mut P::EgtbMap) -> (P::Move, u32) {
-    let nullvec = Vec::with_capacity(0);
     let mut result = None;
     for m in start.moves() {
         let reached = start.apply(m);
-        match reached
-            .compressed()
-            .find(&nullvec, P::signatureKK, dbhash)
-            .map(|c| c.state(reached.turn()))
-        {
+        match reached.compressed().find(dbhash).map(|c| c.state(reached.turn())) {
             Ok(MATE) => return (m, 1),
             Ok(CANNOT_AVOID_MATE) => match result {
                 None => {
@@ -279,8 +269,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     let mut hash: P::EgtbMap = HashMap::new();
     let sig = cpos.signature();
     println!("# {} is canonic {}", sig, sig.isCanonic());
-    let none: Vec<CPos> = Vec::new();
-    let rpos = cpos.find(&none, P::signatureKK, &mut hash)?;
+    let rpos = cpos.find(&mut hash)?;
     if rpos != cpos {
         println!(
             "# {} looked for    0x{:016x}  {:?}/{:?}  fen: {}",
@@ -328,7 +317,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&none, P::signatureKK, &mut hash) // Ok(rp) oder Err()
+                    .find(&mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
                         STALEMATE | OTHER_DRAW | CANNOT_AVOID_DRAW => true,
@@ -353,7 +342,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             let mv = match moves.iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&none, P::signatureKK, &mut hash) // Ok(rp) oder Err()
+                    .find(&mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
                         CAN_MATE => false,
@@ -489,7 +478,7 @@ pub fn compute_hash(vecmax: usize) -> usize {
 
 /// Allocate the memory needed for in-memory processing.
 pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut HashMap<usize, Vec<CPos>>) -> Result<usize, String> {
-    let hsize = compute_hash(vec.len()).min(vec.len());
+    let hsize = compute_hash(vec.len()).min(2 * vec.len());
     hash.try_reserve(hsize).map_err(|ioe| {
         format!(
             "Cannot reserve space for {} hasmap entries ({}).",
@@ -723,18 +712,34 @@ pub fn gen(sig: String) -> Result<(), String> {
                         c = c.withStateFor(player, s);
                     } else {
                         'children: for u in 0..reached.len() {
-                            let rp = if reached[u].state(other) == UNKNOWN {
-                                reached[u].find(&positions, signature, &mut openFiles).map_err(|s| {
-                                    let xpos = reached[u].canonical(reached[u].signature());
-                                    format!(
+                            let child = reached[u];
+                            let chsig = child.signature();
+                            let canon = child.canonical(chsig);
+                            let csig = canon.signature();
+                            let alien = csig != signature;
+                            let rp = if child.state(other) == UNKNOWN {
+                                if fromHash && !alien && canon >= c {
+                                    // state cannot have possibly changed yet
+                                    Ok(child)
+                                } else if !alien {
+                                    // look in positions only
+                                    match positions.binary_search(&canon) {
+                                        Ok(u) => Ok(positions[u]),
+                                        Err(_) => Err(format!("cannot happen fromHash={} alien={}", fromHash, alien)),
+                                    }
+                                } else {
+                                    // must be alien
+                                    canon.find_canonic(csig, &mut openFiles).map_err(|s| {
+                                        format!(
                                         "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
                                     0x{:016x}",
                                         s,
                                         encodeFEN(&reached[u].uncompressed(other)),
-                                        encodeFEN(&xpos.uncompressed(other)),
-                                        xpos.bits
+                                        encodeFEN(&canon.uncompressed(other)),
+                                        canon.bits
                                     )
-                                })
+                                    })
+                                }
                             } else {
                                 Ok(reached[u])
                             }?;
@@ -779,7 +784,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                     }
 
                     if c.state(player) == UNKNOWN {
-                        if !fromHash && (maxHashCap >= npositions || !all_unknown && hashLen < maxHashCap) {
+                        if !fromHash && (maxHashCap >= 2 * npositions || !all_unknown && hashLen < maxHashCap) {
                             let v = reached.iter().copied().collect();
                             posHash.insert(key, v);
                         }
