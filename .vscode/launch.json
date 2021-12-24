@@ -15,7 +15,8 @@
                 ]
             },
             "program": "${cargo:program}",
-            "args": ["play", "7R/8/8/6k1/q7/8/3K4/8 b - - 0 1"]
+            // "args": ["play", "7R/8/8/6k1/q7/8/3K4/8 b - - 0 1"]
+            "args": ["move", "8/8/8/8/8/8/n1K5/k1B5 w - - 0 1"]
         }
     ],
     "plappernicht" : true

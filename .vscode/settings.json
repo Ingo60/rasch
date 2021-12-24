@@ -3,5 +3,8 @@
     "rust.build_bin": null,
     "rust.build_on_save": true,
     "rust.cfg_test": true,
-    "rust.unstable_features": true
+    "rust.unstable_features": true,
+    "lldb.displayFormat": "auto",
+    "lldb.showDisassembly": "never",
+    "lldb.dereferencePointers": false
 }
