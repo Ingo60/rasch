@@ -29,8 +29,9 @@ use std::sync::{atomic, Arc};
 use sysinfo::SystemExt;
 
 pub type PlayerPiece = (Player, Piece);
+pub type PosHash = HashMap<usize, Vec<(Move, CPos)>>;
 
-pub const POSITION_NULL: Position = Position {
+const POSITION_NULL: Position = Position {
     hash: 0,
     flags: P::whiteToMove,
     whites: BitSet::empty(),
@@ -195,7 +196,7 @@ fn expand_cannot_avoid_mate(positions: &Vec<Dtm>, visited: &mut HashSet<P::CPos>
                 /* noooo */
             } else {
                 visited.insert(cc);
-                result.push(Dtm { state: CAN_MATE, pos: r })
+                result.push(Dtm { state: CAN_MATE_K, pos: r })
             }
         }
     }
@@ -302,7 +303,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             println!("# {:?} to play finds stale mate", pos.turn());
             Err(String::from("STALEMATE"))
         }
-        CAN_MATE => match move_to_mate(pos, &mut hash) {
+        CAN_MATE_P | CAN_MATE_K => match move_to_mate(pos, &mut hash) {
             (mv, u) => {
                 println!(
                     "# {:?} to play will enforce mate in {:?} with {}",
@@ -313,14 +314,14 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 Ok(mv)
             }
         },
-        CAN_DRAW => {
+        CAN_DRAW_P | CAN_DRAW_K => {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
                     .find(&mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
-                        STALEMATE | OTHER_DRAW | CANNOT_AVOID_DRAW => true,
+                        STALEMATE | CANNOT_AVOID_DRAW => true,
                         _other => false,
                     })
                     .unwrap_or(false)
@@ -329,7 +330,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     println!(
                         "# {:?} to move will enforce {} with {}",
                         pos.turn(),
-                        if s == CAN_MATE { "mate" } else { "draw" },
+                        if s == CAN_MATE_P || s == CAN_MATE_K { "mate" } else { "draw" },
                         mv.showSAN(*pos)
                     );
                     Ok(mv)
@@ -337,7 +338,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 None => Err(format!("{:?} was promised, but cannot be reached", s)),
             }
         }
-        CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE | OTHER_DRAW => {
+        CANNOT_AVOID_DRAW | CANNOT_AVOID_MATE => {
             let moves = pos.moves();
             let mv = match moves.iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
@@ -345,7 +346,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     .find(&mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
-                        CAN_MATE => false,
+                        CAN_MATE_K | CAN_MATE_P => false,
                         STALEMATE => false,
                         _other => true,
                     })
@@ -375,11 +376,11 @@ pub fn stats(sig: String) -> Result<(), String> {
     };
     let mut rdr = BufReader::with_capacity(8 * 1024 * 1024, file);
 
-    let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let c0 = CPos { bits: 0 };
-    let mut wexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0];
-    let mut bexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0];
+    let mut wexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0];
+    let mut bexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0];
     let mut last = c0;
     let mut total = 0usize;
     let mut sorted = true;
@@ -403,7 +404,7 @@ pub fn stats(sig: String) -> Result<(), String> {
             }
         }
     }
-    for i in 1..7 {
+    for i in 1..15 {
         let s = CPosState::from(i as u64);
         if wkinds[i] > 0 {
             println!(
@@ -447,7 +448,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 240;
+const SIZE_CACHE_ENTRY_AVG: usize = 30 * 12; // 30 elements at 12 bytes
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
@@ -477,7 +478,7 @@ pub fn compute_hash(vecmax: usize) -> usize {
 }
 
 /// Allocate the memory needed for in-memory processing.
-pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut HashMap<usize, Vec<CPos>>) -> Result<usize, String> {
+pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> Result<usize, String> {
     let hsize = compute_hash(vec.len()).min(2 * vec.len());
     hash.try_reserve(hsize).map_err(|ioe| {
         format!(
@@ -637,11 +638,11 @@ pub fn gen(sig: String) -> Result<(), String> {
     println!("done.");
 
     let mut pass = 2;
-    let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0];
+    let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
     let mut openFiles: P::EgtbMap = HashMap::new();
     let npositions = positions.len();
-    let mut posHash: HashMap<usize, Vec<CPos>> = HashMap::with_capacity(0);
+    let mut posHash: PosHash = HashMap::with_capacity(0);
     let maxHashCap = alloc_working_memory(&sig, &positions, &mut posHash)?;
 
     let sigint_received = Arc::new(atomic::AtomicBool::new(false));
@@ -680,52 +681,45 @@ pub fn gen(sig: String) -> Result<(), String> {
                 let other = player;
                 player = player.opponent();
                 let mut c = positions[i];
+
                 if c.state(player) == UNKNOWN {
                     let p = c.uncompressed(player);
                     let key = 2 * i + player as usize;
                     let hashLen = posHash.len();
                     cacheLookups += 1;
-                    let mut fromMoves;
-                    let mut fromHash = true;
-                    let reached = match posHash.get_mut(&key) {
-                        Some(r) => {
-                            cacheHits += 1;
-                            r // .iter().copied().collect()
-                        }
-                        None => {
-                            fromMoves = p
-                                .moves()
-                                .iter()
-                                .copied()
-                                .map(|m| p.apply(m).compressed())
-                                .collect::<Vec<CPos>>();
-                            fromHash = false;
-                            &mut fromMoves
-                        }
-                    };
+                    // let mut fromMoves;
+                    // let mut fromHash = true;
+                    // let mut entry = posHash.entry(key);
+                    let reached = posHash.entry(key).or_insert({
+                        cacheHits += 1;
+                        p.moves()
+                            .iter()
+                            .copied()
+                            .map(|m| (m, p.apply(m).compressed()))
+                            .collect::<Vec<(Move, CPos)>>()}
+                    );
+
+
                     let mut all_can_mate = true;
                     let mut all_can_draw = true;
                     let mut all_unknown = true;
                     if reached.len() == 0 {
                         let s = if p.inCheck(player) { MATE } else { STALEMATE };
                         analyzed[s as usize] += 1;
-                        c = c.withStateFor(player, s);
+                        c = c.with_state_for(player, s);
                     } else {
                         'children: for u in 0..reached.len() {
-                            let child = reached[u];
+                            let child = reached[u].1;
                             let chsig = child.signature();
                             let canon = child.canonical(chsig);
                             let csig = canon.signature();
                             let alien = csig != signature;
                             let rp = if child.state(other) == UNKNOWN {
-                                if fromHash && !alien && canon >= c {
-                                    // state cannot have possibly changed yet
-                                    Ok(child)
-                                } else if !alien {
+                                if !alien {
                                     // look in positions only
                                     match positions.binary_search(&canon) {
                                         Ok(u) => Ok(positions[u]),
-                                        Err(_) => Err(format!("cannot happen fromHash={} alien={}", fromHash, alien)),
+                                        Err(_) => Err(format!("cannot happen alien={}", alien)),
                                     }
                                 } else {
                                     // must be alien
@@ -734,27 +728,30 @@ pub fn gen(sig: String) -> Result<(), String> {
                                         "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
                                     0x{:016x}",
                                         s,
-                                        encodeFEN(&reached[u].uncompressed(other)),
+                                        encodeFEN(&reached[u].1.uncompressed(other)),
                                         encodeFEN(&canon.uncompressed(other)),
                                         canon.bits
                                     )
                                     })
                                 }
                             } else {
-                                Ok(reached[u])
+                                Ok(reached[u].1)
                             }?;
                             let rpstate = rp.state(other);
-                            if reached[u].state(other) != rpstate {
-                                reached[u] = rp;
+                            if reached[u].1.state(other) != rpstate {
+                                reached[u].1 = rp;
                             }
                             all_unknown = all_unknown && rpstate == UNKNOWN;
-                            all_can_mate = all_can_mate && rpstate == CAN_MATE;
-                            all_can_draw = all_can_draw && (rpstate == CAN_DRAW || rpstate == CAN_MATE);
+                            all_can_mate = all_can_mate && (rpstate == CAN_MATE_K || rpstate == CAN_MATE_P);
+                            all_can_draw = all_can_draw && (rpstate == CAN_DRAW_K || rpstate == CAN_DRAW_P);
                             match rpstate {
                                 MATE | CANNOT_AVOID_MATE => {
                                     if mateonly {
-                                        analyzed[CAN_MATE as usize] += 1;
-                                        c = c.withStateFor(player, CAN_MATE);
+                                        let mv = reached[u].0;
+                                        let can_mate = if mv.piece() == KING { CAN_MATE_K } else { CAN_MATE_P };
+                                        let idx = c.piece_index_by_player_mv(player, mv);
+                                        analyzed[can_mate as usize] += 1;
+                                        c = c.with_state_for(player, can_mate).with_piece_index_for(player, idx);
 
                                         all_can_mate = false;
                                         all_can_draw = false;
@@ -763,8 +760,11 @@ pub fn gen(sig: String) -> Result<(), String> {
                                 }
                                 STALEMATE | CANNOT_AVOID_DRAW => {
                                     if !mateonly {
-                                        analyzed[CAN_DRAW as usize] += 1;
-                                        c = c.withStateFor(player, CAN_DRAW);
+                                        let mv = reached[u].0;
+                                        let can_draw = if mv.piece() == KING { CAN_DRAW_K } else { CAN_DRAW_P };
+                                        let idx = c.piece_index_by_player_mv(player, mv);
+                                        analyzed[can_draw as usize] += 1;
+                                        c = c.with_state_for(player, can_draw).with_piece_index_for(player, idx);
 
                                         all_can_mate = false;
                                         all_can_draw = false;
@@ -776,24 +776,20 @@ pub fn gen(sig: String) -> Result<(), String> {
                         }
                         if all_can_mate && mateonly {
                             analyzed[CANNOT_AVOID_MATE as usize] += 1;
-                            c = c.withStateFor(player, CANNOT_AVOID_MATE);
+                            c = c.with_state_for(player, CANNOT_AVOID_MATE);
                         } else if !all_can_mate && all_can_draw && !mateonly {
                             analyzed[CANNOT_AVOID_DRAW as usize] += 1;
-                            c = c.withStateFor(player, CANNOT_AVOID_DRAW);
+                            c = c.with_state_for(player, CANNOT_AVOID_DRAW);
                         }
                     }
 
-                    if c.state(player) == UNKNOWN {
-                        if !fromHash && (maxHashCap >= 2 * npositions || !all_unknown && hashLen < maxHashCap) {
-                            let v = reached.iter().copied().collect();
-                            posHash.insert(key, v);
-                        }
-                    } else
-                    /* it's known */
-                    {
-                        if fromHash {
+                    if c.state(player) != UNKNOWN 
+                        || (all_unknown && maxHashCap < 2 * npositions) 
+                        || hashLen >= maxHashCap {
                             posHash.remove(&key);
-                        }
+                    }
+                    
+                    if c.state(player) != UNKNOWN {
                         positions[i] = c;
                     }
                 }
@@ -815,8 +811,10 @@ pub fn gen(sig: String) -> Result<(), String> {
             break;
         }
 
-        mateonly =
-            analyzed[MATE as usize] > 0 || analyzed[CAN_MATE as usize] > 0 || analyzed[CANNOT_AVOID_MATE as usize] > 0;
+        mateonly = analyzed[MATE as usize] > 0
+            || analyzed[CAN_MATE_P as usize] > 0
+            || analyzed[CAN_MATE_K as usize] > 0
+            || analyzed[CANNOT_AVOID_MATE as usize] > 0;
         for i in 0..analyzed.len() {
             if analyzed[i] != 0 {
                 println!(
@@ -838,7 +836,6 @@ pub fn gen(sig: String) -> Result<(), String> {
         File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
     let mut bufWriter = BufWriter::new(file);
     let mut npos = 0usize;
-    let mut excl = 0usize;
     for i in 0..positions.len() {
         let mut cpos = positions[i];
         if i % 1_000_000 == 0 || i + 1 == positions.len() {
@@ -847,15 +844,12 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
         // make states sane
         if !interrupted && cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
-            cpos = cpos.withStateFor(WHITE, OTHER_DRAW);
+            cpos = cpos.with_state_for(WHITE, CANNOT_AVOID_DRAW);
         } else if !interrupted && cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
-            cpos = cpos.withStateFor(BLACK, OTHER_DRAW);
+            cpos = cpos.with_state_for(BLACK, CANNOT_AVOID_DRAW);
         }
         // filter superfluous
-        if !interrupted && cpos.state(WHITE) == OTHER_DRAW && cpos.state(BLACK) == OTHER_DRAW {
-            // we don't need them
-            excl += 1;
-        } else if interrupted || cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
+        if interrupted || cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
             match cpos.write_seq(&mut bufWriter) {
                 Err(ioe) => {
                     return Err(format!(
@@ -881,12 +875,6 @@ pub fn gen(sig: String) -> Result<(), String> {
         writePath,
         // formattedSZ(excl)
     );
-    if excl > 0 {
-        println!(
-            "    Warning! {} positions were excluded because of OTHER_DRAW/OTHER_DRAW state.",
-            excl
-        );
-    }
     if restart && !interrupted {
         remove_file(&sortPath).map_err(|ioe| format!("Can't remove {} ({})", &sortPath, ioe))?;
     }

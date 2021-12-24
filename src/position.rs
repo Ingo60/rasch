@@ -206,7 +206,7 @@ impl Piece {
 
 pub use Piece::*;
 
-#[rustfmt::skip]
+
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
 //  hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
@@ -313,7 +313,7 @@ pub const pawnFields: BitSet = BitSet { bits: 0x00ff_ffff_ffff_ff00u64 };
 /// assert!(P::plyCounterBits.member(F::Field::H4));
 /// assert_eq!(P::plyCounterBits.card(), 8);
 /// ```
-#[rustfmt::skip]
+
 pub const plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
 
 /// how many bits to shift right to get the ply counter
@@ -338,7 +338,7 @@ pub const plyCounterShift: u32 = 24;
 /// assert!(P::rootCounterBits.member(F::Field::H5));
 /// assert_eq!(P::rootCounterBits.card(), 8);
 /// ```
-#[rustfmt::skip]
+
 pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
 
 /// number of bits to shift right to get the ply counter
@@ -358,7 +358,7 @@ pub const counterBits: BitSet = BitSet {
     bits: 0x0000_00FF_FF00_0000,
 };
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that indicate the rights to castle
 /// 
 /// ```
@@ -367,7 +367,7 @@ pub const counterBits: BitSet = BitSet {
 /// ```
 pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, C1, G8, C8
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that indicate the rights to castle for WHITE
 /// 
 /// ```
@@ -379,7 +379,7 @@ pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, 
 /// ```
 pub const whiteCastlingRights: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; // G1, C1
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that indicate the rights to castle for BLACK
 /// 
 /// ```
@@ -391,7 +391,7 @@ pub const whiteCastlingRights: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; 
 /// ```
 pub const blackCastlingRights: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; // G8, C8
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that indicate the fields that were skipped when the king castled
 /// 
 /// ```
@@ -400,7 +400,7 @@ pub const blackCastlingRights: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; 
 /// ```
 pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // F1, D1, F8, D8
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that tell us whether the white king has castled and whereto.
 ///
 /// ```
@@ -412,7 +412,7 @@ pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // 
 /// ```
 pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; // F1, D1
 
-#[rustfmt::skip]
+
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
 /// 
 /// ```
@@ -2254,7 +2254,7 @@ impl Display for Signature {
     }
 }
 
-#[rustfmt::skip]
+
 /// Compressed position for the endgame tablebases.
 
 /// This is good for up to 6 pieces (kings included) and 11 bits worth of flags. 
@@ -2316,8 +2316,6 @@ impl Display for Signature {
 // 0111 - OTHER_DRAW (must not appear in tablebase)
 // 1--- - Position is not valid for this player to move
 
-#[rustfmt::allow]
-
 #[derive(Clone, Copy)]
 pub struct CPos {
     pub bits: u64
@@ -2337,47 +2335,71 @@ pub struct CPos {
 /// With CAN_MATE and CAN_DRAW, the index of the move to play is recorded in the cposMove bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CPosState {
+
     /// not yet analyzed (this must map from and to u0!)
     UNKNOWN,
+
     /// no moves possible and the king is in check
     MATE,
+
     /// no moves possible, but not in check
     STALEMATE,
-    /// there is at least 1 move in this position that reaches a position that is MATE, or CANNOT_AVOID_MATE
-    CAN_MATE,
-    /// there is a move in this position that reaches a position that is OTHER_DRAW, STALEMATE or CANNOT_AVOID_DRAW
-    CAN_DRAW,
-    /// for every possible move, the opponent can answer with a move that forces a draw or a mate,
+
+    /// there is at least 1 `KING` move in this position that reaches a position that is `MATE`, 
+    /// or `CANNOT_AVOID_MATE`
+    CAN_MATE_K,
+
+    /// there is at least 1 `KING` move in this position that reaches a position that is `STALEMATE`, 
+    /// or `CANNOT_AVOID_DRAW`
+    CAN_DRAW_K,
+
+    /// For every possible move, the opponent can answer with a move that forces a draw or a mate,
     /// but for at least one move only a draw can be enforced.
+    /// 
+    /// Also given to positions missing from database files. The rationale is that 
+    /// (assuming this program is correct) if the player can neither force mate but can avoid mate for himself,
+    /// then it must be a draw. And this is true for endless repetitions and lack of material. 
+    /// Hence, the *K-K* table is just an empty file.
     CANNOT_AVOID_DRAW,
-    /// for every possible move, the opponent can answer with a move that forces mate
+
+    /// For every possible move, the opponent can answer with a move 
+    /// that leads to mate for this player sooner or later. Sorry!
     CANNOT_AVOID_MATE,
-    /// a move not found when looking up a table
-    /// which means there is no forced way to win due to lack of material or repeated positions
-    OTHER_DRAW,
+
     /// Position is not valid for the player this flags apply to.
     /// This happens when the opposite KING would be in check or 
     /// there is a PAWN of this player who is eligible for en-passant
     /// capturing. But this would only be possible when it is the
     /// other player's move.
     INVALID_POS,
+
+    /// Like `CAN_MATE_K` but some piece must be moved.
+    /// The piece to move is encoded in bits 0x0030_0000_0000_0000
+    CAN_MATE_P,
+
+    /// Like `CAN_DRAW_P` but some piece must be moved.
+    /// The piece to move is encoded in bits 0x00C0_0000_0000_0000 
+    CAN_DRAW_P   
 }
 
-
 impl From<u64> for CPosState {
+    /// cast a number to CPosState
+    /// ```
+    /// assert!((0..10).all(|n| n == rasch::position::CPosState::from(n) as u64))
+    /// ```
     fn from(u: u64) -> CPosState {
         match u&15 {
-            0 => UNKNOWN,
-            1 => MATE,
-            2 => STALEMATE,
-            3 => CAN_MATE,
-            4 => CAN_DRAW,
-            5 => CANNOT_AVOID_DRAW,
-            6 => CANNOT_AVOID_MATE,
-            7 => OTHER_DRAW,
-            x if x > 7 => INVALID_POS,
-            _ => UNKNOWN,   // to make rustc happy
-            
+            0 =>  UNKNOWN,
+            1 =>  MATE,
+            2 =>  STALEMATE,
+            3 =>  CAN_MATE_K,
+            4 =>  CAN_DRAW_K,
+            5 =>  CANNOT_AVOID_DRAW,
+            6 =>  CANNOT_AVOID_MATE,
+            7 =>  INVALID_POS,
+            8 =>  CAN_MATE_P,
+            9 =>  CAN_DRAW_P,
+            _  => UNKNOWN,   // to make rustc happy            
         }
     }
 }
@@ -2394,37 +2416,45 @@ pub const cposWhiteFlagsShift : u32 = cposWhiteFlags.trailing_zeros();
 pub const cposFlags : u64 = cposBlackFlags | cposWhiteFlags;
 /// Shift for flag bits in CPos
 pub const cposFlagShift : u32 = cposFlags.trailing_zeros();
-/// Mask the move bits in a CPos
-pub const cposReserved : u64 = 0x00f0_0000_0000_0000u64;
+/// Mask for the indicator which piece to move for `BLACK`
+pub const cposBlackPiece : u64 = 0x00c0_0000_0000_0000u64;
+pub const cposBlackPieceShift : u32 = cposBlackPiece.trailing_zeros();
+/// Mask for the indicator which piece to move for `WHITE`
+pub const cposWhitePiece : u64 = 0x0030_0000_0000_0000u64;
+pub const cposWhitePieceShift : u32 = cposWhitePiece.trailing_zeros();
+
+/// Mask the bits that encode piece indexes
+pub const cposPieces : u64 = cposWhitePiece | cposBlackPiece;
 /// Mask the bits that count in comparisions
-pub const cposComp : u64 = !(cposFlags|cposReserved);
+pub const cposComp : u64 = !(cposFlags|cposPieces);
 /// Mask the code for piece 4
-pub const cposCode4 : u64 = 0x000f_0000_0000_0000u64;
+pub const cposCode4 : u64 = cposCode3 << 10;
 /// Mask the code for piece 3
-pub const cposCode3 : u64 = cposCode4 >> 10;
+pub const cposCode3 : u64 = cposCode2 << 10;
 /// Mask the code for piece 2
-pub const cposCode2 : u64 = cposCode3 >> 10;
+pub const cposCode2 : u64 = cposCode1 << 10;
 /// Mask the code for piece 1
-pub const cposCode1 : u64 = cposCode2 >> 10;
+pub const cposCode1 : u64 = 0x0f << 18;
 /// shifts to get the numbers
 pub const cposCode1Shift : u32 = cposCode1.trailing_zeros();
 pub const cposCode2Shift : u32 = cposCode2.trailing_zeros();
 pub const cposCode3Shift : u32 = cposCode3.trailing_zeros();
 pub const cposCode4Shift : u32 = cposCode4.trailing_zeros();
-/// Mask the field of piece 4
-pub const cposFld4 : u64 = 0x0000_fc00_0000_0000u64;
-/// Maskt the field of piece 3
-pub const cposFld3 : u64 = cposFld4 >> 10;
-/// Maskt the field of piece 2
-pub const cposFld2 : u64 = cposFld3 >> 10;
-/// Maskt the field of piece 1
-pub const cposFld1 : u64 = cposFld2 >> 10;
-/// Mask the field of the black king
-pub const cposWhiteKing : u64 = 0x3f;
-pub const cposBlackKingShift : u64 = 6;
-pub const cposWhiteKingShift : u64 = 0;
-/// Mask the field of the white king
-pub const cposBlackKing : u64 = cposWhiteKing << cposBlackKingShift;
+/// Mask the field number of piece 4
+pub const cposFld4 : u64 = cposFld3 << 10;
+/// Maskt the field number of piece 3
+pub const cposFld3 : u64 = cposFld2 << 10;
+/// Maskt the field number of piece 2
+pub const cposFld2 : u64 = cposFld1 << 10;
+/// Maskt the field number of piece 1
+pub const cposFld1 : u64 = 0x3f << 12;
+/// Mask the field of the white `KING`
+pub const cposWhiteKing : u64 = 0x0000_0000_0000_003f;
+pub const cposWhiteKingShift : u32 = cposWhiteKing.trailing_zeros();
+/// Mask the field of the black `KING`
+pub const cposBlackKing : u64 = 0x0000_0000_0000_0fc0;
+pub const cposBlackKingShift : u32 = cposBlackKing.trailing_zeros();
+
 /// Mask for both kings, useful when we need to swap them
 pub const cposKings : u64 = cposWhiteKing | cposBlackKing;
 
@@ -2446,7 +2476,7 @@ pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
 impl CPos {
 
     /// Compress an ordinary position, which must be a valid endgame position.
-    /// Sets the INVALID_POS or UNKNOWN flags for both players.
+    /// Sets either INVALID_POS or UNKNOWN flags for both players.
     pub fn new(pos: &Position) -> CPos {
 
         // this makes sure that we never use more than 40 bits for encoding of pieces
@@ -2483,7 +2513,7 @@ impl CPos {
                 pieces |= f as u64;
             }
             else  {
-                if pos.whites.member(f) { kings |= f as u64; } else { kings |= (f as u64) << cposBlackKingShift; }
+                if pos.whites.member(f) { kings |= (f as u64)  << cposWhiteKingShift; } else { kings |= (f as u64) << cposBlackKingShift; }
             }
         }
         CPos { bits: bflags | wflags | (pieces << 12) | kings }
@@ -2491,12 +2521,10 @@ impl CPos {
 
     /// Re-construct position
     /// Before using it for anything, check validity and re-hash
+    /// 
+    /// Beware that `cpos.uncompressed().compressed()` looses flags and piece index information.
     pub fn uncompressed(&self, player: Player) -> Position {
-        /*
-        if self.state(player) == INVALID_POS {
-            panic!("not a valid position for {:?}", player);
-        }
-        */
+
         let mut pos = Position {
             flags: if player == WHITE { whiteToMove } else { BitSet::empty() }, 
             whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
@@ -2542,53 +2570,26 @@ impl CPos {
 
     pub fn signature(&self) -> Signature { Signature::new(*self) }
 
-    /// Does this position have pawns?
-    pub fn hasSomePawns(&self) -> bool {
-        let f = (self.bits & cposCode1) >> cposCode1.trailing_zeros();
-        if f == 1 || f == 9 || f == 7 || f == 15 { true }
-        else {
-            let f = (self.bits & cposCode2) >> cposCode2.trailing_zeros();
-            if f == 1 || f == 9 || f == 7 || f == 15 { true }
-            else {
-                let f = (self.bits & cposCode3) >> cposCode3.trailing_zeros();
-                if f == 1 || f == 9 || f == 7 || f == 15 { true }
-                else {
-                    let f = (self.bits & cposCode4) >> cposCode4.trailing_zeros();
-                    f == 1 || f == 9 || f == 7 || f == 15
-                }
-            }
+    pub fn player_at(&self, n: usize) -> Player {
+        match n&3 {
+            0 => if (self.bits & cposCode1) >> cposCode1Shift >= 8 { WHITE } else { BLACK }
+            1 => if (self.bits & cposCode2) >> cposCode2Shift >= 8 { WHITE } else { BLACK }
+            2 => if (self.bits & cposCode3) >> cposCode3Shift >= 8 { WHITE } else { BLACK }
+            3 => if (self.bits & cposCode4) >> cposCode4Shift >= 8 { WHITE } else { BLACK }
+            _ => BLACK,
         }
     }
 
-    pub fn playerAt(&self, n: usize) -> Player {
-        match n {
-            1 => if (self.bits & cposCode1) >> cposCode1Shift >= 8 { WHITE } else { BLACK }
-            2 => if (self.bits & cposCode2) >> cposCode2Shift >= 8 { WHITE } else { BLACK }
-            3 => if (self.bits & cposCode3) >> cposCode3Shift >= 8 { WHITE } else { BLACK }
-            4 => if (self.bits & cposCode4) >> cposCode4Shift >= 8 { WHITE } else { BLACK }
-            _ => { panic!("only arguments 1..4 allowed"); }
+    pub fn piece_at(&self, n: usize) -> Piece {
+        match n&3 {
+            0 => match ((self.bits & cposCode1) >> cposCode1Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            1 => match ((self.bits & cposCode2) >> cposCode2Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            2 => match ((self.bits & cposCode3) >> cposCode3Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            3 => match ((self.bits & cposCode4) >> cposCode4Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
+            _ => EMPTY,
         }
     }
 
-    pub fn pieceAt(&self, n: usize) -> Piece {
-        match n {
-            1 => match ((self.bits & cposCode1) >> cposCode1Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            2 => match ((self.bits & cposCode2) >> cposCode2Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            3 => match ((self.bits & cposCode3) >> cposCode3Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            4 => match ((self.bits & cposCode4) >> cposCode4Shift) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            _ => { panic!("only arguments 1..4 allowed"); }
-        }
-    }
-
-    pub fn fieldAt(&self, n: usize) -> Field {
-        match n {
-            1 => Field::from((self.bits & cposFld1) >> cposFld1.trailing_zeros()),
-            2 => Field::from((self.bits & cposFld2) >> cposFld2.trailing_zeros()),
-            3 => Field::from((self.bits & cposFld3) >> cposFld3.trailing_zeros()),
-            4 => Field::from((self.bits & cposFld4) >> cposFld4.trailing_zeros()),
-            _ => { panic!("only arguments 1..4 allowed"); }
-        }
-    }
 
     /// get the state from the CPos
     pub fn state(&self, player: Player) -> CPosState {
@@ -2606,7 +2607,7 @@ impl CPos {
     }
 
     /// make an identical CPos with a new state for player
-    pub fn withStateFor(&self, player: Player, ns: CPosState) -> CPos {
+    pub fn with_state_for(&self, player: Player, ns: CPosState) -> CPos {
         if player == WHITE {
             CPos { bits: (self.bits & !cposWhiteFlags) 
                 | ((ns as u64) << cposWhiteFlagsShift) 
@@ -2615,6 +2616,23 @@ impl CPos {
         else {
             CPos { bits: (self.bits & !cposBlackFlags) | ((ns as u64) << cposBlackFlagsShift) }
         }
+    }
+
+    /// set the piece index for player
+    pub fn with_piece_index_for(&self, player: Player, ix : u64) -> CPos {
+        match player {
+            WHITE => CPos { bits: (self.bits & !cposWhitePiece) | ((ix&3) << cposWhitePieceShift) },
+            BLACK => CPos { bits: (self.bits & !cposBlackPiece) | ((ix&3) << cposBlackPieceShift) },
+        }
+    }
+
+    /// piece index for player and move
+    pub fn piece_index_by_player_mv(&self, player: Player, mv : Move) -> u64 {
+             if self.piece_at(0) != EMPTY && self.player_at(0) == player && self.field_at(0) == mv.from() { 0 } 
+        else if self.piece_at(1) != EMPTY && self.player_at(1) == player && self.field_at(1) == mv.from() { 1 }
+        else if self.piece_at(2) != EMPTY && self.player_at(2) == player && self.field_at(2) == mv.from() { 2 } 
+        else if self.piece_at(3) != EMPTY && self.player_at(3) == player && self.field_at(3) == mv.from() { 3 } 
+        else { 0 }
     }
 
     /// get the field number of the white king
@@ -2627,9 +2645,26 @@ impl CPos {
         Field::from((self.bits & cposBlackKing) >> cposBlackKingShift)
     }
 
-    /// get a bitset with the psoition of the white king set
-    pub fn whiteKingBit(&self) -> BitSet {
-        bit(self.whiteKing())
+    /// get the index for the white piece to move (0..3)
+    pub fn white_piece_index(&self) -> u64 {
+        (self.bits & cposWhitePiece) >> cposWhitePieceShift
+    }
+
+    /// get the index for the black piece to move (0..3)
+    pub fn black_piece_index(&self) -> u64 {
+        (self.bits & cposBlackPiece) >> cposBlackPieceShift
+    }
+
+    /// Get the field for piece1, piece2, piece3 or piece4 
+    /// Wrong input values are masked away and if the index is not occupied, it will return `A1`
+    pub fn field_at(&self, index: u64) -> Field {
+        match index&3 {
+            0 => Field::from((self.bits & cposFld1) >> cposFld1.trailing_zeros()),
+            1 => Field::from((self.bits & cposFld2) >> cposFld2.trailing_zeros()),
+            2 => Field::from((self.bits & cposFld3) >> cposFld3.trailing_zeros()),
+            3 => Field::from((self.bits & cposFld4) >> cposFld4.trailing_zeros()),
+            _other => A1 // be happy, rustc
+        }
     }
 
     /// Make a canonical CPos for lookup in the DB
@@ -2656,8 +2691,15 @@ impl CPos {
                 if bits & cposCode2 != 0 { bits ^= 8 << cposCode2Shift; }
                 if bits & cposCode3 != 0 { bits ^= 8 << cposCode3Shift; }
                 if bits & cposCode4 != 0 { bits ^= 8 << cposCode4Shift; }
-                // we also need to exchange kings
-                bits = (bits & !(cposKings)) | ((bits & cposKings)>>6) | ((bits & cposWhiteKing)<<6);
+                // we also need to exchange kings and piece codes
+                // we assume here that fixed black bits are further left than the corresponding white ones
+                // safer, but slower, would be `(bits & cposBlackKing) >> cposBlackKingShift << cposWhiteKingShift)`
+                bits = (bits & !(cposKings|cposPieces))     // clear affected bits
+                        | ((bits & cposKings)>>6)           // move the black king
+                        | ((bits & cposWhiteKing)<<6)       // move the white king
+                        | ((bits & cposBlackPiece) >> 2)    // move the black piece index
+                        | ((bits & cposWhitePiece) << 2)    // move the white piece index
+                        ;
                 if hasPawns {
                     // we need to mirror the board horizontally when pawns are present
                     mirrored = true;
@@ -2692,25 +2734,55 @@ impl CPos {
         }
     }
 
-    fn swap(bits: u64, m1: u64, m2: u64) -> u64 {
-        (bits & !(m1|m2)) // zero affected bits
-        | (((bits&m1) >> m1.trailing_zeros()) << m2.trailing_zeros())
-        | (((bits&m2) >> m2.trailing_zeros()) << m1.trailing_zeros())
+    /// for cpos pieces only!
+    fn swap_pieces(bits: u64, m1: u64, m2: u64) -> u64 {
+        // which pieces are swapped?
+        let p1 = match m1 & (cposCode1 | cposCode2 | cposCode3 | cposCode4) {
+            cposCode1 => 0,
+            cposCode2 => 1,
+            cposCode3 => 2,
+            cposCode4 => 3,
+            _else     => 42,
+        };
+        let p2 = match m2 & (cposCode1 | cposCode2 | cposCode3 | cposCode4) {
+            cposCode1 => 0,
+            cposCode2 => 1,
+            cposCode3 => 2,
+            cposCode4 => 3,
+            _else     => 42,
+        };
+        // which pieces are currently encoded?
+        let w_p = (bits & cposWhitePiece) >> cposWhitePieceShift;  // current white piece
+        let b_p = (bits & cposBlackPiece) >> cposBlackPieceShift;  // current black piece
+        // new values for piece codes
+        // note, they are unaffected when both bitmasks are not cpos fields
+        // or when not indexed pieces are exchanged
+        let nw_p = if w_p == p1  { p2 } else if w_p == p2 { p1 } else { w_p };
+        let nb_p = if b_p == p1  { p2 } else if b_p == p2 { p1 } else { b_p };
+
+        // now make the ALU hot
+        (bits & !(cposPieces|m1|m2)) // clear affected bits
+            | (((bits&m1) >> m1.trailing_zeros()) << m2.trailing_zeros())  // move m1 bits to m2
+            | (((bits&m2) >> m2.trailing_zeros()) << m1.trailing_zeros())  // move m2 bits to m1
+            | (nw_p << cposWhitePieceShift)  // add in new white piece index
+            | (nb_p << cposBlackPieceShift)  // add in new black piece index
     }
+
+    
 
     /// order position 1 2 and 3 in a CPos, at max 3 swaps
     fn order3(mut bits: u64) -> u64 {
         // move the smallest to position 3
         if ((bits & cposFld3) >> cposFld3.trailing_zeros()) > ((bits & cposFld2) >> cposFld2.trailing_zeros()) {
-            bits = CPos::swap(bits, cposCode3|cposFld3, cposCode2|cposFld2);
+            bits = CPos::swap_pieces(bits, cposCode3|cposFld3, cposCode2|cposFld2);
         }
         if ((bits & cposFld3) >> cposFld3.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
-            bits = CPos::swap(bits, cposCode3|cposFld3, cposCode1|cposFld1);
+            bits = CPos::swap_pieces(bits, cposCode3|cposFld3, cposCode1|cposFld1);
         }
         // ... and bring 1 and 2 in the correct order
         // swap 2 and 1, if 2 is greater
         if ((bits & cposFld2) >> cposFld2.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
-            bits = CPos::swap(bits, cposCode2|cposFld2, cposCode1|cposFld1);
+            bits = CPos::swap_pieces(bits, cposCode2|cposFld2, cposCode1|cposFld1);
         }
         bits
     }
@@ -2723,13 +2795,13 @@ impl CPos {
         if (bits & cposCode4) != 0 {
             // swap the minimum to 4 and sort the remaining 3
             if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld3) >> cposFld3.trailing_zeros()) {
-                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode3|cposFld3);
+                bits = CPos::swap_pieces(bits, cposCode4|cposFld4, cposCode3|cposFld3);
             }
             if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld2) >> cposFld2.trailing_zeros()) {
-                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode2|cposFld2);
+                bits = CPos::swap_pieces(bits, cposCode4|cposFld4, cposCode2|cposFld2);
             }
             if ((bits & cposFld4) >> cposFld4.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
-                bits = CPos::swap(bits, cposCode4|cposFld4, cposCode1|cposFld1);
+                bits = CPos::swap_pieces(bits, cposCode4|cposFld4, cposCode1|cposFld1);
             }
             CPos { bits: CPos::order3(bits) }
         }
@@ -2737,7 +2809,7 @@ impl CPos {
         else if (bits & cposCode2) != 0 {
             // swap 2 and 1, if 2 is greater
             if ((bits & cposFld2) >> cposFld2.trailing_zeros()) > ((bits & cposFld1) >> cposFld1.trailing_zeros()) {
-                bits = CPos::swap(bits, cposCode2|cposFld2, cposCode1|cposFld1);
+                bits = CPos::swap_pieces(bits, cposCode2|cposFld2, cposCode1|cposFld1);
             }
             CPos { bits } 
         }
@@ -2860,7 +2932,7 @@ impl CPos {
                 }
                 Ok(c) => {
                     if      c == self      {
-                        return Ok(self);
+                        return Ok(c);
                     }
                     else if c <  self       { lower = mid + 1; }
                     else /* c >  canon */   { upper = mid; }
@@ -2868,7 +2940,7 @@ impl CPos {
             }
         }
         // pretend we found a DRAW
-        Ok(self.withState(OTHER_DRAW, OTHER_DRAW))
+        Ok(self.withState(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
     }
  }
 
@@ -2878,17 +2950,17 @@ impl fmt::Debug for CPos {
         f.write_str(&format!("{:?}/{:?}", 
             self.state(BLACK),
             self.state(WHITE)))?;
-        if self.pieceAt(4) != EMPTY {
-            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(4), self.pieceAt(4), self.fieldAt(4)))?;
+        if self.piece_at(3) != EMPTY {
+            f.write_str(&format!(", {:?} {} {}", self.player_at(3), self.piece_at(3), self.field_at(3)))?;
         }
-        if self.pieceAt(3) != EMPTY {
-            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(3), self.pieceAt(3), self.fieldAt(3)))?;
+        if self.piece_at(2) != EMPTY {
+            f.write_str(&format!(", {:?} {} {}", self.player_at(2), self.piece_at(2), self.field_at(2)))?;
         }
-        if self.pieceAt(2) != EMPTY {
-            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(2), self.pieceAt(2), self.fieldAt(2)))?;
+        if self.piece_at(1) != EMPTY {
+            f.write_str(&format!(", {:?} {} {}", self.player_at(1), self.piece_at(1), self.field_at(1)))?;
         }
-        if self.pieceAt(1) != EMPTY {
-            f.write_str(&format!(", {:?} {:?} {}", self.playerAt(1), self.pieceAt(1), self.fieldAt(1)))?;
+        if self.piece_at(0) != EMPTY {
+            f.write_str(&format!(", {:?} {} {}", self.player_at(0), self.piece_at(0), self.field_at(0)))?;
         }
         f.write_str(&format!(", BK/WK {}/{}", self.blackKing(), self.whiteKing()))
     }
