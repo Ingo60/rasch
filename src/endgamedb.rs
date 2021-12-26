@@ -448,7 +448,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 30 * 12; // 30 elements at 12 bytes
+const SIZE_CACHE_ENTRY_AVG: usize = 35 * 12; // 32 elements at 12 bytes
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
@@ -477,7 +477,8 @@ pub fn compute_hash(vecmax: usize) -> usize {
     }
 }
 
-/// Allocate the memory needed for in-memory processing.
+/// Allocate the memory needed for in-memory processing but not more than twice the vector length,
+/// since we need at most 2 hash entries per position.
 pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> Result<usize, String> {
     let hsize = compute_hash(vec.len()).min(2 * vec.len());
     hash.try_reserve(hsize).map_err(|ioe| {
@@ -687,18 +688,18 @@ pub fn gen(sig: String) -> Result<(), String> {
                     let key = 2 * i + player as usize;
                     let hashLen = posHash.len();
                     cacheLookups += 1;
+                    cacheHits += 1;
                     // let mut fromMoves;
                     // let mut fromHash = true;
                     // let mut entry = posHash.entry(key);
                     let reached = posHash.entry(key).or_insert({
-                        cacheHits += 1;
+                        cacheHits -= 1;
                         p.moves()
                             .iter()
                             .copied()
                             .map(|m| (m, p.apply(m).compressed()))
-                            .collect::<Vec<(Move, CPos)>>()}
-                    );
-
+                            .collect::<Vec<(Move, CPos)>>()
+                    });
 
                     let mut all_can_mate = true;
                     let mut all_can_draw = true;
@@ -783,12 +784,13 @@ pub fn gen(sig: String) -> Result<(), String> {
                         }
                     }
 
-                    if c.state(player) != UNKNOWN 
-                        || (all_unknown && maxHashCap < 2 * npositions) 
-                        || hashLen >= maxHashCap {
-                            posHash.remove(&key);
+                    if c.state(player) != UNKNOWN
+                        || (all_unknown && maxHashCap < 2 * npositions)
+                        || hashLen >= maxHashCap
+                    {
+                        posHash.remove(&key);
                     }
-                    
+
                     if c.state(player) != UNKNOWN {
                         positions[i] = c;
                     }
