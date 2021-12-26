@@ -1,4 +1,5 @@
 {
+    "editor.formatOnSave": true,
     "rust.all_features": true,
     "rust.build_bin": null,
     "rust.build_on_save": true,
