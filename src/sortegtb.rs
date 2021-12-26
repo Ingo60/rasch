@@ -15,15 +15,14 @@ use super::position::CPos;
 // use super::position::Position;
 // use crate::position::Mirrorable;
 
-// use std::collections::HashMap;
 use std::env;
-use std::fs::{remove_file, rename, File};
-use std::io;
-use std::io::BufReader;
-use std::io::BufWriter;
-use std::io::ErrorKind::*;
-use std::io::Write;
-use std::path::Path;
+use std::{
+    fs::{remove_file, rename, File},
+    io::{self, BufReader, BufWriter, ErrorKind::*, Write},
+    path::Path,
+};
+
+use crossbeam::thread::scope;
 
 /// We try to use 8 GB for in-place sort.
 /// Why 8 GB? Because my computer has only 16GB memory and I want to do some other things while the sort runs for hours.
@@ -234,4 +233,329 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
             println!("\x08\x08done.");
         }
     }
+}
+
+pub fn foo() {
+    let x: Vec<CPos> = Vec::new();
+    let mut y = x.iter().copied();
+    let mut z = x.iter().copied();
+    let _a: MergeIterator<CPos> = MergeIterator::new(&mut y, &mut z);
+    ()
+}
+
+/// An iterator over elements of some type `T: Ord` that merges two of the same kind.
+struct MergeIterator<'a, T>
+where
+    T: Copy + Ord,
+{
+    one: &'a mut dyn Iterator<Item = T>,
+    two: &'a mut dyn Iterator<Item = T>,
+    a: Option<T>,
+    b: Option<T>,
+}
+
+impl<'m, T> MergeIterator<'m, T>
+where
+    T: Copy + Ord,
+{
+    pub fn new(i1: &'m mut dyn Iterator<Item = T>, i2: &'m mut dyn Iterator<Item = T>) -> MergeIterator<'m, T> {
+        let mut m = MergeIterator { one: i1, two: i2, a: None, b: None };
+        m.a = m.one.next();
+        m.b = m.two.next();
+        m
+    }
+}
+
+impl<'m, T> Iterator for MergeIterator<'m, T>
+where
+    T: Copy + Ord,
+{
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.a {
+            None => match self.b {
+                None => None,
+                r @ Some(_) => {
+                    self.b = self.two.next();
+                    r
+                }
+            },
+            r1 @ Some(v1) => match self.b {
+                None => {
+                    self.a = self.one.next();
+                    r1
+                }
+                r2 @ Some(v2) => {
+                    if v1 <= v2 {
+                        self.b = self.two.next();
+                        r2
+                    } else {
+                        self.a = self.one.next();
+                        r1
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Wrap a `BufReader` and make it an `Iterator<Item=CPos>`
+/// Can be used to provide input for `MergeIterator<CPos>`
+struct CPosReader {
+    rdr: BufReader<File>,
+}
+
+impl CPosReader {
+    pub fn new(path: &str) -> Result<CPosReader, String> {
+        let file = File::open(path).map_err(|ioe| format!("Can't open file {} ({})", path, ioe))?;
+        let bufr = BufReader::with_capacity(BUFSZ, file);
+        Ok(CPosReader { rdr: bufr })
+    }
+}
+
+impl Iterator for CPosReader {
+    type Item = CPos;
+    fn next(&mut self) -> Option<Self::Item> {
+        match CPos::read_seq_with_eof(&mut self.rdr) {
+            Ok(x) => x,
+            Err(e) => {
+                panic!("{} while reading from CPosReader", e)
+            }
+        }
+    }
+}
+
+struct CPosVector<'v> {
+    vec: &'v Vec<CPos>,
+    index: usize,
+}
+
+impl<'v> CPosVector<'v> {
+    fn new(vec: &'v Vec<CPos>) -> Self {
+        Self { vec, index: 0 }
+    }
+}
+
+impl<'v> Iterator for CPosVector<'v> {
+    type Item = CPos;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.vec.len() {
+            self.index += 1;
+            Some(self.vec[self.index - 1])
+        } else {
+            None
+        }
+    }
+}
+
+fn vectest() -> Result<(), String> {
+    let v = Vec::new();
+    let mut vi = CPosVector::new(&v);
+    to_disk("foo/bar", &mut vi).map(|_| ())
+}
+
+/// flush the contents of an `CPos` yielding Iterator to the disk
+pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize, String> {
+    let file = File::create(path).map_err(|ioe| format!("Can't create file {} ({})", path, ioe))?;
+    let mut bufw = BufWriter::with_capacity(BUFSZ + BUFSZ / 2, file);
+    let mut written = 0;
+    while match iter.next() {
+        None => false,
+        Some(cp) => {
+            cp.write_seq(&mut bufw)
+                .map_err(|ioe| format!("unexpected error ({}) while writing to {}", ioe, path))?;
+            true
+        }
+    } {
+        written += 1;
+    }
+    bufw.flush().map_err(|ioe| {
+        format!(
+            "unexpected error ({}) while flushing buffer for {}, file may be corrupt",
+            ioe, path
+        )
+    })?;
+    Ok(written)
+}
+
+type CPosIterator = dyn Iterator<Item = CPos>;
+
+/// read a number of CPos from a buffered reader
+fn read_a_chunk(pos: &mut Vec<CPos>, unsorted: &str, n_pos: usize, bufr: &mut BufReader<File>) -> Result<bool, String> {
+    pos.clear();
+    eprintln!("reading from {} ...   0% ", unsorted);
+    io::stdout().flush().unwrap_or_default();
+    while pos.len() < n_pos {
+        // be verbose
+        if pos.len() % (n_pos / (CHUNK / 8 / 1024)) == 0 || pos.len() + 1 == n_pos {
+            print!("\x08\x08\x08\x08\x08{:3}% ", (pos.len() + 1) * 100 / n_pos);
+            io::stdout().flush().unwrap_or_default();
+        }
+        match CPos::read_seq(bufr) {
+            Ok(it) => {
+                pos.push(it);
+            }
+            Err(some) if some.kind() == UnexpectedEof => {
+                println!("finally done, got {} positions.", pos.len());
+                return Ok(true);
+            }
+            Err(other) => {
+                return Err(format!(
+                    "unexpected read error after {} positions ({})",
+                    pos.len(),
+                    other
+                ))
+            }
+        }
+    }
+    eprintln!("... done, got {} positions from {}", pos.len(), unsorted);
+    Ok(false)
+}
+
+/// preconditions:
+/// - posa: has some data items to sort
+/// - posb: provides space for data items to read
+/// - bufr: provides more data to read
+/// - n_pos: how many items to read
+/// postconditions
+fn split_step(
+    posa: &mut Vec<CPos>,
+    posb: &mut Vec<CPos>,
+    unsorted: &str,
+    c_name: &str,
+    bufr: &mut BufReader<File>,
+    n_pos: usize,
+) -> Result<(usize, bool), String> {
+    scope(|splitting| {
+        /* sort */
+        let sort_thread = {
+            splitting.spawn(|_| {
+                eprintln!("sorting ... ");
+                posa.sort_unstable();
+                eprintln!("... sorting done.");
+                to_disk(c_name, &mut posa.iter().copied())
+            })
+        };
+
+        let read_thread = { splitting.spawn(|_| read_a_chunk(posb, unsorted, n_pos, bufr)) };
+        let _sort_result = sort_thread.join().unwrap()?;
+        let read_result = read_thread.join().unwrap()?;
+        Ok((_sort_result, read_result))
+    })
+    .unwrap()
+}
+
+fn merge_at_once(init: &mut CPosIterator, rest: Vec<String>) -> Result<(), String> {
+    Ok(())
+}
+
+/// Split an unsorted file into sorted chunks.
+/// Returns a vector of `CPosIterator`s.
+pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), String> {
+    let file = File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
+    let mut bufr = BufReader::with_capacity(BUFSZ, file);
+    let mut pos1: Vec<CPos> = Vec::with_capacity(0);
+    let mut pos2: Vec<CPos> = Vec::with_capacity(0);
+    let mut n_pos = CHUNK / 2;
+    let mut chunks: Vec<String> = Vec::new();
+
+    // reserve some space for the actual sort
+    pos1.try_reserve_exact(n_pos)
+        .and_then(|_| pos2.try_reserve_exact(n_pos))
+        .or_else(|_| {
+            n_pos /= 2;
+            pos1.shrink_to_fit();
+            pos2.shrink_to_fit();
+            pos1.try_reserve_exact(n_pos)
+                .and_then(|_| pos2.try_reserve_exact(n_pos))
+        })
+        .or_else(|_| {
+            {
+                n_pos /= 2;
+                pos1.shrink_to_fit();
+                pos2.shrink_to_fit();
+                pos1.try_reserve_exact(n_pos)
+                    .and_then(|_| pos2.try_reserve_exact(n_pos))
+            }
+            .map_err(|e| {
+                format!(
+                    "Cannot even reserve sort space for {}m elements ({}). Giving up.",
+                    n_pos / (1024 * 1024),
+                    e
+                )
+            })
+        })?;
+    // now for the actual work
+
+    let mut eof = read_a_chunk(&mut pos1, unsorted, n_pos, &mut bufr)?;
+    let mut lastsorted = loop {
+        if eof {
+            eprint!("sorting last chunk ... ");
+            pos1.sort_unstable();
+            eprintln!("... done sorting last chunk");
+            // let mut mit = MergeIterator::new(&mut pos1.iter().copied(), &mut pos1.iter().copied());
+            // let result = merge_at_once(&mut pos1.iter().copied(), chunks);
+            break &mut pos1;
+        } else {
+            let c_name = format!("{}{}", c_path, chunks.len());
+            let step = split_step(&mut pos1, &mut pos2, unsorted, &c_name, &mut bufr, n_pos)?;
+            chunks.push(c_name);
+            match step {
+                (_, true) => {
+                    eprint!("sorting last chunk ... ");
+                    pos2.sort_unstable();
+                    eprintln!("... done sorting last chunk");
+                    break &mut pos2;
+                }
+                (_, false) => {
+                    let c_name = format!("{}{}", c_path, chunks.len());
+                    let step = split_step(&mut pos2, &mut pos1, unsorted, &c_name, &mut bufr, n_pos)?;
+                    chunks.push(c_name);
+                    eof = step.1;
+                }
+            }
+        }
+    };
+    if chunks.len() == 0 {
+        to_disk(&sorted, &mut lastsorted.iter().copied())?;
+    } else if chunks.len() == 1 {
+        let mut rdr1 = CPosReader::new(&chunks[0])?;
+        let mut rdrv = lastsorted.iter().copied();
+        let mut merger = MergeIterator::new(&mut rdrv, &mut rdr1);
+        to_disk(&sorted, &mut merger)?;
+    } /* else {
+          let mut rdr1 = CPosReader::new(&chunks[0])?;
+          let mut rdrv = lastsorted.iter().copied();
+          let mut merger = MergeIterator::new(&mut rdrv, &mut rdr1);
+          chunks.remove(0);
+          let x = chunks
+              .iter()
+              // .copied()
+              .fold(Ok(merger), |acc: Result<MergeIterator<CPos>, String>, s| {
+                  acc.and_then(move |mutmgr| {
+                      CPosReader::new(&*s).and_then(move |mut cpr| Ok(MergeIterator::new(&mut mgr, &mut cpr)))
+                  })
+              });
+          ()
+          /*
+          let mut vec_rdr = Vec::new();
+          let mut vec_merger = Vec::new();
+          vec_merger.push(merger);
+
+          for i in 1..chunks.len() {
+              let mut rdr = CPosReader::new(&chunks[i])?;
+              vec_rdr.push(rdr);
+              let mut merger = MergeIterator::new(&mut vec_merger[i - 1], &mut vec_rdr[i - 1]);
+              vec_merger.push(merger);
+          }
+          match vec_merger.last() {
+              None => panic!("no merger"),
+              Some(m) => {
+                  to_disk(&sorted, &mut *m)?;
+              }
+          }
+          */
+      } */
+
+    Ok(())
 }

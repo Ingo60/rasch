@@ -10,3 +10,4 @@ edition = "2021"
 rand = "0.8.4"
 ctrlc = "3.2.1"
 sysinfo = { version = "0.22.3", default-features = false }
+crossbeam = "0.8.1"
