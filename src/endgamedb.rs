@@ -18,7 +18,6 @@ use super::position::Position;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{remove_file, File};
-use std::io;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::ErrorKind::*;
@@ -554,7 +553,6 @@ pub fn gen(sig: String) -> Result<(), String> {
         sig,
         if restart { "restore previous positions" } else { "create all positions" }
     );
-    io::stderr().flush().unwrap_or_default();
 
     let inMemory = if restart {
         let mut file =
@@ -590,7 +588,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     } else {
         let vecmax = expected_positions(signature);
         eprint!("({} are expected) ", formattedSZ(vecmax));
-        io::stderr().flush().unwrap_or_default();
         let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
             P::leftHalf
         } else {
@@ -599,12 +596,10 @@ pub fn gen(sig: String) -> Result<(), String> {
         let mut sink = match positions.try_reserve_exact(vecmax) {
             Ok(_) => {
                 eprint!("in memory ... ");
-                io::stderr().flush().unwrap_or_default();
                 Sink::V(&mut positions)
             }
             Err(_) => {
                 eprint!("in {} ... ", rawPath);
-                io::stderr().flush().unwrap_or_default();
                 let f = File::create(&rawPath).map_err(|e| format!("Can't create {} ({})", &rawPath, e))?;
                 Sink::W(BufWriter::new(f))
             }
@@ -649,7 +644,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     // Pass 2 - sorting, only needed if no restart
     if !restart {
         eprint!("{} Pass {} (sorting) ... ", sig, pass);
-        io::stderr().flush().unwrap_or_default();
         positions.sort_unstable();
         eprintln!("done.");
         pass += 1;
@@ -673,14 +667,14 @@ pub fn gen(sig: String) -> Result<(), String> {
     'pass: while !sigint_received.load(atomic::Ordering::SeqCst) {
         let mut cacheHits = 0usize;
         let mut cacheLookups = 0usize;
-        pass += 1;
+
         eprint!(
             "{} Pass {} - analyzing {} positions ...    0% ",
             sig,
             pass,
             if mateonly { "mate" } else { "draw" }
         );
-        // io::stderr().flush().unwrap_or_default();
+        pass += 1;
 
         for i in 0..npositions {
             if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
@@ -689,14 +683,15 @@ pub fn gen(sig: String) -> Result<(), String> {
             }
             if i % 500_000 == 0 || i + 1 == npositions {
                 eprint!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
-                // io::stderr().flush().unwrap_or_default();
             }
 
-            // do the following for BLACK, then for WHITE, just without iter()
-            let mut player = WHITE;
-            loop {
-                let other = player;
-                player = player.opponent();
+            // do the following for BLACK, then for WHITE
+            // a bit clumsy, as we can't implement trait Step for Player right now.
+            let black = 0;
+            let white = 1;
+            for colour in black..=white {
+                let player = Player::from(colour != black);
+                let other = player.opponent();
                 let mut c = positions[i];
 
                 if c.state(player) == UNKNOWN {
@@ -705,10 +700,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                     let hashLen = posHash.len();
                     cacheLookups += 1;
                     cacheHits += 1;
-                    // let mut fromMoves;
-                    // let mut fromHash = true;
-                    // let mut entry = posHash.entry(key);
-                    let reached = posHash.entry(key).or_insert({
+                    let reached = posHash.entry(key).or_insert_with(|| {
                         cacheHits -= 1;
                         p.moves()
                             .iter()
@@ -810,13 +802,9 @@ pub fn gen(sig: String) -> Result<(), String> {
                     if c.state(player) != UNKNOWN {
                         positions[i] = c;
                     }
-                }
-
-                if player == WHITE {
-                    break;
-                }
-            }
-        }
+                } // unknown state
+            } // black/white
+        } // loop over positions
         eprintln!(
             "done. Cache hit rate {}%, new hash size {}",
             if cacheLookups > 0 { cacheHits * 100 / cacheLookups } else { 100 },
@@ -849,7 +837,6 @@ pub fn gen(sig: String) -> Result<(), String> {
     let fkind = if interrupted { "checkpoint" } else { "EGBT" };
     let writePath = if interrupted { sortPath.clone() } else { egtbPath.clone() };
     eprint!("{} Pass {} - writing {} ...    0% ", sig, pass + 1, fkind);
-    io::stderr().flush().unwrap_or_default();
     let file =
         File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
     let mut bufWriter = BufWriter::new(file);
@@ -858,7 +845,6 @@ pub fn gen(sig: String) -> Result<(), String> {
         let mut cpos = positions[i];
         if i % 1_000_000 == 0 || i + 1 == positions.len() {
             eprint!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
-            io::stderr().flush().unwrap_or_default();
         }
         // make states sane
         if !interrupted && cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {

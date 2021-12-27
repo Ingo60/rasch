@@ -13,7 +13,7 @@
 #![allow(non_camel_case_types)]
 
 // use standard packages
-use std::fmt::Display;
+use std::{fmt::Display};
 use std::fmt::Formatter;
 use std::fmt;
 use std::hash::Hash;
@@ -64,8 +64,38 @@ pub enum Player {
     WHITE,
 }
 
+/*
+We can't to this because unstable library feature 'step_trait'
+impl Step for Player {
+    fn forward(start: Self, count: usize) -> Self {
+        Step::forward_checked(start, count).expect("overflow in `Step::forward`")
+    }
+
+    unsafe fn forward_unchecked(start: Self, count: usize) -> Self {
+        Step::forward(start, count)
+    }
+
+    fn backward(start: Self, count: usize) -> Self {
+        Step::backward_checked(start, count).expect("overflow in `Step::backward`")
+    }
+
+    unsafe fn backward_unchecked(start: Self, count: usize) -> Self {
+        Step::backward(start, count)
+    }
+
+    fn forward_checked(start: Self, count: usize) -> Option<Self> {
+        if start == BLACK { Some(WHITE) } else { None }
+    }
+
+    fn backward_checked(start: Self, count: usize) -> Option<Self> {
+        if start == WHITE { Some(BLACK) } else { None }
+    }
+}
+
+*/
+
 impl From<bool> for Player {
-    /// if true then it's WHITE, otherwise FALSE
+    /// if true then it's WHITE, otherwise BLACK
     fn from(b: bool) -> Player {
         if b {
             WHITE
