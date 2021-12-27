@@ -71,7 +71,7 @@ fn main() {
         match E::gen(String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
                 std::process::exit(1)
             }
         }
@@ -79,14 +79,14 @@ fn main() {
         match E::stats(String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
             }
         }
     } else if argv[1].starts_with("play") && argv.len() == 3 {
         match E::play(&String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
             }
         }
     } else if argv[1].starts_with("play") && argv.len() == 8 {
@@ -98,14 +98,14 @@ fn main() {
         match E::play(&fen) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
             }
         }
     } else if argv[1].starts_with("move") && argv.len() == 3 {
         match decodeFEN(&String::from(argv[2].clone())).and_then(|p| E::findEndgameMove(&p)) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
             }
         }
     } else if argv[1].starts_with("move") && argv.len() == 8 {
@@ -117,7 +117,7 @@ fn main() {
         match decodeFEN(&fen).and_then(|p| E::findEndgameMove(&p)) {
             Ok(_) => {}
             Err(s) => {
-                println!("error: {}", s);
+                eprintln!("error: {}", s);
             }
         }
     } else if argv[1].starts_with("sort") && argv.len() >= 3 {
@@ -137,6 +137,7 @@ fn main() {
             \n    {0} gen sig           # genereate end game table\
             \n    {0} stats sig         # print statistics for end game table\
             \n    {0} play 'fen'        # simulate end game from position given in FEN notation\
+            \n    {0} move 'fen'        # like \"play\", but only one move\
             \n    {0} sort sig          # sort an unsorted end game table\
             \n\
             \nThe directory where end game tables reside is given with environment variable EGTB.\

@@ -40,7 +40,7 @@ const POSITION_NULL: Position = Position {
     rookSet: BitSet::empty(),
 };
 
-/// Helper to print big numbers nicely
+/// Helper to eprint big numbers nicely
 pub fn formatted64(u: u64) -> String {
     let mut result = String::with_capacity(64);
     formatu64(u, &mut result);
@@ -162,7 +162,7 @@ struct Dtm {
 fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut P::EgtbMap) -> Vec<Dtm> {
     let mut result = Vec::with_capacity(10 * positions.len());
     for d in positions {
-        // println!("# d.pos fen {}", encodeFEN(&d.pos));
+        // eprintln!("# d.pos fen {}", encodeFEN(&d.pos));
         let moves = d.pos.moves();
         let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
         let states = reached
@@ -213,13 +213,13 @@ fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut P::EgtbMap) -> Opti
         pos: ccpos.uncompressed(if ssig.isCanonic() { start.turn() } else { start.turn().opponent() }),
     }];
     let mut u = 0u32;
-    println!("# dist-to-mate: start={}", encodeFEN(&start));
-    println!("# dist-to-mate:   vec={}", encodeFEN(&vec0[0].pos));
+    eprintln!("# dist-to-mate: start={}", encodeFEN(&start));
+    eprintln!("# dist-to-mate:   vec={}", encodeFEN(&vec0[0].pos));
     loop {
         let vec1 = expand_cannot_avoid_mate(&vec0, &mut visited);
         vec0 = expand_can_mate(&vec1, dbhash);
         u += 1;
-        println!("# dist-to-mate in {}: found {} new CAN-MATE positions.", u, vec0.len());
+        eprintln!("# dist-to-mate in {}: found {} new CAN-MATE positions.", u, vec0.len());
         match vec0.iter().find(|x| x.state == MATE) {
             Some(_) => break Some(u),
             None => {}
@@ -242,14 +242,14 @@ fn move_to_mate(start: &P::Position, dbhash: &mut P::EgtbMap) -> (P::Move, u32) 
                     for u in 10.. {
                         if let Some(n) = dist_to_mate(u, reached, dbhash) {
                             result = Some((m, n + 1));
-                            println!("# move-to-mate: initial move {} in {}", m.showSAN(*start), n + 1);
+                            eprintln!("# move-to-mate: initial move {} in {}", m.showSAN(*start), n + 1);
                             break;
                         };
                     }
                 }
                 Some((_, r)) => match dist_to_mate(r, reached, dbhash) {
                     Some(n) if n + 1 < r => {
-                        println!("# move-to-mate: better move {} in {}", m.showSAN(*start), n + 1);
+                        eprintln!("# move-to-mate: better move {} in {}", m.showSAN(*start), n + 1);
                         result = Some((m, n + 1))
                     }
                     _ => {}
@@ -269,10 +269,10 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     }?;
     let mut hash: P::EgtbMap = HashMap::new();
     let sig = cpos.signature();
-    println!("# {} is canonic {}", sig, sig.isCanonic());
+    eprintln!("# {} is canonic {}", sig, sig.isCanonic());
     let rpos = cpos.find(&mut hash)?;
     if rpos != cpos {
-        println!(
+        eprintln!(
             "# {} looked for    0x{:016x}  {:?}/{:?}  fen: {}",
             sig,
             cpos.bits,
@@ -281,7 +281,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             encodeFEN(&cpos.uncompressed(pos.turn()))
         );
     }
-    println!(
+    eprintln!(
         "# {} found canonic 0x{:016x}  {:?}/{:?}  fen: {}",
         rpos.signature(),
         rpos.bits,
@@ -296,16 +296,16 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     match s {
         UNKNOWN | INVALID_POS => Err(format!("illegal {:?} state for this position", s)),
         MATE => {
-            println!("# {:?} to play finds mate", pos.turn());
+            eprintln!("# {:?} to play finds mate", pos.turn());
             Err(String::from("MATE"))
         }
         STALEMATE => {
-            println!("# {:?} to play finds stale mate", pos.turn());
+            eprintln!("# {:?} to play finds stale mate", pos.turn());
             Err(String::from("STALEMATE"))
         }
         CAN_MATE_P | CAN_MATE_K => match move_to_mate(pos, &mut hash) {
             (mv, u) => {
-                println!(
+                eprintln!(
                     "# {:?} to play will enforce mate in {:?} with {}",
                     pos.turn(),
                     u,
@@ -327,7 +327,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     .unwrap_or(false)
             }) {
                 Some(mv) => {
-                    println!(
+                    eprintln!(
                         "# {:?} to move will enforce {} with {}",
                         pos.turn(),
                         if s == CAN_MATE_P || s == CAN_MATE_K { "mate" } else { "draw" },
@@ -355,7 +355,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 None => moves[0],
                 Some(mv) => mv,
             };
-            println!(
+            eprintln!(
                 "# {:?} to move cannot avoid {} so {} {}",
                 pos.turn(),
                 if s == CANNOT_AVOID_MATE { "mate" } else { "draw" },
@@ -369,7 +369,15 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
 
 /// Provide statistics for an endgame tablebase
 pub fn stats(sig: String) -> Result<(), String> {
-    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let dbfile = format!("{}/{}", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let egtbfile = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let path = if Path::new(&sig).is_file() {
+        sig
+    } else if Path::new(&dbfile).is_file() {
+        dbfile
+    } else {
+        egtbfile
+    };
     let file = match File::open(&path) {
         Err(cant) => return Err(format!("can't open {} ({})", path, cant)),
         Ok(f) => f,
@@ -407,7 +415,7 @@ pub fn stats(sig: String) -> Result<(), String> {
     for i in 1..15 {
         let s = CPosState::from(i as u64);
         if wkinds[i] > 0 {
-            println!(
+            eprintln!(
                 "{:>12} white positions with status {:<20} for example {}",
                 formattedSZ(wkinds[i]),
                 format!("{:?}", s),
@@ -415,7 +423,7 @@ pub fn stats(sig: String) -> Result<(), String> {
             );
         }
         if bkinds[i] > 0 {
-            println!(
+            eprintln!(
                 "{:>12} black positions with status {:<20} for example {}",
                 formattedSZ(bkinds[i]),
                 format!("{:?}", s),
@@ -423,18 +431,18 @@ pub fn stats(sig: String) -> Result<(), String> {
             );
         }
     }
-    println!("{:>12} positions total", formattedSZ(total));
+    eprintln!("{:>12} positions total", formattedSZ(total));
     if wkinds[UNKNOWN as usize] + bkinds[UNKNOWN as usize] > 0 {
-        println!("Warning: the table contains positions with UNKNOWN state.");
+        eprintln!("Warning: the table contains positions with UNKNOWN state.");
     }
     if !sorted {
-        println!("Warning: the table is not sorted.");
+        eprintln!("Warning: the table is not sorted.");
     }
     if duplic {
-        println!("Warning: the table contains duplicates.");
+        eprintln!("Warning: the table contains duplicates.");
     }
     if wkinds[UNKNOWN as usize] > 0 || bkinds[UNKNOWN as usize] > 0 || !sorted || duplic {
-        println!("Warning: This is an invalid or yet incomplete end game table.");
+        eprintln!("Warning: This is an invalid or yet incomplete end game table.");
     }
 
     Ok(())
@@ -448,7 +456,7 @@ const SIZE_CPOS: usize = 8;
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 35 * 12; // 32 elements at 12 bytes
+const SIZE_CACHE_ENTRY_AVG: usize = 71 * 6; // 71 elements at 6 bytes
 
 /// Computes number of entries for allocation in positions vector and cache for memory processing.
 /// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
@@ -488,7 +496,7 @@ pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> R
             ioe
         )
     })?;
-    println!("{} reserved space for {} hash entries.", sig, formattedSZ(hsize));
+    eprintln!("{} reserved space for {} hash entries.", sig, formattedSZ(hsize));
     Ok(hsize)
 }
 
@@ -541,12 +549,12 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut positions = Vec::with_capacity(0);
 
     // Pass1 - create all positions
-    print!(
+    eprint!(
         "{} Pass 1 - {} ",
         sig,
         if restart { "restore previous positions" } else { "create all positions" }
     );
-    io::stdout().flush().unwrap_or_default();
+    io::stderr().flush().unwrap_or_default();
 
     let inMemory = if restart {
         let mut file =
@@ -567,11 +575,11 @@ pub fn gen(sig: String) -> Result<(), String> {
                         Err(ioe) => return Err(format!("error reading checkpoint file {} ({})", &sortPath, ioe)),
                     }
                 }
-                println!("{} positions found.", formattedSZ(vecmax));
+                eprintln!("{} positions found.", formattedSZ(vecmax));
                 true
             }
             Err(_) => {
-                println!(
+                eprintln!(
                     "restart failed, {} too big ({} positions).",
                     sortPath,
                     formattedSZ(vecmax)
@@ -581,17 +589,22 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
     } else {
         let vecmax = expected_positions(signature);
-        print!("({} are expected) ... ", formattedSZ(vecmax));
-        io::stdout().flush().unwrap_or_default();
+        eprint!("({} are expected) ", formattedSZ(vecmax));
+        io::stderr().flush().unwrap_or_default();
         let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
             P::leftHalf
         } else {
             P::lowerLeftQuarter
         };
         let mut sink = match positions.try_reserve_exact(vecmax) {
-            Ok(_) => Sink::V(&mut positions),
+            Ok(_) => {
+                eprint!("in memory ... ");
+                io::stderr().flush().unwrap_or_default();
+                Sink::V(&mut positions)
+            }
             Err(_) => {
-                print!("writing to {} ... ", rawPath);
+                eprint!("in {} ... ", rawPath);
+                io::stderr().flush().unwrap_or_default();
                 let f = File::create(&rawPath).map_err(|e| format!("Can't create {} ({})", &rawPath, e))?;
                 Sink::W(BufWriter::new(f))
             }
@@ -611,7 +624,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         sink.flush();
 
         if let Sink::V(_) = sink {
-            println!("done: found {} possible positions.", formattedSZ(positions.len()));
+            eprintln!("done: found {} possible positions.", formattedSZ(positions.len()));
             if positions.len() > vecmax as usize {
                 eprintln!("WARNING: vecmax was calculated too low!");
             } else if positions.len() < vecmax as usize {
@@ -619,7 +632,7 @@ pub fn gen(sig: String) -> Result<(), String> {
             }
             true
         } else {
-            println!("done");
+            eprintln!("done");
             false
         }
     };
@@ -629,16 +642,19 @@ pub fn gen(sig: String) -> Result<(), String> {
         return Err(String::from("the rest of the processing is not implemented yet."));
     }
 
-    // let sig = if positions.len() > 0 { positions[0].signature() } else { String::from("K-K") };
-    println!("    Generating EGTB for {} in {}", sig, egtbPath);
+    eprintln!("    Generating EGTB for {} in {}", sig, egtbPath);
 
-    // Pass2 - sort
-    print!("{} Pass 2 (sorting) ... ", sig);
-    io::stdout().flush().unwrap_or_default();
-    positions.sort_unstable();
-    println!("done.");
+    let mut pass = 2usize;
 
-    let mut pass = 2;
+    // Pass 2 - sorting, only needed if no restart
+    if !restart {
+        eprint!("{} Pass {} (sorting) ... ", sig, pass);
+        io::stderr().flush().unwrap_or_default();
+        positions.sort_unstable();
+        eprintln!("done.");
+        pass += 1;
+    }
+
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
     let mut openFiles: P::EgtbMap = HashMap::new();
@@ -658,22 +674,22 @@ pub fn gen(sig: String) -> Result<(), String> {
         let mut cacheHits = 0usize;
         let mut cacheLookups = 0usize;
         pass += 1;
-        print!(
+        eprint!(
             "{} Pass {} - analyzing {} positions ...    0% ",
             sig,
             pass,
             if mateonly { "mate" } else { "draw" }
         );
-        io::stdout().flush().unwrap_or_default();
+        // io::stderr().flush().unwrap_or_default();
 
         for i in 0..npositions {
             if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
-                println!("canceled.");
+                eprintln!(" canceled.");
                 continue 'pass;
             }
             if i % 500_000 == 0 || i + 1 == npositions {
-                print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
-                io::stdout().flush().unwrap_or_default();
+                eprint!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
+                // io::stderr().flush().unwrap_or_default();
             }
 
             // do the following for BLACK, then for WHITE, just without iter()
@@ -801,7 +817,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                 }
             }
         }
-        println!(
+        eprintln!(
             "done. Cache hit rate {}%, new hash size {}",
             if cacheLookups > 0 { cacheHits * 100 / cacheLookups } else { 100 },
             formattedSZ(posHash.len())
@@ -809,7 +825,7 @@ pub fn gen(sig: String) -> Result<(), String> {
 
         // are we done yet?
         if !mateonly && analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
-            println!("    Construction of end game table completed.");
+            eprintln!("    Construction of end game table completed.");
             break;
         }
 
@@ -819,7 +835,7 @@ pub fn gen(sig: String) -> Result<(), String> {
             || analyzed[CANNOT_AVOID_MATE as usize] > 0;
         for i in 0..analyzed.len() {
             if analyzed[i] != 0 {
-                println!(
+                eprintln!(
                     "    Found {} new {:?} positions.",
                     formattedSZ(analyzed[i]),
                     CPosState::from(i as u64)
@@ -832,8 +848,8 @@ pub fn gen(sig: String) -> Result<(), String> {
     let interrupted = sigint_received.load(atomic::Ordering::SeqCst);
     let fkind = if interrupted { "checkpoint" } else { "EGBT" };
     let writePath = if interrupted { sortPath.clone() } else { egtbPath.clone() };
-    print!("{} Pass {} - writing {} ...    0% ", sig, pass + 1, fkind);
-    io::stdout().flush().unwrap_or_default();
+    eprint!("{} Pass {} - writing {} ...    0% ", sig, pass + 1, fkind);
+    io::stderr().flush().unwrap_or_default();
     let file =
         File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
     let mut bufWriter = BufWriter::new(file);
@@ -841,8 +857,8 @@ pub fn gen(sig: String) -> Result<(), String> {
     for i in 0..positions.len() {
         let mut cpos = positions[i];
         if i % 1_000_000 == 0 || i + 1 == positions.len() {
-            print!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
-            io::stdout().flush().unwrap_or_default();
+            eprint!("\x08\x08\x08\x08\x08\x08 {:3}% ", (i + 1) * 100 / positions.len());
+            io::stderr().flush().unwrap_or_default();
         }
         // make states sane
         if !interrupted && cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
@@ -871,7 +887,7 @@ pub fn gen(sig: String) -> Result<(), String> {
     bufWriter
         .flush()
         .map_err(|x| format!("couldn't flush buffer ({})", x))?;
-    println!(
+    eprintln!(
         "done, {} positions written to file {}.",
         formattedSZ(npos),
         writePath,

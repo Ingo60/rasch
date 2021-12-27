@@ -1,5 +1,6 @@
 pub mod common;
 pub mod computing;
+pub mod cposio;
 pub mod endgamedb;
 pub mod fen;
 pub mod fieldset;
