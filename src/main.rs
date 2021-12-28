@@ -159,8 +159,8 @@ fn flamegraph(gs: GameState, depth: u32) {
         &mut killers,
         false,
         depth,
-        P::whiteIsMate,
-        P::blackIsMate,
+        P::WHITE_IS_MATE,
+        P::BLACK_IS_MATE,
     );
     let usedMillis = before.elapsed().as_millis();
     println!(
@@ -180,8 +180,8 @@ fn flamegraph(gs: GameState, depth: u32) {
         &mut killers,
         false,
         depth,
-        P::whiteIsMate,
-        P::blackIsMate,
+        P::WHITE_IS_MATE,
+        P::BLACK_IS_MATE,
     );
     let usedMillis = before.elapsed().as_millis();
     println!(
@@ -276,9 +276,9 @@ pub fn orderMoves(pos: &Position, killers: &mut KillerSet, moves: &[Move]) -> Ve
 pub fn correctMateDistanceNo(var: &Variation) -> Variation {
     let dist = var.length as i32 * 2;
     let mut pv = *var;
-    if pv.score == P::whiteIsMate {
+    if pv.score == P::WHITE_IS_MATE {
         pv.score += dist
-    } else if pv.score == P::blackIsMate {
+    } else if pv.score == P::BLACK_IS_MATE {
         pv.score -= dist
     } else {
     }
@@ -447,7 +447,12 @@ pub fn insertPV(
     beta: i32,
     halfmove: u32,
 ) {
-    if pv.score != 0 && pv.length > 0 && depth > 2 && pv.score < P::blackIsMate - 30 && pv.score > P::whiteIsMate + 30 {
+    if pv.score != 0
+        && pv.length > 0
+        && depth > 2
+        && pv.score < P::BLACK_IS_MATE - 30
+        && pv.score > P::WHITE_IS_MATE + 30
+    {
         let bound = if pv.score >= beta {
             lowerBound(pv.score)
         } else if pv.score > alpha {
@@ -467,7 +472,7 @@ pub fn insertPV(
     };
 }
 
-const NONE: [Move; VariationMoves] = [P::noMove; VariationMoves];
+const NONE: [Move; VariationMoves] = [P::NO_MOVE; VariationMoves];
 const DRAW: Variation = Variation { score: 0, nodes: 1, depth: 0, length: 0, moves: NONE };
 
 pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool, u32, i32, i32) -> Variation;
@@ -550,7 +555,7 @@ pub fn negaMax(
             let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
+                    let mate = Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
                     mate
                 } else {
                     DRAW
@@ -599,7 +604,7 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
         pv.score *= state.player().factor();
         pv.depth = depth;
         if state.talkPV(pv) {
-            if pv.length + 1 < depth || pv.score >= P::blackIsMate - 2 || pv.score == 0 {
+            if pv.length + 1 < depth || pv.score >= P::BLACK_IS_MATE - 2 || pv.score == 0 {
                 break;
             } else {
                 depth += 1;
@@ -638,7 +643,7 @@ pub fn strategy_negamin(state: StrategyState) {
             state.tellNoMore();
         }
     } else {
-        negaSimple(state, &mut killers, 3, P::whiteIsMate, P::blackIsMate);
+        negaSimple(state, &mut killers, 3, P::WHITE_IS_MATE, P::BLACK_IS_MATE);
     }
 }
 
@@ -720,7 +725,7 @@ pub fn pvsSearch(
             let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
+                    let mate = Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
                     mate
                 } else {
                     DRAW
@@ -776,7 +781,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
             state.tellNoMore();
             return;
         }
-        let mut alpha = P::whiteIsMate;
+        let mut alpha = P::WHITE_IS_MATE;
         // for all moves
         for m in myOrderedMoves {
             let opos = myPos.apply(m);
@@ -801,7 +806,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
                     &mut killers,
                     false,
                     depth,
-                    P::whiteIsMate,
+                    P::WHITE_IS_MATE,
                     -alpha + 6,
                 )
             };
@@ -852,7 +857,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
     let myPos = state.current();
     let myMoves = myPos.moves();
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
-    let mut best = Variation { depth: 0, length: 0, moves: NONE, nodes: 0, score: P::whiteIsMate };
+    let mut best = Variation { depth: 0, length: 0, moves: NONE, nodes: 0, score: P::WHITE_IS_MATE };
     let mut nodes = 0;
     // for increasing depth
     loop
@@ -880,7 +885,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             state.tellNoMore();
             return;
         }
-        let mut alpha = P::whiteIsMate;
+        let mut alpha = P::WHITE_IS_MATE;
         // for all moves
         for m in myOrderedMoves {
             let opos = myPos.apply(m);
@@ -908,8 +913,8 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
                         &mut killers,
                         false,
                         depth,
-                        P::whiteIsMate,
-                        P::blackIsMate,
+                        P::WHITE_IS_MATE,
+                        P::BLACK_IS_MATE,
                     )
                 } else {
                     let pvx = pvsSearch(&mut hist, &mut hash, &mut killers, false, depth, -alpha, 1 - alpha);
@@ -944,7 +949,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
                             false,
                             depth,
                             -(alpha + 6),
-                            P::blackIsMate,
+                            P::BLACK_IS_MATE,
                         )
                     } else {
                         pvx
@@ -980,7 +985,7 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             pvs.push(pv);
         }
         // don't go deeper if this is reasonably good
-        if best.score > P::blackIsMate - 30 {
+        if best.score > P::BLACK_IS_MATE - 30 {
             // let mut hash: TransTable = state.trtable.lock().unwrap();
             // let size = hash.len();
             // hash.retain(|_, t| t.score >= exactScore(P::blackIsMate - 30));
@@ -1144,7 +1149,7 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             state.tellNoMore();
             return;
         }
-        let mut alpha = P::whiteIsMate;
+        let mut alpha = P::WHITE_IS_MATE;
         // for all moves
         for m in myOrderedMoves {
             let opos = myPos.apply(m);
@@ -1174,8 +1179,8 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
                     &mut killers,
                     false,
                     depth,
-                    P::whiteIsMate,
-                    P::blackIsMate,
+                    P::WHITE_IS_MATE,
+                    P::BLACK_IS_MATE,
                 )
             };
             if computing::thinkingFinished() {
@@ -1215,7 +1220,7 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             alpha = max(pv.score, alpha);
             pvs.push(pv);
         }
-        if alpha > P::blackIsMate - 10 {
+        if alpha > P::BLACK_IS_MATE - 10 {
             println!("# iterSimple{} opponent almost mated.", state.sid);
             state.tellNoMore();
         }
@@ -1320,7 +1325,7 @@ pub fn simpleMax(
     // mate or draw checking
     if ordered.len() == 0 {
         if pos.inCheck(pos.turn()) {
-            let mate = Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32), ..DRAW };
+            let mate = Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32), ..DRAW };
             return mate;
         } else {
             return DRAW;
@@ -1455,7 +1460,7 @@ pub fn iterBNS(state: StrategyState) {
         // hash.clear();
 
         pvs.clear();
-        best.score = 2 * P::whiteIsMate;
+        best.score = 2 * P::WHITE_IS_MATE;
         // for all moves
         for m in ordered {
             let opos = pos.apply(m);
@@ -1572,7 +1577,7 @@ pub fn mtdfMax(
     };
     if moves.len() == 0 {
         if pos.inCheck(pos.turn()) {
-            return Variation { score: P::whiteIsMate + (pos.getRootDistance() as i32), ..DRAW };
+            return Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32), ..DRAW };
         } else {
             return DRAW;
         }
@@ -1668,15 +1673,15 @@ pub fn strategy_mtdf(state: StrategyState) {
                 &mut killers,
                 false,
                 3,
-                P::whiteIsMate,
-                P::blackIsMate,
+                P::WHITE_IS_MATE,
+                P::BLACK_IS_MATE,
             )
             .score
         };
         let pos = state.current();
         loop {
-            let mut f_high = P::blackIsMate;
-            let mut f_low = P::whiteIsMate;
+            let mut f_high = P::BLACK_IS_MATE;
+            let mut f_low = P::WHITE_IS_MATE;
             // state.trtable.lock().unwrap().clear();
             while f_low < f_high {
                 println!(

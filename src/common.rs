@@ -674,7 +674,7 @@ impl GameState {
                 // than 3/4 of the time.
                 let timeOK = usedMillis <= (75 * self.timePerMove()) / 100;
                 // stop strategy when we have a mate
-                let mateIn1 = var.length == 1 && var.score == P::blackIsMate;
+                let mateIn1 = var.length == 1 && var.score == P::BLACK_IS_MATE;
                 // should we go on?
                 let goOn = pondering || timeOK && !mateIn1;
                 self.nodes += var.nodes;
@@ -752,7 +752,7 @@ impl GameState {
                                 var.score
                             );
                             var
-                        } else if var.score.abs() < P::blackIsMate - 1000
+                        } else if var.score.abs() < P::BLACK_IS_MATE - 1000
                             && (var.score - old.score).abs() <= self.oracleDiff as i32
                         {
                             if oracle {

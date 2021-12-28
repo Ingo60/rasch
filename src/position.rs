@@ -9,23 +9,21 @@
 //! * the number of half moves since the last pawn move or capture
 
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
-#![allow(non_upper_case_globals)] // as well as this
-#![allow(non_camel_case_types)]
+// #![allow(non_upper_case_globals)] // as well as this
+
 
 // use standard packages
 use std::{fmt::Display};
 use std::fmt::Formatter;
-use std::fmt;
+
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
-use std::cmp::Ordering;
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Read, Write, BufReader};
-use std::collections::{HashMap};
-use std::env;
-use std::io::ErrorKind::*;
+
+
+
+
 
 
 // use std::boxed::Box;
@@ -36,9 +34,10 @@ use super::fieldset::Field;
 use super::fieldset::Field::*;
 use super::mdb;
 use super::zobrist;
-pub use super::basic::{Player, Piece, Move, showMoves, showMovesSAN};
+pub use super::basic::{Player, Piece, Move, showMoves, showMovesSAN, NO_MOVE};
 pub use super::basic::Player::*;
 pub use super::basic::Piece::*;
+pub use super::cpos::CPos;
 
 
 /// short form of BitSet::singleton
@@ -55,9 +54,9 @@ pub fn fld(b: BitSet) -> Field { b.bitIndex() }
 pub fn percent(p: i32, v: i32) -> i32 { (p*v) / 100 }
 
 /// score when BLACK is mate
-pub const blackIsMate: i32 = 32768;
+pub const BLACK_IS_MATE: i32 = 32768;
 /// score when WHITE is mate
-pub const whiteIsMate: i32 = -blackIsMate;
+pub const WHITE_IS_MATE: i32 = -BLACK_IS_MATE;
 
 
 
@@ -147,7 +146,7 @@ pub struct Position {
 
 /// Bitmask that lists the fields where `PAWN`s are allowed.
 /// They aren't on ranks 1 and 8.
-pub const pawnFields: BitSet = BitSet { bits: 0x00ff_ffff_ffff_ff00u64 };
+pub const PAWN_FIELDS: BitSet = BitSet { bits: 0x00ff_ffff_ffff_ff00u64 };
 
 /// Bitmask for selection of the ply (half-move) counter, which is used to support the 50 moves rule.
 /// Note that we have room for 256 plies, but only 100 are needed.
@@ -170,14 +169,14 @@ pub const pawnFields: BitSet = BitSet { bits: 0x00ff_ffff_ffff_ff00u64 };
 /// assert_eq!(P::plyCounterBits.card(), 8);
 /// ```
 
-pub const plyCounterBits: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
+pub const PLY_COUNTER_BITS: BitSet = BitSet { bits: 0xFF00_0000u64 }; // A4..H4
 
 /// how many bits to shift right to get the ply counter
 /// ```
 /// use rasch::position as P;
 /// assert_eq!(P::plyCounterBits.bits >> P::plyCounterShift, 255);
 /// ```
-pub const plyCounterShift: u32 = 24;
+pub const PLY_COUNTER_SHIFT: u32 = 24;
 
 /// Bitmask for selection of the distance to root ply counter
 /// This counter is reset to 0 before a seach starts and incremented with every move
@@ -195,14 +194,14 @@ pub const plyCounterShift: u32 = 24;
 /// assert_eq!(P::rootCounterBits.card(), 8);
 /// ```
 
-pub const rootCounterBits: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
+pub const ROOT_COUNTER_BITS: BitSet = BitSet { bits: 0xFF_0000_0000 }; // A5..H5
 
 /// number of bits to shift right to get the ply counter
 /// ```
 /// use rasch::position as P;
 /// assert_eq!(P::rootCounterBits.bits >> P::rootCounterShift, 255);
 /// ```
-pub const rootCounterShift: u32 = 32;
+pub const ROOT_COUNTER_SHIFT: u32 = 32;
 
 /// A bitmask used to turn all the counter bits off
 ///
@@ -210,7 +209,7 @@ pub const rootCounterShift: u32 = 32;
 /// use rasch::position as P;
 /// assert_eq!(P::counterBits, P::rootCounterBits + P::plyCounterBits);
 /// ```
-pub const counterBits: BitSet = BitSet {
+pub const COUNTER_BITS: BitSet = BitSet {
     bits: 0x0000_00FF_FF00_0000,
 };
 
@@ -221,7 +220,7 @@ pub const counterBits: BitSet = BitSet {
 /// use rasch::position as P;
 /// assert_eq!(P::castlingBits, P::whiteCastlingRights + P::blackCastlingRights)
 /// ```
-pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, C1, G8, C8
+pub const CASTLING_BITS: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, C1, G8, C8
 
 
 /// Bitmask for selection of the bits that indicate the rights to castle for WHITE
@@ -233,7 +232,7 @@ pub const castlingBits: BitSet = BitSet { bits: 0x4400_0000_0000_0044 }; // G1, 
 /// assert!   (P::whiteCastlingRights.member(F::Field::C1));
 /// assert_eq!(P::whiteCastlingRights.card(), 2);
 /// ```
-pub const whiteCastlingRights: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; // G1, C1
+pub const WHITE_CASTLING_RIGHTS: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; // G1, C1
 
 
 /// Bitmask for selection of the bits that indicate the rights to castle for BLACK
@@ -245,7 +244,7 @@ pub const whiteCastlingRights: BitSet = BitSet { bits: 0x0000_0000_0000_0044 }; 
 /// assert!   (P::blackCastlingRights.member(F::Field::C8));
 /// assert_eq!(P::blackCastlingRights.card(), 2);
 /// ```
-pub const blackCastlingRights: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; // G8, C8
+pub const BLACK_CASTLING_RIGHTS: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; // G8, C8
 
 
 /// Bitmask for selection of the bits that indicate the fields that were skipped when the king castled
@@ -254,7 +253,7 @@ pub const blackCastlingRights: BitSet = BitSet { bits: 0x4400_0000_0000_0000 }; 
 /// use rasch::position as P;
 /// assert_eq!(P::castlingDoneBits, P::whiteHasCastledBits + P::blackHasCastledBits)
 /// ```
-pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // F1, D1, F8, D8
+pub const CASTLING_DONE_BITS: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // F1, D1, F8, D8
 
 
 /// Bitmask for selection of the bits that tell us whether the white king has castled and whereto.
@@ -266,7 +265,7 @@ pub const castlingDoneBits: BitSet = BitSet { bits: 0x2800_0000_0000_0028 }; // 
 /// assert!   (P::whiteHasCastledBits.member(F::Field::D1));
 /// assert_eq!(P::whiteHasCastledBits.card(), 2);
 /// ```
-pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; // F1, D1
+pub const WHITE_HAS_CASTLED_BITS: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; // F1, D1
 
 
 /// Bitmask for selection of the bits that tell us whether the black king has castled and whereto.
@@ -278,14 +277,14 @@ pub const whiteHasCastledBits: BitSet = BitSet { bits: 0x0000_0000_0000_0028 }; 
 /// assert!   (P::blackHasCastledBits.member(F::Field::D8));
 /// assert_eq!(P::blackHasCastledBits.card(), 2);
 /// ```
-pub const blackHasCastledBits: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
+pub const BLACK_HAS_CASTLED_BITS: BitSet = BitSet { bits: 0x2800_0000_0000_0000 }; // F8, D8
 
 /// give the bitmask that can be used to find out whether a given player
 /// has castled
 pub const fn playerCastledBits(p: Player) -> BitSet {
     match p {
-        Player::BLACK => blackHasCastledBits,
-        Player::WHITE => whiteHasCastledBits,
+        Player::BLACK => BLACK_HAS_CASTLED_BITS,
+        Player::WHITE => WHITE_HAS_CASTLED_BITS,
     }
 }
 
@@ -316,7 +315,7 @@ pub const fn playerCastledBits(p: Player) -> BitSet {
 /// assert!   (P::enPassantBits.member(H6));
 /// assert_eq!(P::enPassantBits.card(), 16);
 /// ```
-pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-H3, A6-H6
+pub const EN_PASSANT_BITS: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-H3, A6-H6
 
 /// Bitmask to select the white pawns that may block an unmoved bishop.
 /// Evaluation will penalize if those pawns are blocked themselves as this makes it
@@ -331,7 +330,7 @@ pub const enPassantBits: BitSet = BitSet { bits: 0x0000_FF00_00FF_0000 }; // A3-
 /// assert!   (P::whiteBishopBlockingPawns.member(G2));
 /// assert_eq!(P::whiteBishopBlockingPawns.card(), 4);
 /// ```
-pub const whiteBishopBlockingPawns: BitSet = BitSet { bits: 0x0000_0000_0000_5A00 };
+pub const WHITE_BISHOP_BLOCKING_PAWNS: BitSet = BitSet { bits: 0x0000_0000_0000_5A00 };
 
 /// Bitmask to select the black pawns that may block an unmoved bishop.
 /// Evaluation will penalize if those pawns are blocked themselves as this makes it
@@ -346,7 +345,7 @@ pub const whiteBishopBlockingPawns: BitSet = BitSet { bits: 0x0000_0000_0000_5A0
 /// assert!   (P::blackBishopBlockingPawns.member(G7));
 /// assert_eq!(P::blackBishopBlockingPawns.card(), 4);
 /// ```
-pub const blackBishopBlockingPawns: BitSet = BitSet { bits: 0x005A_0000_0000_0000 };
+pub const BLACK_BISHOP_BLOCKING_PAWNS: BitSet = BitSet { bits: 0x005A_0000_0000_0000 };
 
 /// Bitmask to select the fields where white officers start out.
 /// Evaluation will penalize if those fields are still occupied by officers.
@@ -360,7 +359,7 @@ pub const blackBishopBlockingPawns: BitSet = BitSet { bits: 0x005A_0000_0000_000
 /// assert!   (P::whiteOfficers.member(G1));
 /// assert_eq!(P::whiteOfficers.card(), 4);
 /// ```
-pub const whiteOfficers: BitSet = BitSet { bits: 0x0000_0000_0000_0066 };
+pub const WHITE_OFFICERS: BitSet = BitSet { bits: 0x0000_0000_0000_0066 };
 
 /// Bitmask to select the fields where black officers start out.
 /// Evaluation will penalize if those fields are still occupied by officers.
@@ -374,22 +373,22 @@ pub const whiteOfficers: BitSet = BitSet { bits: 0x0000_0000_0000_0066 };
 /// assert!   (P::blackOfficers.member(G8));
 /// assert_eq!(P::blackOfficers.card(), 4);
 /// ```
-pub const blackOfficers: BitSet = BitSet { bits: 0x6600_0000_0000_0000 };
+pub const BLACK_OFFICERS: BitSet = BitSet { bits: 0x6600_0000_0000_0000 };
 
 
 /// constant to add or subtract 1 from both counters in one go
 /// It goes without saying that we must never decrement beyond zero, nor
 /// increment beyond 255.
-pub const onePly: u64 = 0x1_0100_0000; // A4 and A5
+pub const ONE_PLY: u64 = 0x1_0100_0000; // A4 and A5
 
 /// This is used when only the root counter must be incremented (on
 /// 'PAWN' moves and captures)
-pub const onePlyRootOnly: u64 = 0x1_0000_0000; // A5
+pub const ONE_PLY_ROOT_ONLY: u64 = 0x1_0000_0000; // A5
 
 /// Bit mask that indicates WHITE is to move
-pub const whiteToMove: BitSet = bit(A1);
+pub const WHITE_TO_MOVE: BitSet = bit(A1);
 /// Bit mask that indicates BLACK is to move
-pub const blackToMove: BitSet = BitSet::empty();
+pub const BLACK_TO_MOVE: BitSet = BitSet::empty();
 
 // Zobrist hash value commonly used: A1
 // static flagZobristA1: u64 = zobrist::flagZobrist(A1 as u32);
@@ -406,24 +405,33 @@ pub const blackToMove: BitSet = BitSet::empty();
 /// to move" bit right. Castling rights are taken care of by the
 /// ordinary move logic. Since this happens maybe once in a game,
 /// efficiency is less important.
-pub const whiteShortCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, F1);
-pub const whiteShortCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, F1, G1);
-pub const whiteShortCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, H1, F1);
-pub const whiteLongCastlingMove1: Move = Move::new(WHITE, KING, EMPTY, E1, D1);
-pub const whiteLongCastlingMove2: Move = Move::new(WHITE, KING, EMPTY, D1, C1);
-pub const whiteLongCastlingMove3: Move = Move::new(WHITE, ROOK, EMPTY, A1, D1);
-pub const blackShortCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, F8);
-pub const blackShortCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, F8, G8);
-pub const blackShortCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, H8, F8);
-pub const blackLongCastlingMove1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
-pub const blackLongCastlingMove2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
-pub const blackLongCastlingMove3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
+pub const WHITE_SHORT_CASTLING_MOVE1: Move = Move::new(WHITE, KING, EMPTY, E1, F1);
+pub const WHITE_SHORT_CASTLING_MOVE2: Move = Move::new(WHITE, KING, EMPTY, F1, G1);
+pub const WHITE_SHORT_CASTLING_MOVE3: Move = Move::new(WHITE, ROOK, EMPTY, H1, F1);
+pub const WHITE_LONG_CASTLING_MOVE1: Move = Move::new(WHITE, KING, EMPTY, E1, D1);
+pub const WHITE_LONG_CASTLING_MOVE2: Move = Move::new(WHITE, KING, EMPTY, D1, C1);
+pub const WHITE_LONG_CASTLING_MOVE3: Move = Move::new(WHITE, ROOK, EMPTY, A1, D1);
+pub const BLACK_SHORT_CASTLING_MOVE1: Move = Move::new(BLACK, KING, EMPTY, E8, F8);
+pub const BLACK_SHORT_CASTLING_MOVE2: Move = Move::new(BLACK, KING, EMPTY, F8, G8);
+pub const BLACK_SHORT_CASTLING_MOVE3: Move = Move::new(BLACK, ROOK, EMPTY, H8, F8);
+pub const BLACK_LONG_CASTLING_MOVE1: Move = Move::new(BLACK, KING, EMPTY, E8, D8);
+pub const BLACK_LONG_CASTLING_MOVE2: Move = Move::new(BLACK, KING, EMPTY, D8, C8);
+pub const BLACK_LONG_CASTLING_MOVE3: Move = Move::new(BLACK, ROOK, EMPTY, A8, D8);
 
 /// kingside castling for WHITE
-pub const castlingShortWhite: Move = Move::new(WHITE, KING, KING, E1, G1);
-pub const castlingLongWhite: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
-pub const castlingShortBlack: Move = Move::new(BLACK, KING, KING, E8, G8);
-pub const castlingLongBlack: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
+pub const CASTLING_SHORT_WHITE: Move = Move::new(WHITE, KING, KING, E1, G1);
+pub const CASTLING_LONG_WHITE: Move = Move::new(WHITE, KING, QUEEN, E1, C1);
+pub const CASTLING_SHORT_BLACK: Move = Move::new(BLACK, KING, KING, E8, G8);
+pub const CASTLING_LONG_BLACK: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
+
+/// Mask the lower left quarter fields (A..D, 1..4)
+pub const LOWER_LEFT_QUARTER :  BitSet = BitSet { bits: 0x0000_0000_0f0f_0f0f };
+/// Mask the lower right quarter fields (E..H, 1..4)
+pub const LOWER_RIGHT_QUARTER : BitSet = BitSet { bits: 0x0000_0000_f0f0_f0f0 };
+/// Mask the fields in the lower half A1..H4
+pub const LOWER_HALF: BitSet = BitSet { bits: LOWER_LEFT_QUARTER.bits | LOWER_RIGHT_QUARTER.bits };
+/// Mask the fields on files A to D
+pub const LEFT_HALF: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
 
 /// Helper function that turns `false` into `0u64` and `true` into
 /// `0xffff_ffff_ffff_ffffu64`
@@ -473,16 +481,16 @@ impl Position {
     /// get the number of `Move`s applied since the last pawn move or
     /// capture (Castling, despite technically doing 3 moves,
     /// corrects the counter acordingly)
-    pub fn getPlyCounter(&self) -> u64 { (self.flags * plyCounterBits).bits >> plyCounterShift }
+    pub fn getPlyCounter(&self) -> u64 { (self.flags * PLY_COUNTER_BITS).bits >> PLY_COUNTER_SHIFT }
 
     /// get the number of `Move`s applied since the last root counter
     /// reset
-    pub fn getRootDistance(&self) -> u64 { (self.flags * rootCounterBits).bits >> rootCounterShift }
+    pub fn getRootDistance(&self) -> u64 { (self.flags * ROOT_COUNTER_BITS).bits >> ROOT_COUNTER_SHIFT }
 
     /// clear the 50-move ply counter
     pub fn clearPlyCounter(&self) -> Position {
         Position {
-            flags: self.flags - plyCounterBits,
+            flags: self.flags - PLY_COUNTER_BITS,
             ..*self
         }
     }
@@ -490,7 +498,7 @@ impl Position {
     /// clear the root ply counter
     pub fn clearRootPlyCounter(&self) -> Position {
         Position {
-            flags: self.flags - rootCounterBits,
+            flags: self.flags - ROOT_COUNTER_BITS,
             ..*self
         }
     }
@@ -513,7 +521,7 @@ impl Position {
     pub fn decrPlyCounters(&self) -> Position {
         Position {
             flags: BitSet {
-                bits: self.flags.bits - onePly,
+                bits: self.flags.bits - ONE_PLY,
             },
             ..*self
         }
@@ -589,7 +597,7 @@ impl Position {
 
     /// compute the hash
     pub fn computeZobrist(&self) -> u64 {
-        let flagz = ((self.flags - counterBits) - castlingDoneBits)
+        let flagz = ((self.flags - COUNTER_BITS) - CASTLING_DONE_BITS)
             // .into_iter()
             .fold(0u64, |acc, f| acc ^ super::zobrist::flagZobrist(f as usize));
         self.occupied()
@@ -913,26 +921,26 @@ impl Position {
         let castled = match mv.player() {
             WHITE => match mv.promote() {
                 KING => self
-                    .applyOrdinary(whiteShortCastlingMove1)
-                    .applyOrdinary(whiteShortCastlingMove2)
-                    .applyOrdinary(whiteShortCastlingMove3)
+                    .applyOrdinary(WHITE_SHORT_CASTLING_MOVE1)
+                    .applyOrdinary(WHITE_SHORT_CASTLING_MOVE2)
+                    .applyOrdinary(WHITE_SHORT_CASTLING_MOVE3)
                     .setFlag(F1),
                 _other => self
-                    .applyOrdinary(whiteLongCastlingMove1)
-                    .applyOrdinary(whiteLongCastlingMove2)
-                    .applyOrdinary(whiteLongCastlingMove3)
+                    .applyOrdinary(WHITE_LONG_CASTLING_MOVE1)
+                    .applyOrdinary(WHITE_LONG_CASTLING_MOVE2)
+                    .applyOrdinary(WHITE_LONG_CASTLING_MOVE3)
                     .setFlag(D1),
             },
             BLACK => match mv.promote() {
                 KING => self
-                    .applyOrdinary(blackShortCastlingMove1)
-                    .applyOrdinary(blackShortCastlingMove2)
-                    .applyOrdinary(blackShortCastlingMove3)
+                    .applyOrdinary(BLACK_SHORT_CASTLING_MOVE1)
+                    .applyOrdinary(BLACK_SHORT_CASTLING_MOVE2)
+                    .applyOrdinary(BLACK_SHORT_CASTLING_MOVE3)
                     .setFlag(F8),
                 _other => self
-                    .applyOrdinary(blackLongCastlingMove1)
-                    .applyOrdinary(blackLongCastlingMove2)
-                    .applyOrdinary(blackLongCastlingMove3)
+                    .applyOrdinary(BLACK_LONG_CASTLING_MOVE1)
+                    .applyOrdinary(BLACK_LONG_CASTLING_MOVE2)
+                    .applyOrdinary(BLACK_LONG_CASTLING_MOVE3)
                     .setFlag(D8),
             },
         };
@@ -945,26 +953,26 @@ impl Position {
         let from = mv.from();
         // construct the part of the flag that tells who's move it is
         let tomove = BitSet {
-            bits: (self.flags * whiteToMove).bits ^ whiteToMove.bits,
+            bits: (self.flags * WHITE_TO_MOVE).bits ^ WHITE_TO_MOVE.bits,
         };
         // Construct the counter part of the flags.
         let plies = match mv.piece() {
             PAWN if self.isEmpty(to) => BitSet {
-                bits: ((self.flags * counterBits) - plyCounterBits).bits + onePlyRootOnly,
+                bits: ((self.flags * COUNTER_BITS) - PLY_COUNTER_BITS).bits + ONE_PLY_ROOT_ONLY,
             },
             _capture if !self.isEmpty(to) => BitSet {
-                bits: ((self.flags * counterBits) - plyCounterBits).bits + onePlyRootOnly,
+                bits: ((self.flags * COUNTER_BITS) - PLY_COUNTER_BITS).bits + ONE_PLY_ROOT_ONLY,
             },
             _otherwise => BitSet {
-                bits: (self.flags * counterBits).bits + onePly,
+                bits: (self.flags * COUNTER_BITS).bits + ONE_PLY,
             },
         };
         // LCR means "lost castling rights"
         // the castling rights that are lost if this was a KING move
         let kingMoveLCR = match mv.piece() {
             KING => match mv.player() {
-                WHITE => whiteCastlingRights,
-                BLACK => blackCastlingRights,
+                WHITE => WHITE_CASTLING_RIGHTS,
+                BLACK => BLACK_CASTLING_RIGHTS,
             },
             _otherwise => BitSet::empty(),
         };
@@ -993,7 +1001,7 @@ impl Position {
         let lostCastlingRights = kingMoveLCR + rookMoveLCR + rookCaptureLCR;
         // The new castling rights are the difference between the maybe still
         // existing castling rights and the lost castling rights
-        let castlingRights = (self.flags * castlingBits) - lostCastlingRights;
+        let castlingRights = (self.flags * CASTLING_BITS) - lostCastlingRights;
         // en passant bit to set, if any
         let enPassantBit = match mv.piece() {
             PAWN if from.rank() == 2 && to as u8 == from as u8 + 16 => bit(Field::from(from as u8 + 8)),
@@ -1020,7 +1028,7 @@ impl Position {
         // };
 
         // The new part of flags that tells who has castled already.
-        let hasCastledFlags = self.flags * castlingDoneBits; // + gainedCastledBit;
+        let hasCastledFlags = self.flags * CASTLING_DONE_BITS; // + gainedCastledBit;
                                                              // Fields that will be empty after this move.
         let fromMask = bit(from)
             + match mv.promote() {
@@ -1074,7 +1082,7 @@ impl Position {
             _otherwise => self.rookSet - fromMask - toMask,
         };
         // current en passant hash value, if any, needs to get xor'ed out
-        let currentEPHash = match self.flags * enPassantBits {
+        let currentEPHash = match self.flags * EN_PASSANT_BITS {
             currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as usize),
             _otherwise => 0,
         };
@@ -1112,12 +1120,12 @@ impl Position {
     /// will panic when there is no king.
     pub fn applyNull(&self) -> Position {
         // current en passant hash value, if any, needs to get xor'ed out
-        let currentEPHash = match self.flags * enPassantBits {
+        let currentEPHash = match self.flags * EN_PASSANT_BITS {
             currentEP if currentEP.some() => zobrist::flagZobrist(fld(currentEP) as usize),
             _otherwise => 0,
         };
         Position {
-            flags: BitSet { bits: (self.flags.bits ^ whiteToMove.bits) + onePlyRootOnly } - enPassantBits,
+            flags: BitSet { bits: (self.flags.bits ^ WHITE_TO_MOVE.bits) + ONE_PLY_ROOT_ONLY } - EN_PASSANT_BITS,
             hash: self.hash ^ zobrist::flagZobrist(A1 as usize) ^ currentEPHash,
             .. *self
         }
@@ -1137,7 +1145,7 @@ impl Position {
     /// This is also cheaper, as `applyNull()` corrects the `hash` field and the counters.
     pub fn validForOpponent(&self) -> bool {
         Position {
-            flags: BitSet { bits: self.flags.bits ^ whiteToMove.bits },
+            flags: BitSet { bits: self.flags.bits ^ WHITE_TO_MOVE.bits },
             .. *self
         }.valid()
     }
@@ -1157,10 +1165,10 @@ impl Position {
                             && self.isNotAttacked(D1, BLACK)
                             && self.isNotAttacked(C1, BLACK);
                 if short {
-                    vec.push(castlingShortWhite);
+                    vec.push(CASTLING_SHORT_WHITE);
                 }
                 if long {
-                    vec.push(castlingLongWhite);
+                    vec.push(CASTLING_LONG_WHITE);
                 }
             }
             BLACK => {
@@ -1175,10 +1183,10 @@ impl Position {
                             && self.isNotAttacked(D8, WHITE)
                             && self.isNotAttacked(C8, WHITE);
                 if short {
-                    vec.push(castlingShortBlack);
+                    vec.push(CASTLING_SHORT_BLACK);
                 }
                 if long {
-                    vec.push(castlingLongBlack);
+                    vec.push(CASTLING_LONG_BLACK);
                 }
             }
         };
@@ -1208,7 +1216,7 @@ impl Position {
                     let valid = es.some() && self.areEmpty(es)
                             || es.null() // it's a capturing move
                                 &&     (self.occupiedBy(player.opponent()).member(to) 
-                                    || (self.flags*enPassantBits).member(to));
+                                    || (self.flags*EN_PASSANT_BITS).member(to));
                     if valid {
                         if promotion {                            
                             vec.push(Move::new(player, PAWN, QUEEN, from, to)); 
@@ -1268,8 +1276,8 @@ impl Position {
     /// at least 12 pawns and both sides have still castling rights
     pub fn inOpening(&self) -> bool {
         self.pawns().card() >= 12 
-            && (self.flags * whiteCastlingRights).some() 
-            && (self.flags * blackCastlingRights).some()
+            && (self.flags * WHITE_CASTLING_RIGHTS).some() 
+            && (self.flags * BLACK_CASTLING_RIGHTS).some()
     }
 
     /// Positions qualify as "in endgame" if there are 
@@ -1294,7 +1302,7 @@ impl Position {
     pub fn penaltyBlockedBishopBlockingPawns(&self, player: Player) -> i32 {
         // actual pawns on the fields in questions
         let pawns = self.pawns() * match player {
-            WHITE => whiteBishopBlockingPawns, BLACK => blackBishopBlockingPawns
+            WHITE => WHITE_BISHOP_BLOCKING_PAWNS, BLACK => BLACK_BISHOP_BLOCKING_PAWNS
         };
         // restrict to own pawns, we don't want to penalize a white rook standing on E3
         // when a black pawn stands on E2, to the contrary
@@ -1453,7 +1461,7 @@ impl Position {
             unoccupied ^= 1 << wo as u64;
 
             // skip the en passant field
-            if (self.flags * enPassantBits).member(wo) { continue; };
+            if (self.flags * EN_PASSANT_BITS).member(wo) { continue; };
             let bonus = (wo.zone() as i32 + 1) * 5;
             let whitePawns = self.attackedByPawns(wo, WHITE).card() as i32;
             let blackPawns = self.attackedByPawns(wo, BLACK).card() as i32;
@@ -1508,12 +1516,12 @@ impl Position {
     /// And finally, if the player hasn't castled and has no castling rights left, give a malus of -75.
     pub fn scoreCastling(&self, player: Player) -> i32 {
         let hasCastledBits = self.flags * match player {
-            BLACK => blackHasCastledBits,
-            WHITE => whiteHasCastledBits,
+            BLACK => BLACK_HAS_CASTLED_BITS,
+            WHITE => WHITE_HAS_CASTLED_BITS,
         };
         let castlingRights = self.flags * match player {
-            BLACK => blackCastlingRights,
-            WHITE => whiteCastlingRights
+            BLACK => BLACK_CASTLING_RIGHTS,
+            WHITE => WHITE_CASTLING_RIGHTS
         };
         if hasCastledBits.some() { 25 }
         else { castlingRights.card() as i32 * 25 - 75 }
@@ -1610,16 +1618,16 @@ impl Position {
     pub fn valid(&self) -> bool {
         (self.whites * self.kings()).card() == 1
         && (self.kings() - self.whites).card() == 1
-        && (self.pawns() - pawnFields).null()
+        && (self.pawns() - PAWN_FIELDS).null()
         && self.notInCheck()
-        && (self.flags * enPassantBits * if self.turn() == WHITE { lowerHalf } else { !lowerHalf }).null()
+        && (self.flags * EN_PASSANT_BITS * if self.turn() == WHITE { LOWER_HALF } else { !LOWER_HALF }).null()
     }
 
     /// Does this position represent a valid endgame position?
     /// 1. There must be at most 4 pieces besides the kings.
     /// 2. No castling rights must be present anymore.
     pub fn validEndgame(&self) -> bool {
-        self.occupied().card() < 7 && (self.flags * castlingBits).null()
+        self.occupied().card() < 7 && (self.flags * CASTLING_BITS).null()
     }
 }
 
@@ -1645,7 +1653,7 @@ pub fn hangingPenalty(hang: Piece, att: Piece, defended: bool) -> i32 {
 impl PartialEq for Position {
     fn eq(&self, other: &Position) -> bool {
         self.hash == other.hash 
-            && self.flags - counterBits == other.flags - counterBits
+            && self.flags - COUNTER_BITS == other.flags - COUNTER_BITS
             && self.whites == other.whites
             && self.pawnSet == other.pawnSet
             && self.bishopSet == other.bishopSet
@@ -1683,7 +1691,7 @@ impl Display for Position {
              lazy officers  {}  {}\n\
              white moves    [{}]\n\
              black moves    [{}]",
-            self.hash, self.flags.bits, self.flags - counterBits, self.whites, 
+            self.hash, self.flags.bits, self.flags - COUNTER_BITS, self.whites, 
             self.pawns(), 
             self.bishops(), self.knights(),
             self.rooks(), self.queens(), self.kings(),
@@ -1703,18 +1711,6 @@ impl Display for Position {
 }
 
 
-impl Mirrorable for Move {
-    fn mirrorH(&self) -> Self {
-        let from = self.from().mirrorH();
-        let to   = self.to().mirrorH();
-        Move::new(self.player(), self.piece(), self.promote(), from, to)
-    }
-    fn mirrorV(&self) -> Self {
-        let from = self.from().mirrorV();
-        let to   = self.to().mirrorV();
-        Move::new(self.player(), self.piece(), self.promote(), from, to)
-    }
-}
 
 
 
@@ -1726,7 +1722,7 @@ impl Mirrorable for Move {
 pub fn emptyBoard() -> Position {
     Position {
         hash:      0,
-        flags:     bit(A1) + castlingBits,
+        flags:     bit(A1) + CASTLING_BITS,
         whites:    BitSet::empty(),
         pawnSet:   BitSet::empty(),
         bishopSet: BitSet::empty(),
@@ -1753,1068 +1749,6 @@ pub fn initialBoard() -> Position {
 }
 
 
-/// Signature of a CPos
-/// 
-/// This is needed to employ the symmetries on the chess board in order to save lots of disk space. 
-/// We define a "canonical" position as follows:
-/// - if there are no PAWNs in the game, the white KING is in the lower left corner (rank 1..4, file A..D)
-/// - if there are PAWNs in the game, the white KING is in the left half (rank 1..8, files A..D)
-/// 
-/// Only canonical positions will be in the database.
-/// All other positions with the same sets of pieces can be reduced to a canonical one by
-/// - mirroring the board on the vertical axis if the king is in the right half
-/// - and then, if there are no PAWNs in the game, mirroring the board on the horizontal axis
-/// 
-/// But this is not all. For example, it turns out that it doesn't matter if we have a WHITE KING on A1, 
-/// a BLACK KING on C2 and a BLACK ROOK on C8 or if we change the BLACK pieces to WHITE ones and the WHITE ones to BLACK
-/// ones: Whatever the player with ROOK and KING is, will be able to mate if it is his turn while the other player
-/// is doomed to move his KING to A2 where it is mated in the next move.
-/// To get "the same" position with different colors, it is necessary to mirror the board on the horizontal axis
-/// whenever pawns are present. In addition, when querying the database, care must be taken to 
-/// exchange the states for BLACK and WHITE whenever it was necessary to exchange colors.
-/// 
-/// Every canonical position has thus up to 3 equivalent positions where the pieces have the same colors and up to
-/// 4 equivalent positions where the colours are chhanged. Taking into account that every position in the EGTB has 
-/// two states for the different players to move, we map up to 16 positions to one and the same 64 bit word.
-/// (If there are pawns, it is only 4, though).
-/// 
-/// The question is only: which of the two positions described earlier will be in the database? We will extend our
-/// definition by these rules:
-/// - WHITE has the more valuable pieces, where for the sake of simplicity, 
-/// a queen beats any number of rooks, bishops, knights and pawns, a rook beats any number of bishops, knights and pawns,
-/// and so forth. But, of course, 2 rooks are better than 1, as long as no queens are present.
-/// Thus, the following are canonic signatures: `KQP-KRR` `KQ-KRRR`, whereas `KBB-KQ` is not.
-/// - If both BLACK and WHITE have the same number and kinds of pieces there will be one table where both colour symmetric
-/// positions are contained, so no savings here (for now).
-/// To decide the question, whether a position must get colour changed on searching, we have this `Signature` type,
-/// that can be created fast from a `CPos`, can be compared fast and can be used to derive a unique file name for the 
-/// EGTB file.
-/// 
-/// The rule will be: a position must be colour changed before lookup if it is lower than the position with opposite colours.
-/// 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Signature {
-    /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
-    /// significant ones the number of pawns.
-    white: u32,
-    /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
-    /// significant ones the number of pawns.
-    black: u32,
-}
-
-/// the signature for K-K, can be used in `find` with empty Vec
-pub const signatureKK : Signature = Signature { white: 0, black: 0 };
-pub const sigPawnBits: u32 = 0x3f;
-pub const sigPawnShift: u32 = 0;
-pub const sigKnightBits: u32 = sigPawnBits << 6;
-pub const sigKnightShift: u32 = 6;
-pub const sigBishopBits: u32 = sigKnightBits << 6;
-pub const sigBishopShift: u32 = 12;
-pub const sigRookBits: u32 = sigBishopBits << 6;
-pub const sigRookShift: u32 = 18;
-pub const sigQueenBits: u32 = sigRookBits << 6;
-pub const sigQueenShift: u32 = 24;
-
-impl Signature {
-    pub fn new(cpos: CPos) -> Signature {
-        let mut white = 0u32;
-        let mut black = 0u32;
-        // do this 4 times for each piece code
-        // (yes, this is how an unrolled loop looks)
-        match (cpos.bits & CPos::CODE1) >> CPos::CODE1_SHIFT {
-            1 | 7 => { black += 1 /* << sigPawnShift */; } 
-            9 | 15 => { white += 1 /* << sigPawnShift */; }
-            2 => { black += 1 << sigKnightShift; }
-            3 => { black += 1 << sigBishopShift; }
-            4 => { black += 1 << sigRookShift; }
-            5 => { black += 1 << sigQueenShift; }
-            10 => { white += 1 << sigKnightShift; }
-            11 => { white += 1 << sigBishopShift; }
-            12 => { white += 1 << sigRookShift; }
-            13 => { white += 1 << sigQueenShift; }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE2) >> CPos::CODE2_SHIFT {
-            1 | 7 => { black += 1 /* << sigPawnShift */; } 
-            9 | 15 => { white += 1 /* << sigPawnShift */; }
-            2 => { black += 1 << sigKnightShift; }
-            3 => { black += 1 << sigBishopShift; }
-            4 => { black += 1 << sigRookShift; }
-            5 => { black += 1 << sigQueenShift; }
-            10 => { white += 1 << sigKnightShift; }
-            11 => { white += 1 << sigBishopShift; }
-            12 => { white += 1 << sigRookShift; }
-            13 => { white += 1 << sigQueenShift; }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE3) >> CPos::CODE3_SHIFT {
-            1 | 7 => { black += 1 /* << sigPawnShift */; } 
-            9 | 15 => { white += 1 /* << sigPawnShift */; }
-            2 => { black += 1 << sigKnightShift; }
-            3 => { black += 1 << sigBishopShift; }
-            4 => { black += 1 << sigRookShift; }
-            5 => { black += 1 << sigQueenShift; }
-            10 => { white += 1 << sigKnightShift; }
-            11 => { white += 1 << sigBishopShift; }
-            12 => { white += 1 << sigRookShift; }
-            13 => { white += 1 << sigQueenShift; }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE4) >> CPos::CODE4_SHIFT {
-            1 | 7 => { black += 1 /* << sigPawnShift */; } 
-            9 | 15 => { white += 1 /* << sigPawnShift */; }
-            2 => { black += 1 << sigKnightShift; }
-            3 => { black += 1 << sigBishopShift; }
-            4 => { black += 1 << sigRookShift; }
-            5 => { black += 1 << sigQueenShift; }
-            10 => { white += 1 << sigKnightShift; }
-            11 => { white += 1 << sigBishopShift; }
-            12 => { white += 1 << sigRookShift; }
-            13 => { white += 1 << sigQueenShift; }
-            _ => {}
-        }
-        Signature { white, black }
-    }
-    pub fn fromVec(vec: &Vec<(Player, Piece)>) -> Signature {
-        let mut white = 0u32;
-        let mut black = 0u32;
-        for pp in vec {
-            match pp {
-                (WHITE, QUEEN)  => { white += 1 << sigQueenShift; }
-                (WHITE, ROOK)   => { white += 1 << sigRookShift; }
-                (WHITE, BISHOP) => { white += 1 << sigBishopShift; }
-                (WHITE, KNIGHT) => { white += 1 << sigKnightShift; }
-                (WHITE, PAWN)   => { white += 1 << sigPawnShift; }
-                (BLACK, QUEEN)  => { black += 1 << sigQueenShift; }
-                (BLACK, ROOK)   => { black += 1 << sigRookShift; }
-                (BLACK, BISHOP) => { black += 1 << sigBishopShift; }
-                (BLACK, KNIGHT) => { black += 1 << sigKnightShift; }
-                (BLACK, PAWN)   => { black += 1 << sigPawnShift; }
-                _other => {}
-            }
-        }
-        Signature { white, black }
-    }
-    /// If the `Signature` of a `CPos` is **not** canonic, then the corresponding CPos will have the 
-    /// colours of the pieces changed and a possible search result needs the flags switched.
-    pub fn isCanonic(&self) -> bool { self.white >= self.black }
-    pub fn mkCanonic(&self) -> Signature { 
-        if self.isCanonic() { *self }
-        else { Signature {white: self.black, black: self.white } }
-    }
-    pub fn whiteQueens(&self) -> u32 {
-        (self.white & sigQueenBits) >> sigQueenShift
-    }
-    pub fn whiteRooks(&self) -> u32 {
-        (self.white & sigRookBits) >> sigRookShift
-    }
-    pub fn whiteBishops(&self) -> u32 {
-        (self.white & sigBishopBits) >> sigBishopShift
-    }
-    pub fn whiteKnights(&self) -> u32 {
-        (self.white & sigKnightBits) >> sigKnightShift
-    }
-    pub fn whitePawns(&self) -> u32 {
-        self.white & sigPawnBits
-    }
-    pub fn blackQueens(&self) -> u32 {
-        (self.black & sigQueenBits) >> sigQueenShift
-    }
-    pub fn blackRooks(&self) -> u32 {
-        (self.black & sigRookBits) >> sigRookShift
-    }
-    pub fn blackBishops(&self) -> u32 {
-        (self.black & sigBishopBits) >> sigBishopShift
-    }
-    pub fn blackKnights(&self) -> u32 {
-        (self.black & sigKnightBits) >> sigKnightShift
-    }
-    pub fn blackPawns(&self) -> u32 {
-        self.black & sigPawnBits
-    }
-    
-    pub fn display(&self) -> String {
-        let mut result = String::with_capacity(10);
-        result.push('K');
-        for _ in 0..self.whiteQueens() { result.push('Q'); }
-        for _ in 0..self.whiteRooks() { result.push('R'); }
-        for _ in 0..self.whiteBishops() { result.push('B'); }
-        for _ in 0..self.whiteKnights() { result.push('N'); }
-        for _ in 0..self.whitePawns() { result.push('P'); }
-        result.push('-');
-        result.push('K');
-        for _ in 0..self.blackQueens() { result.push('Q'); }
-        for _ in 0..self.blackRooks() { result.push('R'); }
-        for _ in 0..self.blackBishops() { result.push('B'); }
-        for _ in 0..self.blackKnights() { result.push('N'); }
-        for _ in 0..self.blackPawns() { result.push('P'); }
-        result
-    }
-}
-
-impl Display for Signature {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        f.write_str(&self.display())
-    }
-}
-
-
-/// Compressed position for the endgame tablebases.
-
-/// This is good for up to 6 pieces (kings included) and 11 bits worth of flags. 
-/// The flags indicate the ability for a player to force a win or a draw, or the inability to avoid a loss or a draw.
-/// 
-/// Note that the CPos does not indicate which player is to move. Hence the flags accomodate for both cases.
-/// It is as if you enter a room and see a chessboard with a few pieces on it. 
-/// You don't normally know who is to move (except if some player is in check, then it must be that players move), 
-/// so you can figure out the odds for both sides.
-/// 
-/// Since a black and a white `KING` *must* be present, we simply note their fields in the lower 2x6 bits.
-/// 
-/// Each of the other 4 pieces is encoded in 10 bits: a code for player and piece type (4 bits) and the field (6 bits).
-/// The encodings are:
-
-/// - 0 - EMPTY
-/// - 1/9  - BLACK/WHITE PAWN
-/// - 2/10 - BLACK/WHITE KNIGHT
-/// - 3/11 - BLACK/WHITE BISHOP
-/// - 4/12 - BLACK/WHITE ROOK
-/// - 5/13 - BLACK/WHITE QUEEN
-/// - 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant.
-/// 
-///
-/// In order to identify equal positions, the pieces must occur from left to right in **ascending field order**. 
-/// This is guaranteed when compressing a `Position`.
-/// 
-/// Care must be taken when reflecting a `CPos` to get the pieces in the correct order and to correct the move index, if any.
-/// 
-/// Not all u64 values make for a valid `CPos`. The following fatal errors will abort the program:
-/// - trying to compress a `Position` that is not a valid endgame as checked by `Position.validEndgame()`
-/// - trying to uncompress a `CPos` that contains a wrong piece code 8, 6 or 14
-/// - trying to uncompress a `CPos` where any two field numbers are equal. That is, every piece and the kings must have their own unique fields.
-/// - trying to uncompress a `CPos` indicating a player to move for whom this position is invalid.
-// 
-// 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
-//                                                                         -- ----    field number of the white king
-//                                                                  ---- --           field number of the black king
-//                                                          fi eld1                   field number of 1st piece
-//                                                     co d1                          code of 1st piece
-//                                              fiel d2                               field number of 2nd piece
-//                                         cod2                                       code of 2nd piece
-//                                 fi eld3                                            field number of 3rd piece
-//                            co d3                                                   code of 3rd piece
-//                     fiel d4                                                        field number of 4th piece
-//                cod4                                                                code of 4th piece
-//           xxxx                                                                     reserved (0)
-//      ffff                                                                          flags and validity indicator for WHITE
-// ffff                                                                               flags and validity indicator for BLACK
-//
-// Meaning of the flags from the POV of the player who is to move:
-// 0000 - UNKNOWN (does not appear in tablebase)
-// 0001 - MATE
-// 0010 - STALEMATE
-// 0011 - CAN_MATE
-// 0100 - CAN_DRAW
-// 0101 - CANNOT_AVOID_DRAW
-// 0110 - CANNOT_AVOID_MATE
-// 0111 - OTHER_DRAW (must not appear in tablebase)
-// 1--- - Position is not valid for this player to move
-
-#[derive(Clone, Copy)]
-pub struct CPos {
-    pub bits: u64
-}
-
-/// Result of retrograde analysis.
-/// - MATE is given to all positions where the player cannot make any legal move and is in check.
-/// - STALEMATE is given to all positions where the player cannot move, but is not in check. 
-/// In addition, this is reported for positions not found in a database search.
-/// - CAN_MATE is given to all positions where the player has a move such that 
-/// the resulting position is either MATE or CANNOT_AVOID_MATE.
-/// - CAN_DRAW is given to all positions that are not CAN_MATE where the player has a move such that
-/// the resulting position is either STALEMATE or CANNOT_AVOID_DRAW.
-/// - CANNOT_AVOID_DRAW is given to positions, where all moves lead to STALEMATE or CAN_DRAW
-/// - CANNOT_AVOID_MATE is givon to positions, where all moves lead to CAN_MATE.
-/// 
-/// With CAN_MATE and CAN_DRAW, the index of the move to play is recorded in the cposMove bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CPosState {
-
-    /// not yet analyzed (this must map from and to u0!)
-    UNKNOWN,
-
-    /// no moves possible and the king is in check
-    MATE,
-
-    /// no moves possible, but not in check
-    STALEMATE,
-
-    /// there is at least 1 `KING` move in this position that reaches a position that is `MATE`, 
-    /// or `CANNOT_AVOID_MATE`
-    CAN_MATE_K,
-
-    /// there is at least 1 `KING` move in this position that reaches a position that is `STALEMATE`, 
-    /// or `CANNOT_AVOID_DRAW`
-    CAN_DRAW_K,
-
-    /// For every possible move, the opponent can answer with a move that forces a draw or a mate,
-    /// but for at least one move only a draw can be enforced.
-    /// 
-    /// Also given to positions missing from database files. The rationale is that 
-    /// (assuming this program is correct) if the player can neither force mate but can avoid mate for himself,
-    /// then it must be a draw. And this is true for endless repetitions and lack of material. 
-    /// Hence, the *K-K* table is just an empty file.
-    CANNOT_AVOID_DRAW,
-
-    /// For every possible move, the opponent can answer with a move 
-    /// that leads to mate for this player sooner or later. Sorry!
-    CANNOT_AVOID_MATE,
-
-    /// Position is not valid for the player this flags apply to.
-    /// This happens when the opposite KING would be in check or 
-    /// there is a PAWN of this player who is eligible for en-passant
-    /// capturing. But this would only be possible when it is the
-    /// other player's move.
-    INVALID_POS,
-
-    /// Like `CAN_MATE_K` but some piece must be moved.
-    /// The piece to move is encoded in bits 0x0030_0000_0000_0000
-    CAN_MATE_P,
-
-    /// Like `CAN_DRAW_P` but some piece must be moved.
-    /// The piece to move is encoded in bits 0x00C0_0000_0000_0000 
-    CAN_DRAW_P   
-}
-
-impl From<u64> for CPosState {
-    /// cast a number to CPosState
-    /// ```
-    /// assert!((0..10).all(|n| n == rasch::position::CPosState::from(n) as u64))
-    /// ```
-    fn from(u: u64) -> CPosState {
-        match u&15 {
-            0 =>  UNKNOWN,
-            1 =>  MATE,
-            2 =>  STALEMATE,
-            3 =>  CAN_MATE_K,
-            4 =>  CAN_DRAW_K,
-            5 =>  CANNOT_AVOID_DRAW,
-            6 =>  CANNOT_AVOID_MATE,
-            7 =>  INVALID_POS,
-            8 =>  CAN_MATE_P,
-            9 =>  CAN_DRAW_P,
-            _  => UNKNOWN,   // to make rustc happy            
-        }
-    }
-}
-
-pub use CPosState::*;
-
-
-
-/// Mask the lower left quarter fields (A..D, 1..4)
-pub const lowerLeftQuarter :  BitSet = BitSet { bits: 0x0000_0000_0f0f_0f0f };
-/// Mask the lower right quarter fields (E..H, 1..4)
-pub const lowerRightQuarter : BitSet = BitSet { bits: 0x0000_0000_f0f0_f0f0 };
-/// Mask the fields in the lower half A1..H4
-pub const lowerHalf: BitSet = BitSet { bits: lowerLeftQuarter.bits | lowerRightQuarter.bits };
-/// Mask the fields on files A to D
-pub const leftHalf: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
-
-pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
-
-impl CPos {
-    /// Mask the black flag bits in a CPos
-    pub const BLACK_FLAGS : u64 = 0xf000_0000_0000_0000u64;
-    pub const BLACK_FLAGS_SHIFT : u32 = CPos::BLACK_FLAGS.trailing_zeros();
-    /// Mask the white flag bits in a CPos
-    pub const WHITE_FLAGS : u64 = 0x0f00_0000_0000_0000u64;
-    pub const WHITE_FLAGS_SHIFT : u32 = CPos::WHITE_FLAGS.trailing_zeros();
-    /// Mask the flag bits in a CPos
-    pub const FLAGS : u64 = CPos::BLACK_FLAGS | CPos::WHITE_FLAGS;
-    /// Shift for flag bits in CPos
-    pub const FLAG_SHIFT : u32 = CPos::FLAGS.trailing_zeros();
-    /// Mask for the indicator which piece to move for `BLACK`
-    pub const BLACK_PIECE : u64 = 0x00c0_0000_0000_0000u64;
-    pub const BLACK_PIECE_SHIFT : u32 = CPos::BLACK_PIECE.trailing_zeros();
-    /// Mask for the indicator which piece to move for `WHITE`
-    pub const WHITE_PIECE : u64 = 0x0030_0000_0000_0000u64;
-    pub const WHITE_PIECE_SHIFT : u32 = CPos::WHITE_PIECE.trailing_zeros();
-
-    /// Mask the bits that encode piece indexes
-    pub const PIECES : u64 = CPos::WHITE_PIECE | CPos::BLACK_PIECE;
-    /// Mask the bits that count in comparisions
-    pub const COMP : u64 = !(CPos::FLAGS|CPos::PIECES);
-    /// Mask the code for piece 4
-    pub const CODE4 : u64 = CPos::CODE3 << 10;
-    /// Mask the code for piece 3
-    pub const CODE3 : u64 = CPos::CODE2 << 10;
-    /// Mask the code for piece 2
-    pub const CODE2 : u64 = CPos::CODE1 << 10;
-    /// Mask the code for piece 1
-    pub const CODE1 : u64 = 0x0f << 18;
-    /// shifts to get the numbers
-    pub const CODE1_SHIFT : u32 = CPos::CODE1.trailing_zeros();
-    pub const CODE2_SHIFT : u32 = CPos::CODE2.trailing_zeros();
-    pub const CODE3_SHIFT : u32 = CPos::CODE3.trailing_zeros();
-    pub const CODE4_SHIFT : u32 = CPos::CODE4.trailing_zeros();
-    /// Mask the field number of piece 4
-    pub const FIELD4 : u64 = CPos::FIELD3 << 10;
-    /// Maskt the field number of piece 3
-    pub const FIELD3 : u64 = CPos::FIELD2 << 10;
-    /// Maskt the field number of piece 2
-    pub const FIELD2 : u64 = CPos::FIELD1 << 10;
-    /// Maskt the field number of piece 1
-    pub const FIELD1 : u64 = 0x3f << 12;
-    /// Mask the field of the white `KING`
-    pub const WHITE_KING : u64 = 0x0000_0000_0000_003f;
-    pub const WHITE_KING_SHIFT : u32 = CPos::WHITE_KING.trailing_zeros();
-    /// Mask the field of the black `KING`
-    pub const BLACK_KING : u64 = 0x0000_0000_0000_0fc0;
-    pub const BLACK_KING_SHIFT : u32 = CPos::BLACK_KING.trailing_zeros();
-
-    /// Mask for both kings, useful when we need to swap them
-    pub const KINGS : u64 = CPos::WHITE_KING | CPos::BLACK_KING;
-
-    /// Compress an ordinary position, which must be a valid endgame position.
-    /// Sets either INVALID_POS or UNKNOWN flags for both players.
-    pub fn new(pos: &Position) -> CPos {
-
-        // this makes sure that we never use more than 40 bits for encoding of pieces
-        if !pos.validEndgame() {
-            panic!("not an endgame position {}", pos);
-        }
-
-        let mut pieces = 0;
-        let mut kings = 0;
-        
-        // figure out validity
-        let bstate = if pos.turn() == BLACK {
-            if pos.valid() { UNKNOWN } else { INVALID_POS }
-        } else if pos.validForOpponent() { UNKNOWN } else { INVALID_POS };
-        let wstate = if pos.turn() == WHITE {
-            if pos.valid() { UNKNOWN } else { INVALID_POS }
-        } else if pos.validForOpponent() { UNKNOWN } else { INVALID_POS };
-        let bflags = (bstate as u64) << CPos::BLACK_FLAGS_SHIFT;
-        let wflags = (wstate as u64) << CPos::WHITE_FLAGS_SHIFT;
-        
-        // `BitSet` iterator guarantees fields in ascending order
-        for f in pos.occupied() {
-            let pOn = pos.pieceOn(f);
-            if  pOn != KING {
-                let color = if pos.whites.member(f) { 8 } else { 0 };
-                let pcode = match pOn {
-                    PAWN if f.rank() == 4 && color == 8  && pos.flags.member(Field::from(f as u8 - 8)) => 15,
-                    PAWN if f.rank() == 5 && color == 0  && pos.flags.member(Field::from(f as u8 + 8)) => 7,
-                    piece => color | piece as u64,
-                };
-                pieces <<= 4;
-                pieces |= pcode;
-                pieces <<= 6;
-                pieces |= f as u64;
-            }
-            else  {
-                if pos.whites.member(f) { kings |= (f as u64) << CPos::WHITE_KING_SHIFT; } 
-                else                    { kings |= (f as u64) << CPos::BLACK_KING_SHIFT; }
-            }
-        }
-        CPos { bits: bflags | wflags | (pieces << 12) | kings }
-    }
-
-    /// Re-construct position
-    /// Before using it for anything, check validity and re-hash
-    /// 
-    /// Beware that `cpos.uncompressed().compressed()` looses flags and piece index information.
-    pub fn uncompressed(&self, player: Player) -> Position {
-
-        let mut pos = Position {
-            flags: if player == WHITE { whiteToMove } else { BitSet::empty() }, 
-            whites: BitSet::empty(), pawnSet: BitSet::empty(), rookSet: BitSet::empty(), bishopSet: BitSet::empty(), hash: 0
-
-        };
-        
-        // place the kings
-        pos = pos.place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
-                .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
-        let mut pcs = self.bits >> 12;
-        for _i in 0..4 {
-            let f = Field::from((pcs&0x3f) as u8);
-            pcs >>= 6;
-            let c = if pcs & 8 == 0 { BLACK } else { WHITE };
-            let p = match pcs&7 {
-                0 => EMPTY,
-                1 => PAWN,
-                2 => KNIGHT,
-                3 => BISHOP,
-                4 => ROOK,
-                5 => QUEEN,
-                7 => {
-                    if c == WHITE { pos.flags = pos.flags + bit(Field::from(f as u8 - 8)) }
-                    else { pos.flags = pos.flags + bit(Field::from(f as u8 + 8)) }
-                    PAWN
-                }
-                _other => {
-                    panic!("illegal piece code {} in compressed position", pcs&7);
-                    // EMPTY
-                }
-            };
-            if p != EMPTY {
-                if pos.isEmpty(f) {
-                    pos = pos.place(c, p, bit(f)); 
-                } else {
-                    panic!("Double occupation of field {} in compressed position.", f);
-                }
-            }
-            pcs >>= 4;
-        }
-        pos
-    }
-
-    pub fn signature(&self) -> Signature { Signature::new(*self) }
-
-    pub fn player_at(&self, n: usize) -> Player {
-        match n&3 {
-            0 => if (self.bits & CPos::CODE1) >> CPos::CODE1_SHIFT >= 8 { WHITE } else { BLACK }
-            1 => if (self.bits & CPos::CODE2) >> CPos::CODE2_SHIFT >= 8 { WHITE } else { BLACK }
-            2 => if (self.bits & CPos::CODE3) >> CPos::CODE3_SHIFT >= 8 { WHITE } else { BLACK }
-            3 => if (self.bits & CPos::CODE4) >> CPos::CODE4_SHIFT >= 8 { WHITE } else { BLACK }
-            _ => BLACK,
-        }
-    }
-
-    pub fn piece_at(&self, n: usize) -> Piece {
-        match n&3 {
-            0 => match ((self.bits & CPos::CODE1) >> CPos::CODE1_SHIFT) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            1 => match ((self.bits & CPos::CODE2) >> CPos::CODE2_SHIFT) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            2 => match ((self.bits & CPos::CODE3) >> CPos::CODE3_SHIFT) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            3 => match ((self.bits & CPos::CODE4) >> CPos::CODE4_SHIFT) & 7 { 7 => PAWN, p => Piece::from(p as u32)}
-            _ => EMPTY,
-        }
-    }
-
-
-    /// get the state from the CPos
-    pub fn state(&self, player: Player) -> CPosState {
-        match player {
-            WHITE => CPosState::from((self.bits & CPos::WHITE_FLAGS) >> CPos::WHITE_FLAGS_SHIFT),
-            BLACK => CPosState::from((self.bits & CPos::BLACK_FLAGS) >> CPos::BLACK_FLAGS_SHIFT),
-        }
-    }
-
-    /// make an identical CPos with a new state
-    pub fn withState(&self, ws: CPosState, bs: CPosState) -> CPos {
-        CPos { bits: (self.bits & !CPos::FLAGS) 
-                    | ((ws as u64) << CPos::WHITE_FLAGS_SHIFT) 
-                    | ((bs as u64) << CPos::BLACK_FLAGS_SHIFT) }
-    }
-
-    /// make an identical CPos with a new state for player
-    pub fn with_state_for(&self, player: Player, ns: CPosState) -> CPos {
-        if player == WHITE {
-            CPos { bits: (self.bits & !CPos::WHITE_FLAGS) 
-                | ((ns as u64) << CPos::WHITE_FLAGS_SHIFT) 
-            }    
-        }
-        else {
-            CPos { bits: (self.bits & !CPos::BLACK_FLAGS) | ((ns as u64) << CPos::BLACK_FLAGS_SHIFT) }
-        }
-    }
-
-    /// set the piece index for player
-    pub fn with_piece_index_for(&self, player: Player, ix : u64) -> CPos {
-        match player {
-            WHITE => CPos { bits: (self.bits & !CPos::WHITE_PIECE) | ((ix&3) << CPos::WHITE_PIECE_SHIFT) },
-            BLACK => CPos { bits: (self.bits & !CPos::BLACK_PIECE) | ((ix&3) << CPos::BLACK_PIECE_SHIFT) },
-        }
-    }
-
-    /// piece CPos::index for player and move
-    pub fn piece_index_by_player_mv(&self, player: Player, mv : Move) -> u64 {
-             if self.piece_at(0) != EMPTY && self.player_at(0) == player && self.field_at(0) == mv.from() { 0 } 
-        else if self.piece_at(1) != EMPTY && self.player_at(1) == player && self.field_at(1) == mv.from() { 1 }
-        else if self.piece_at(2) != EMPTY && self.player_at(2) == player && self.field_at(2) == mv.from() { 2 } 
-        else if self.piece_at(3) != EMPTY && self.player_at(3) == player && self.field_at(3) == mv.from() { 3 } 
-        else { 0 }
-    }
-
-    /// get the field number of the white king
-    pub fn whiteKing(&self) -> Field {
-        Field::from(self.bits & CPos::WHITE_KING)
-    }
-
-    /// get the field number of the black king
-    pub fn blackKing(&self) -> Field {
-        Field::from((self.bits & CPos::BLACK_KING) >> CPos::BLACK_KING_SHIFT)
-    }
-
-    /// get the index for the white piece to move (0..3)
-    pub fn white_piece_index(&self) -> u64 {
-        (self.bits & CPos::WHITE_PIECE) >> CPos::WHITE_PIECE_SHIFT
-    }
-
-    /// get the index for the black piece to move (0..3)CPos::
-    pub fn black_piece_index(&self) -> u64 {
-        (self.bits & CPos::BLACK_PIECE) >> CPos::BLACK_PIECE_SHIFT
-    }
-
-    /// Get the field for piece1, piece2, piece3 or piece4 
-    /// Wrong input values are masked away and if the index is not occupied, it will return `A1`
-    pub fn field_at(&self, index: u64) -> Field {
-        match index&3 {
-            0 => Field::from((self.bits & CPos::FIELD1) >> CPos::FIELD1.trailing_zeros()),
-            1 => Field::from((self.bits & CPos::FIELD2) >> CPos::FIELD2.trailing_zeros()),
-            2 => Field::from((self.bits & CPos::FIELD3) >> CPos::FIELD3.trailing_zeros()),
-            3 => Field::from((self.bits & CPos::FIELD4) >> CPos::FIELD4.trailing_zeros()),
-            _other => A1 // be happy, rustcCPos::
-        }
-    }
-
-    /// Make a canonical CPos for lookup in the DB
-    /// A canonical CPos has a canonic signature and 
-    /// the white king is in the left half and,
-    /// if there are now pawns, in the lower half.
-    /// 
-    /// We pass the signature here explicitely to save calls to signature(), this way
-    /// a client can store it when it is needed more than once.
-    /// It is to be understood that only calls semantically equivalent to
-    /// ```
-    /// x.canonical(x.signature)
-    /// ```
-    /// make any sense.
-    
-    pub fn canonical(&self, sig: Signature) -> CPos {
-        let hasPawns = sig.whitePawns() + sig.blackPawns() > 0;
-        let mut bits = self.bits;
-        let mut mirrored = false;                  // keep track of mirroring
-        let mut this = if sig.isCanonic() { *self }
-            else {
-                // we need to flip the WHITE/BLACK bits on occupied positions
-                if bits & CPos::CODE1 != 0 { bits ^= 8 << CPos::CODE1_SHIFT; }
-                if bits & CPos::CODE2 != 0 { bits ^= 8 << CPos::CODE2_SHIFT; }
-                if bits & CPos::CODE3 != 0 { bits ^= 8 << CPos::CODE3_SHIFT; }
-                if bits & CPos::CODE4 != 0 { bits ^= 8 << CPos::CODE4_SHIFT; }
-                // we also need to exchange kings and piece codes
-                // we assume here that fixed black bits are further left than the corresponding white ones
-                // safer, but slower, would be `(bits & CPos::BLACK_KING) >> CPos::BLACK_KING_SHIFT << CPos::WHITE_KING_SHIFT)`
-                bits = (bits & !(CPos::KINGS|CPos::PIECES))     // clear affected bits
-                        | ((bits & CPos::KINGS)>>6)           // move the black king
-                        | ((bits & CPos::WHITE_KING)<<6)       // move the white king
-                        | ((bits & CPos::BLACK_PIECE) >> 2)    // move the black piece index
-                        | ((bits & CPos::WHITE_PIECE) << 2)    // move the white piece index
-                        ;
-                if hasPawns {
-                    // we need to mirror the board horizontally when pawns are present
-                    mirrored = true;
-                    CPos { bits }.mirrorH()
-                }
-                else {
-                    CPos { bits }
-                }
-            };
-        let kf = this.whiteKing();
-        if !leftHalf.member(kf) {
-            mirrored = true;
-            this = this.mirrorV();
-        }
-        // the king is now in the left half
-        if !hasPawns && !lowerHalf.member(kf) {
-            this = this.mirrorH();
-            mirrored = true;
-        }
-        if mirrored { this.ordered() } else { this }
-    }
-
-    /// convenience for `x.canonical(x.signature)`
-    pub fn mk_canonical(&self) -> CPos {  self.canonical(self.signature())  }
-
-    /// Returns this CPos with the flags flipped
-    /// This is needed on a search result of a position that needed color changes to become canonical
-    pub fn flippedFlags(&self) -> CPos {
-        CPos { bits: (self.bits & !CPos::FLAGS) // the bits with all flags zeroed
-            | ((self.bits & CPos::BLACK_FLAGS) >> 4) // add the black flags in the white flag bits
-            | ((self.bits & CPos::WHITE_FLAGS) << 4) // and the white flags in the black flag bits
-        }
-    }
-
-    /// for cpos pieces only!
-    fn swap_pieces(bits: u64, m1: u64, m2: u64) -> u64 {
-        // which pieces are swapped?
-        let p1 = match m1 & (CPos::CODE1 | CPos::CODE2 | CPos::CODE3 | CPos::CODE4) {
-            CPos::CODE1 => 0,
-            CPos::CODE2 => 1,
-            CPos::CODE3 => 2,
-            CPos::CODE4 => 3,
-            _else     => 42,
-        };
-        let p2 = match m2 & (CPos::CODE1 | CPos::CODE2 | CPos::CODE3 | CPos::CODE4) {
-            CPos::CODE1 => 0,
-            CPos::CODE2 => 1,
-            CPos::CODE3 => 2,
-            CPos::CODE4 => 3,
-            _else     => 42,
-        };
-        // which pieces are currently encoded?
-        let w_p = (bits & CPos::WHITE_PIECE) >> CPos::WHITE_PIECE_SHIFT;  // current white piece
-        let b_p = (bits & CPos::BLACK_PIECE) >> CPos::BLACK_PIECE_SHIFT;  // current black piece
-        // new values for piece codes
-        // note, they are unaffected when both bitmasks are nCPos::ot cpos fieldsCPos::
-        // or when not indexed pieces are exchanged
-        let nw_p = if w_p == p1  { p2 } else if w_p == p2 { p1 } else { w_p };
-        let nb_p = if b_p == p1  { p2 } else if b_p == p2 { p1 } else { b_p };
-
-        // now make theCPos:: ALU hot
-        (bits & !(CPos::PIECES|m1|m2)) // clear affected bits
-            | (((bits&m1) >> m1.trailing_zeros()) << m2.trailing_zeros())  // move m1 bits to m2
-            | (((bits&m2) >> m2.trailing_zeros()) << m1.trailing_zeros())  // move m2 bits to m1
-            | (nw_p << CPos::WHITE_PIECE_SHIFT)  // add in new white piece index
-            | (nb_p << CPos::BLACK_PIECE_SHIFT)  // add in new black piece index
-    }
-
-
-    /// order position 1 2 and 3 in a CPos, at max 3 swaps
-    fn order3(mut bits: u64) -> u64 {
-        // move the smallest to position 3
-        if ((bits & CPos::FIELD3) >> CPos::FIELD3.trailing_zeros()) > ((bits & CPos::FIELD2) >> CPos::FIELD2.trailing_zeros()) {
-            bits = CPos::swap_pieces(bits, CPos::CODE3|CPos::FIELD3, CPos::CODE2|CPos::FIELD2);
-        }
-        if ((bits & CPos::FIELD3) >> CPos::FIELD3.trailing_zeros()) > ((bits & CPos::FIELD1) >> CPos::FIELD1.trailing_zeros()) {
-            bits = CPos::swap_pieces(bits, CPos::CODE3|CPos::FIELD3, CPos::CODE1|CPos::FIELD1);
-        }
-        // ... and bring 1 and 2 in the correct order
-        // swap 2 and 1, if 2 is greater
-        if ((bits & CPos::FIELD2) >> CPos::FIELD2.trailing_zeros()) > ((bits & CPos::FIELD1) >> CPos::FIELD1.trailing_zeros()) {
-            bits = CPos::swap_pieces(bits, CPos::CODE2|CPos::FIELD2, CPos::CODE1|CPos::FIELD1);
-        }
-        bits
-    }
-
-    /// Order the pieces of a CPos in such a way that field numbers are ascending from left to right.
-    /// This is crucial for sorting.
-    /// Could be done by uncompressing and compressing, but this should be faster. It does at max 6 swaps.
-    pub fn ordered(&self) -> CPos { 
-        let mut bits = self.bits;
-        if (bits & CPos::CODE4) != 0 {
-            // swap the minimum to 4 and sort the remaining 3
-            if ((bits & CPos::FIELD4) >> CPos::FIELD4.trailing_zeros()) > ((bits & CPos::FIELD3) >> CPos::FIELD3.trailing_zeros()) {
-                bits = CPos::swap_pieces(bits, CPos::CODE4|CPos::FIELD4, CPos::CODE3|CPos::FIELD3);
-            }
-            if ((bits & CPos::FIELD4) >> CPos::FIELD4.trailing_zeros()) > ((bits & CPos::FIELD2) >> CPos::FIELD2.trailing_zeros()) {
-                bits = CPos::swap_pieces(bits, CPos::CODE4|CPos::FIELD4, CPos::CODE2|CPos::FIELD2);
-            }
-            if ((bits & CPos::FIELD4) >> CPos::FIELD4.trailing_zeros()) > ((bits & CPos::FIELD1) >> CPos::FIELD1.trailing_zeros()) {
-                bits = CPos::swap_pieces(bits, CPos::CODE4|CPos::FIELD4, CPos::CODE1|CPos::FIELD1);
-            }
-            CPos { bits: CPos::order3(bits) }
-        }
-        else if (bits & CPos::CODE3) != 0 { CPos { bits: CPos::order3(bits) }}
-        else if (bits & CPos::CODE2) != 0 {
-            // swap 2 and 1, if 2 is greater
-            if ((bits & CPos::FIELD2) >> CPos::FIELD2.trailing_zeros()) > ((bits & CPos::FIELD1) >> CPos::FIELD1.trailing_zeros()) {
-                bits = CPos::swap_pieces(bits, CPos::CODE2|CPos::FIELD2, CPos::CODE1|CPos::FIELD1);
-            }
-            CPos { bits } 
-        }
-        else { CPos { bits }}
-    }
-
-    /// read a CPos at the current position
-    pub fn read(file: &mut File) -> Result<CPos, std::io::Error> {
-        let mut buf = [0u8; 8];
-        file.read_exact(&mut buf)?;
-        Ok( CPos { bits: u64::from_be_bytes(buf) } )
-    }
-
-    /// read a CPos at the current position from a buffered reader
-    pub fn read_seq(file: &mut BufReader<File>) -> Result<CPos, std::io::Error> {
-        let mut buf = [0u8; 8];
-        file.read_exact(&mut buf)?;
-        Ok( CPos { bits: u64::from_be_bytes(buf) } )
-    }
-
-    /// like `read_seq`, but maps Err(UnexpectedEOF) to OK(None) and
-    /// Ok(v) to Ok(Some(v))
-    pub fn read_seq_with_eof(file: &mut BufReader<File>) -> Result<Option<CPos>, std::io::Error> {
-        let mut buf = [0u8; 8];
-        match file.read_exact(&mut buf) {
-            Ok(_) => Ok(Some(CPos { bits: u64::from_be_bytes(buf) })),
-            Err(x) if x.kind() == UnexpectedEof => Ok(None),
-            Err(other) => Err(other)
-        }
-    }
-
-    /// read a CPos at some seek position
-    pub fn read_at(file: &mut File, wo: SeekFrom) -> Result<CPos, std::io::Error> {
-        file.seek(wo)?;
-        CPos::read(file)
-    }
-    
-    /// write a CPos at the current file position
-    pub fn write(&self, file: &mut File) -> Result<(), std::io::Error> {
-        let buf = self.bits.to_be_bytes();
-        file.write_all(&buf)
-    }
-
-    /// write a CPos all sequentially
-    pub fn write_seq(&self, file: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
-        let buf = self.bits.to_be_bytes();
-        file.write_all(&buf)
-    }
-
-    /// write a CPos at some seek position
-    pub fn write_at(&self, file: &mut File, wo: SeekFrom)  -> Result<(), std::io::Error> {
-        file.seek(wo)?;
-        self.write(file)
-    }
-
-    /// Find a CPos in the database files.
-    /// 
-    /// Absent I/O errors, the result will be the canonical `CPos` that is the same as the one searched for, 
-    /// with appropriately set flags. Even if the entry is not in the database, this just means that the state 
-    /// for both colours is OTHER_DRAW and a canonical CPos with this state is returned.
-    /// 
-    /// The databse consists of a number of files, each named after the signature of the `CPos`s it contains.
-    /// To avoid frequent opening and closing of several files, `File` objects of files 
-    /// that have contributed in searching are remembered in the `hash` object. Only when this hash goes out
-    /// of scope or entries getting removed will the corresponding file actually be closed.
-    /// 
-    /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
-    /// already opened files, but a real difference is seen with many thousand lookups only.
-    pub fn find(&self, hash: &mut EgtbMap) -> Result<CPos, String> {
-        let selfsig = self.signature();
-        let canon = self.canonical(selfsig);
-        if selfsig.isCanonic() {
-            canon.find_canonic(selfsig, hash)
-        }
-        else {
-            canon.find_canonic(selfsig.mkCanonic(), hash).map(|r| r.flippedFlags())
-        }
-    }
-
-    /// A variant of `find` where the searched `CPos` is guaranteed canonical.
-    pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
-        // We avoid to generate the string form of the signature at all costs
-        // This is done only on errors and to find the name of the file to open.
-        let blubb = hash.entry(canonsig).or_insert( {
-                let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display());
-                let mut rfile = File::open(&path)
-                                .map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
-                let upper = rfile.seek(SeekFrom::End(0))
-                                .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))?;
-                let npos = upper / 8;
-                let mid  = npos / 2; 
-                let mPos = if npos > 0 {
-                            // this read must not be done for empty EGTBs 
-                            CPos::read_at(&mut rfile, SeekFrom::Start(8*mid))
-                                .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8*mid, ioe))?
-                            }
-                            else {
-                                // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
-                                // All searches will terminate immediately because the number of entries is 0.
-                                CPos { bits: 0 }.withState(INVALID_POS, INVALID_POS)
-
-                            };
-                Box::new ((rfile, npos, mPos))
-            })
-        ;
-
-        let maxpos  = blubb.1;
-        let midCPos = blubb.2;
-        let mut upper = maxpos;
-        
-        let mut lower = 0;
-        while lower < upper {
-            let mid = lower + (upper-lower) / 2;
-            match if mid == maxpos/2 { Ok(midCPos) } 
-                    else { CPos::read_at(&mut blubb.0, SeekFrom::Start(8*mid)) } {
-                Err(ioe) => {
-                    let path = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), canonsig.display()); 
-                    return Err(format!("error reading EGTB file {} at {} ({})", 
-                        path, 8*mid, ioe)); 
-                }
-                Ok(c) => {
-                    if      c == self      {
-                        return Ok(c);
-                    }
-                    else if c <  self       { lower = mid + 1; }
-                    else /* c >  canon */   { upper = mid; }
-                }
-            }
-        }
-        // pretend we found a DRAW
-        Ok(self.withState(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
-    }
- }
-
-
-impl fmt::Debug for CPos {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&format!("{:?}/{:?}", 
-            self.state(BLACK),
-            self.state(WHITE)))?;
-        if self.piece_at(3) != EMPTY {
-            f.write_str(&format!(", {:?} {} {}", self.player_at(3), self.piece_at(3), self.field_at(3)))?;
-        }
-        if self.piece_at(2) != EMPTY {
-            f.write_str(&format!(", {:?} {} {}", self.player_at(2), self.piece_at(2), self.field_at(2)))?;
-        }
-        if self.piece_at(1) != EMPTY {
-            f.write_str(&format!(", {:?} {} {}", self.player_at(1), self.piece_at(1), self.field_at(1)))?;
-        }
-        if self.piece_at(0) != EMPTY {
-            f.write_str(&format!(", {:?} {} {}", self.player_at(0), self.piece_at(0), self.field_at(0)))?;
-        }
-        f.write_str(&format!(", BK/WK {}/{}", self.blackKing(), self.whiteKing()))
-    }
-}
-
-impl PartialEq for CPos {
-    fn eq(&self, other: &CPos) -> bool {
-        self.bits & CPos::COMP == other.bits & CPos::COMP
-    }
-}
-
-impl Eq for CPos {}
-
-impl PartialOrd for CPos {
-    fn partial_cmp(&self, other: &CPos) -> Option<Ordering> {
-        (self.bits & CPos::COMP).partial_cmp(&(other.bits & CPos::COMP))
-    }
-    fn lt(&self, other: &CPos) -> bool {
-        (self.bits & CPos::COMP) < (other.bits & CPos::COMP)
-    }
-    fn le(&self, other: &CPos) -> bool {
-        (self.bits & CPos::COMP) <= (other.bits & CPos::COMP)
-    }
-    fn gt(&self, other: &CPos) -> bool {
-        (self.bits & CPos::COMP) > (other.bits & CPos::COMP)
-    }
-    fn ge(&self, other: &CPos) -> bool {
-        (self.bits & CPos::COMP) >= (other.bits & CPos::COMP)
-    }
-}
-
-impl Ord for CPos {
-    fn cmp(&self, other: &CPos) -> Ordering {
-        (self.bits & CPos::COMP).cmp(&(other.bits & CPos::COMP))
-    }
-}
-
-impl Hash for CPos {
-    fn hash<H: Hasher>(&self, state: &mut H)  { (self.bits & CPos::COMP).hash(state); }
-}
-
-
-pub trait Mirrorable where Self: Sized {
-    fn mirrorH(&self) -> Self;
-    fn mirrorV(&self) -> Self;
-}
-
-
-impl Mirrorable for Field {
-    /// Mirror the field on horizontal middle axis.
-    /// Changes to corresponding rank on other side, e.g. c6 <-> c3
-    fn mirrorH(&self) -> Field { Field::fromFR(self.file(), 9 - self.rank()) }
-    /// Mirror the field on the vertical middle axis.
-    /// Changes to corresponding file on the other side, e.g. c3 <-> f3
-    fn mirrorV(&self) -> Field { Field::fromFR((b'h' as u8 - self.file() as u8 + b'a' as u8) as char, self.rank()) }
-}
-
-impl Mirrorable for CPos {
-    /// NOTE! After calling this, the fields must be ordered by ascending field numbers,
-    /// (see `CPos::ordered`) **if** the position
-    /// takes part in comparisions (including hashing!).
-    fn mirrorH(&self) -> CPos {
-        let mut bits = self.bits;
-        // for efficiency, we do this as an unrolled loop
-        if bits&CPos::CODE1 != 0 {
-            let m = CPos::FIELD1;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE2 != 0 {
-            let m = CPos::FIELD2;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE3 != 0 {
-            let m = CPos::FIELD3;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE4 != 0 {
-            let m = CPos::FIELD4;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        // the kings must be done unconditionally as they are always valid
-        {
-            let m = CPos::BLACK_KING;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        {
-            let m = CPos::WHITE_KING;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorH();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        CPos { bits }
-    }
-
-    /// NOTE! After calling this, the fields must be ordered by ascending field numbers,
-    /// where the leftmost field (field4) has the lowest field number **if** the position
-    /// takes part in comparisions (including hashing!).
-    fn mirrorV(&self) -> CPos {
-        let mut bits = self.bits;
-        // for efficiency, we do this as an unrolled loop
-        if bits&CPos::CODE1 != 0 {
-            let m = CPos::FIELD1;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE2 != 0 {
-            let m = CPos::FIELD2;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE3 != 0 {
-            let m = CPos::FIELD3;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        if bits&CPos::CODE4 != 0 {
-            let m = CPos::FIELD4;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        // the kings must be done unconditionally as they are always present
-        {
-            let m = CPos::BLACK_KING;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        {
-            let m = CPos::WHITE_KING;
-            let s = m.trailing_zeros();
-            let f = Field::from(((bits & m) >> s) as u8).mirrorV();
-            bits = (bits & !m) | ((f as u64) << s);
-        }
-        CPos { bits }
-    }
-}
-
-
-
 #[cfg(test)]
 mod tests {
     use crate::position::*;
@@ -2826,7 +1760,7 @@ mod tests {
         .place(WHITE, ROOK, bit(D4))
         .place(BLACK, KING, bit(E8))
         .place(BLACK, PAWN, bit(E7))
-        .unsetFlags(castlingBits + whiteToMove)
+        .unsetFlags(CASTLING_BITS + WHITE_TO_MOVE)
         .rehash();
     assert!(p.validEndgame());
     assert_eq!(p, p.compressed().uncompressed(p.turn()).rehash());

@@ -1,4 +1,5 @@
-///! Some functions at the bottom level.
+//! Some functions and constants at the bottom level.
+
 use sysinfo::SystemExt;
 
 /// Number of `CPos` to use in a buffer.

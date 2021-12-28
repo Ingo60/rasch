@@ -1,6 +1,7 @@
 pub mod basic;
 pub mod common;
 pub mod computing;
+pub mod cpos;
 pub mod cposio;
 pub mod endgamedb;
 pub mod fen;

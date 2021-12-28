@@ -4,7 +4,7 @@ use std::{
     io::{BufReader, BufWriter, Write},
 };
 
-use crate::position::CPos;
+use crate::cpos::CPos;
 use crate::util::*;
 
 /// An iterator over elements of some type `T: Ord` that merges two of the same kind.

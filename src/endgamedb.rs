@@ -1,17 +1,16 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
+use super::basic::{Move, Piece, Player};
+use super::cpos::{CPos, CPosState, EgtbMap, Signature};
 use super::fen::{decodeFEN, encodeFEN};
 use super::fieldset::*;
 use super::position as P;
-use super::position::CPos;
-use super::position::CPosState;
-use super::position::CPosState::*;
-use super::position::Move;
-use super::position::Piece;
-use super::position::Piece::*;
-use super::position::Player;
-use super::position::Player::*;
+
+use CPosState::*;
+use Piece::*;
+use Player::*;
+
 use super::position::Position;
 use super::util::*;
 // use crate::position::Mirrorable;
@@ -32,7 +31,7 @@ pub type PosHash = HashMap<usize, Vec<(Move, CPos)>>;
 
 const POSITION_NULL: Position = Position {
     hash: 0,
-    flags: P::whiteToMove,
+    flags: P::WHITE_TO_MOVE,
     whites: BitSet::empty(),
     bishopSet: BitSet::empty(),
     pawnSet: BitSet::empty(),
@@ -109,13 +108,13 @@ pub fn play(fen: &str) -> Result<(), String> {
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq)]
 struct Dtm {
-    state: P::CPosState,
+    state: CPosState,
     pos: P::Position,
 }
 
 /// Expand a list of CAN_MATE positions. Replace each position by the ones reached
 /// that are MATE or CANNOT_AVOID_MATE
-fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut P::EgtbMap) -> Vec<Dtm> {
+fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut EgtbMap) -> Vec<Dtm> {
     let mut result = Vec::with_capacity(10 * positions.len());
     for d in positions {
         // eprintln!("# d.pos fen {}", encodeFEN(&d.pos));
@@ -160,13 +159,13 @@ fn expand_cannot_avoid_mate(positions: &Vec<Dtm>, visited: &mut HashSet<P::CPos>
 }
 
 /// must absolutely have status CANNOT_AVOID_MATE
-fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut P::EgtbMap) -> Option<u32> /* or die! */ {
+fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut EgtbMap) -> Option<u32> /* or die! */ {
     let mut visited: HashSet<CPos> = HashSet::with_capacity(1000);
     let ssig = start.compressed().signature();
     let ccpos = start.compressed().mk_canonical();
     let mut vec0 = vec![Dtm {
         state: CANNOT_AVOID_MATE,
-        pos: ccpos.uncompressed(if ssig.isCanonic() { start.turn() } else { start.turn().opponent() }),
+        pos: ccpos.uncompressed(if ssig.is_canonic() { start.turn() } else { start.turn().opponent() }),
     }];
     let mut u = 0u32;
     eprintln!("# dist-to-mate: start={}", encodeFEN(&start));
@@ -187,7 +186,7 @@ fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut P::EgtbMap) -> Opti
 }
 
 /// we absolutely must have status CAN_MATE here!
-fn move_to_mate(start: &P::Position, dbhash: &mut P::EgtbMap) -> (P::Move, u32) {
+fn move_to_mate(start: &P::Position, dbhash: &mut EgtbMap) -> (P::Move, u32) {
     let mut result = None;
     for m in start.moves() {
         let reached = start.apply(m);
@@ -223,9 +222,9 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     } else {
         Err(String::from("position is no valid end game."))
     }?;
-    let mut hash: P::EgtbMap = HashMap::new();
+    let mut hash: EgtbMap = HashMap::new();
     let sig = cpos.signature();
-    eprintln!("# {} is canonic {}", sig, sig.isCanonic());
+    eprintln!("# {} is canonic {}", sig, sig.is_canonic());
     let rpos = cpos.find(&mut hash)?;
     if rpos != cpos {
         eprintln!(
@@ -434,14 +433,14 @@ pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> R
 ///
 pub fn gen(sig: String) -> Result<(), String> {
     let ppsu = decodeSignature(&sig)?;
-    let ppssig = P::Signature::fromVec(&ppsu);
-    let pps = if ppssig.isCanonic() {
+    let ppssig = Signature::from_vec(&ppsu);
+    let pps = if ppssig.is_canonic() {
         ppsu
     } else {
         // let's switch the colours
         ppsu.iter().copied().map(|(p, x)| (p.opponent(), x)).collect::<Vec<_>>()
     };
-    let signature = ppssig.mkCanonic();
+    let signature = ppssig.mk_canonic();
     let sig = signature.display();
 
     let egtbPath = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
@@ -508,10 +507,10 @@ pub fn gen(sig: String) -> Result<(), String> {
     } else {
         let vecmax = expected_positions(signature);
         eprint!("({} are expected) ", formatted_sz(vecmax));
-        let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
-            P::leftHalf
+        let wKbits = if signature.white_pawns() > 0 || signature.black_pawns() > 0 {
+            P::LEFT_HALF
         } else {
-            P::lowerLeftQuarter
+            P::LOWER_LEFT_QUARTER
         };
         let mut sink = match positions.try_reserve_exact(vecmax) {
             Ok(_) => {
@@ -571,7 +570,7 @@ pub fn gen(sig: String) -> Result<(), String> {
 
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
-    let mut openFiles: P::EgtbMap = HashMap::new();
+    let mut openFiles: EgtbMap = HashMap::new();
     let npositions = positions.len();
     let mut posHash: PosHash = HashMap::with_capacity(0);
     let maxHashCap = alloc_working_memory(&sig, &positions, &mut posHash)?;
@@ -843,7 +842,7 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
     }
     let last = index + 1 == pps.len();
     let (pl, pc) = pps[index];
-    let possible = if pc == PAWN { P::pawnFields } else { BitSet::all() };
+    let possible = if pc == PAWN { P::PAWN_FIELDS } else { BitSet::all() };
 
     // in the case that we have multiple pieces of the same kind and colour,
     // we avoid duplicates by setting new such pieces only on fields that
@@ -908,9 +907,9 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
 }
 
 /// Estimate the number of positions we will find.
-fn expected_positions(signature: P::Signature) -> usize {
+fn expected_positions(signature: Signature) -> usize {
     // positions of the two kings, less than 32*64 or 16*64
-    let vecbase = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
+    let vecbase = if signature.white_pawns() > 0 || signature.black_pawns() > 0 {
         1806
     } else {
         903
@@ -921,72 +920,72 @@ fn expected_positions(signature: P::Signature) -> usize {
     // The computed number is in most cases a slight over-estimation because positions where both
     // kings are not considered in further computations.
     let vecmax = vecbase
-        * over(56, signature.whitePawns() as u64)
-        * over(56 - signature.whitePawns() as u64, signature.blackPawns() as u64)
+        * over(56, signature.white_pawns() as u64)
+        * over(56 - signature.white_pawns() as u64, signature.black_pawns() as u64)
         * over(
-            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64,
-            signature.whiteKnights() as u64,
+            62 - signature.white_pawns() as u64 - signature.black_pawns() as u64,
+            signature.white_knights() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64 - signature.blackPawns() as u64 - signature.whiteKnights() as u64,
-            signature.blackKnights() as u64,
+            62 - signature.white_pawns() as u64 - signature.black_pawns() as u64 - signature.white_knights() as u64,
+            signature.black_knights() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64,
-            signature.whiteBishops() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64,
+            signature.white_bishops() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64,
-            signature.blackBishops() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64
+                - signature.white_bishops() as u64,
+            signature.black_bishops() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64,
-            signature.whiteRooks() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64
+                - signature.white_bishops() as u64
+                - signature.black_bishops() as u64,
+            signature.white_rooks() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64,
-            signature.blackRooks() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64
+                - signature.white_bishops() as u64
+                - signature.black_bishops() as u64
+                - signature.white_rooks() as u64,
+            signature.black_rooks() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64
-                - signature.blackRooks() as u64,
-            signature.whiteQueens() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64
+                - signature.white_bishops() as u64
+                - signature.black_bishops() as u64
+                - signature.white_rooks() as u64
+                - signature.black_rooks() as u64,
+            signature.white_queens() as u64,
         )
         * over(
-            62 - signature.whitePawns() as u64
-                - signature.blackPawns() as u64
-                - signature.whiteKnights() as u64
-                - signature.blackKnights() as u64
-                - signature.whiteBishops() as u64
-                - signature.blackBishops() as u64
-                - signature.whiteRooks() as u64
-                - signature.blackRooks() as u64
-                - signature.whiteQueens() as u64,
-            signature.blackQueens() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64
+                - signature.black_knights() as u64
+                - signature.white_bishops() as u64
+                - signature.black_bishops() as u64
+                - signature.white_rooks() as u64
+                - signature.black_rooks() as u64
+                - signature.white_queens() as u64,
+            signature.black_queens() as u64,
         );
     vecmax as usize
 }

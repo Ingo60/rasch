@@ -172,8 +172,8 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
 
     // decode player
     match fen2 {
-        "w" => pos = P::Position { flags: pos.flags + P::whiteToMove, ..pos },
-        "b" => pos = P::Position { flags: pos.flags - P::whiteToMove, ..pos },
+        "w" => pos = P::Position { flags: pos.flags + P::WHITE_TO_MOVE, ..pos },
+        "b" => pos = P::Position { flags: pos.flags - P::WHITE_TO_MOVE, ..pos },
         _ => {
             return Err(format!(
                 "Invalid FEN: second field must be 'w' or 'b', found \"{}\"",
@@ -189,7 +189,7 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
             'Q' => pos = P::Position { flags: pos.flags + P::bit(C1), ..pos },
             'k' => pos = P::Position { flags: pos.flags + P::bit(G8), ..pos },
             'q' => pos = P::Position { flags: pos.flags + P::bit(C8), ..pos },
-            '-' => pos = P::Position { flags: pos.flags - P::castlingBits, ..pos },
+            '-' => pos = P::Position { flags: pos.flags - P::CASTLING_BITS, ..pos },
             _other => {
                 return Err(format!("Invalid FEN: illegal char in castling field: '{}'", ch));
             }
@@ -215,9 +215,9 @@ pub fn decodeFEN(fenString: &str) -> Result<P::Position, String> {
 pub fn encodeFEN(pos: &P::Position) -> String {
     let fen6 = "1";
     let fen5 = pos.getPlyCounter().to_string();
-    let eps = pos.flags * P::enPassantBits;
+    let eps = pos.flags * P::EN_PASSANT_BITS;
     let fen4 = if eps.some() { P::fld(eps).to_string() } else { String::from("-") };
-    let crs = pos.flags * P::castlingBits;
+    let crs = pos.flags * P::CASTLING_BITS;
     let fen3 = if crs.null() {
         String::from("-")
     } else {

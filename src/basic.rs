@@ -215,7 +215,7 @@ pub struct Move {
     mv: u32,
 }
 
-pub const noMove: Move = Move { mv: 0xffff_ffff };
+pub const NO_MOVE: Move = Move { mv: 0xffff_ffff };
 
 #[allow(clippy::inconsistent_digit_grouping)]
 // we use the unconventional digit grouping to demonstrate the structure
@@ -224,7 +224,7 @@ impl Move {
     /// `true` if and only if this is not `noMove`
     #[inline]
     pub fn isMove(self) -> bool {
-        self != noMove
+        self != NO_MOVE
     }
 
     /// Which player is moving?
@@ -276,7 +276,7 @@ impl Move {
     /// assert_eq!(Move::new(WHITE, PAWN, QUEEN, B7, C8).algebraic(), "b7c8q");
     /// ```
     pub fn algebraic(self) -> String {
-        if self == noMove {
+        if self == NO_MOVE {
             return "????".to_string();
         }
         let p = if self.promote() >= KNIGHT && self.piece() == PAWN {
