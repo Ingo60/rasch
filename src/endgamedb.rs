@@ -13,6 +13,7 @@ use super::position::Piece::*;
 use super::position::Player;
 use super::position::Player::*;
 use super::position::Position;
+use super::util::*;
 // use crate::position::Mirrorable;
 
 use std::collections::{HashMap, HashSet};
@@ -25,7 +26,6 @@ use std::io::{Seek, SeekFrom, Write};
 // use std::iter::FromIterator;
 use std::path::Path;
 use std::sync::{atomic, Arc};
-use sysinfo::SystemExt;
 
 pub type PlayerPiece = (Player, Piece);
 pub type PosHash = HashMap<usize, Vec<(Move, CPos)>>;
@@ -38,29 +38,6 @@ const POSITION_NULL: Position = Position {
     pawnSet: BitSet::empty(),
     rookSet: BitSet::empty(),
 };
-
-/// Helper to eprint big numbers nicely
-pub fn formatted64(u: u64) -> String {
-    let mut result = String::with_capacity(64);
-    formatu64(u, &mut result);
-    result
-}
-
-pub fn formattedSZ(u: usize) -> String {
-    formatted64(u as u64)
-}
-
-fn formatu64(u: u64, result: &mut String) {
-    if u < 1000 {
-        result.push_str(&u.to_string());
-        return;
-    }
-    formatu64(u / 1000, result);
-    let r = u % 1000;
-    result.push(',');
-    let b = format!("{:03}", r);
-    result.push_str(&b);
-}
 
 /// Decode an endgame signature.
 ///
@@ -111,26 +88,6 @@ pub fn decodeSignature(desc: &str) -> Result<Vec<PlayerPiece>, String> {
         }
     }
     Ok(result)
-}
-
-pub fn fac(n: u64) -> u64 {
-    if n == 0 {
-        1
-    } else {
-        n * fac(n - 1)
-    }
-}
-/// over n 0 = 1
-/// over n 1 = n
-/// over n 2 = n * (n-1) / n!
-pub fn over(n: u64, k: u64) -> u64 {
-    if k == 0 {
-        1
-    } else if k == 1 {
-        n
-    } else {
-        (n + 1 - k..n + 1).fold(1, |acc, x| x * acc) / fac(k)
-    }
 }
 
 /// Play an example end game
@@ -416,7 +373,7 @@ pub fn stats(sig: String) -> Result<(), String> {
         if wkinds[i] > 0 {
             eprintln!(
                 "{:>12} white positions with status {:<20} for example {}",
-                formattedSZ(wkinds[i]),
+                formatted_sz(wkinds[i]),
                 format!("{:?}", s),
                 encodeFEN(&wexamples[i].uncompressed(WHITE))
             );
@@ -424,13 +381,13 @@ pub fn stats(sig: String) -> Result<(), String> {
         if bkinds[i] > 0 {
             eprintln!(
                 "{:>12} black positions with status {:<20} for example {}",
-                formattedSZ(bkinds[i]),
+                formatted_sz(bkinds[i]),
                 format!("{:?}", s),
                 encodeFEN(&bexamples[i].uncompressed(BLACK))
             );
         }
     }
-    eprintln!("{:>12} positions total", formattedSZ(total));
+    eprintln!("{:>12} positions total", formatted_sz(total));
     if wkinds[UNKNOWN as usize] + bkinds[UNKNOWN as usize] > 0 {
         eprintln!("Warning: the table contains positions with UNKNOWN state.");
     }
@@ -447,43 +404,6 @@ pub fn stats(sig: String) -> Result<(), String> {
     Ok(())
 }
 
-/// How much memory we may allocate for the compressed positions vector and the position hash map
-const MAX_USE_MEMORY_PERCENT: usize = 75;
-/// Size of a CPos
-const SIZE_CPOS: usize = 8;
-/// Average estimated size of an entry in the cache. If you expierience paging,
-/// - decrease `MAX_USE_MEMORY_PERCENT` or
-/// - increace this one so that less cache entries get allocated or
-/// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 71 * 6; // 71 elements at 6 bytes
-
-/// Computes number of entries for allocation in positions vector and cache for memory processing.
-/// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
-
-pub fn compute_sizes() -> (usize, usize) {
-    let mut info = sysinfo::System::new();
-    info.refresh_memory();
-    let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
-    // RAM = t * MAX_USE_MEMORY_PERCENT / 100
-    // (a * P + a/4 * C) / 1024 = total
-    // (a*P) = 3 *
-    let a = ((3 * total) / 4) / SIZE_CPOS;
-    let b = (total / 4) / SIZE_CACHE_ENTRY_AVG;
-    (a, b)
-}
-
-/// Compute the number of possible cache entries when we need `vecmax` vector entries.
-pub fn compute_hash(vecmax: usize) -> usize {
-    let mut info = sysinfo::System::new();
-    info.refresh_memory();
-    let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
-    if vecmax * SIZE_CPOS > total as usize {
-        0
-    } else {
-        (total as usize - vecmax * SIZE_CPOS) / SIZE_CACHE_ENTRY_AVG
-    }
-}
-
 /// Allocate the memory needed for in-memory processing but not more than twice the vector length,
 /// since we need at most 2 hash entries per position.
 pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> Result<usize, String> {
@@ -491,11 +411,11 @@ pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> R
     hash.try_reserve(hsize).map_err(|ioe| {
         format!(
             "Cannot reserve space for {} hasmap entries ({}).",
-            formattedSZ(hsize),
+            formatted_sz(hsize),
             ioe
         )
     })?;
-    eprintln!("{} reserved space for {} hash entries.", sig, formattedSZ(hsize));
+    eprintln!("{} reserved space for {} hash entries.", sig, formatted_sz(hsize));
     Ok(hsize)
 }
 
@@ -573,21 +493,21 @@ pub fn gen(sig: String) -> Result<(), String> {
                         Err(ioe) => return Err(format!("error reading checkpoint file {} ({})", &sortPath, ioe)),
                     }
                 }
-                eprintln!("{} positions found.", formattedSZ(vecmax));
+                eprintln!("{} positions found.", formatted_sz(vecmax));
                 true
             }
             Err(_) => {
                 eprintln!(
                     "restart failed, {} too big ({} positions).",
                     sortPath,
-                    formattedSZ(vecmax)
+                    formatted_sz(vecmax)
                 );
                 false
             }
         }
     } else {
         let vecmax = expected_positions(signature);
-        eprint!("({} are expected) ", formattedSZ(vecmax));
+        eprint!("({} are expected) ", formatted_sz(vecmax));
         let wKbits = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
             P::leftHalf
         } else {
@@ -619,7 +539,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         sink.flush();
 
         if let Sink::V(_) = sink {
-            eprintln!("done: found {} possible positions.", formattedSZ(positions.len()));
+            eprintln!("done: found {} possible positions.", formatted_sz(positions.len()));
             if positions.len() > vecmax as usize {
                 eprintln!("WARNING: vecmax was calculated too low!");
             } else if positions.len() < vecmax as usize {
@@ -808,7 +728,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         eprintln!(
             "done. Cache hit rate {}%, new hash size {}",
             if cacheLookups > 0 { cacheHits * 100 / cacheLookups } else { 100 },
-            formattedSZ(posHash.len())
+            formatted_sz(posHash.len())
         );
 
         // are we done yet?
@@ -825,7 +745,7 @@ pub fn gen(sig: String) -> Result<(), String> {
             if analyzed[i] != 0 {
                 eprintln!(
                     "    Found {} new {:?} positions.",
-                    formattedSZ(analyzed[i]),
+                    formatted_sz(analyzed[i]),
                     CPosState::from(i as u64)
                 );
                 analyzed[i] = 0;
@@ -875,7 +795,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         .map_err(|x| format!("couldn't flush buffer ({})", x))?;
     eprintln!(
         "done, {} positions written to file {}.",
-        formattedSZ(npos),
+        formatted_sz(npos),
         writePath,
         // formattedSZ(excl)
     );

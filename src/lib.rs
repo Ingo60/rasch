@@ -8,4 +8,5 @@ pub mod mdb;
 pub mod opening;
 pub mod position;
 pub mod sortegtb;
+pub mod util;
 pub mod zobrist;

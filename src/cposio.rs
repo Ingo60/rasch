@@ -5,13 +5,7 @@ use std::{
 };
 
 use crate::position::CPos;
-
-/// We try to use 8 GB for in-place sort.
-/// Why 8 GB? Because my computer has only 16GB memory and I want to do some other things while the sort runs for hours.
-pub const CHUNK: usize = 1024 * 1024 * 1024;
-
-/// Use a higher buffer size for our files
-pub const BUFSZ: usize = 16 * 1024 * 1024;
+use crate::util::*;
 
 /// An iterator over elements of some type `T: Ord` that merges two of the same kind.
 pub struct MergeIterator<T>

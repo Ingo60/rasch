@@ -6,6 +6,7 @@
 // use super::position as P;
 use super::position::CPos;
 use crate::cposio::*;
+use crate::util::*;
 // use super::position::CPosState;
 // use super::position::CPosState::*;
 // use super::position::Move;
