@@ -407,7 +407,7 @@ pub fn stats(sig: String) -> Result<(), String> {
 /// Allocate the memory needed for in-memory processing but not more than twice the vector length,
 /// since we need at most 2 hash entries per position.
 pub fn alloc_working_memory(sig: &str, vec: &Vec<CPos>, hash: &mut PosHash) -> Result<usize, String> {
-    let hsize = compute_hash(vec.len()).min(2 * vec.len());
+    let hsize = compute_cache_entries(vec.len()).min(2 * vec.len());
     hash.try_reserve(hsize).map_err(|ioe| {
         format!(
             "Cannot reserve space for {} hasmap entries ({}).",
@@ -908,7 +908,7 @@ fn complete(pos: &Position, index: usize, pps: &Vec<PlayerPiece>, positions: &mu
 }
 
 /// Estimate the number of positions we will find.
-pub fn expected_positions(signature: P::Signature) -> usize {
+fn expected_positions(signature: P::Signature) -> usize {
     // positions of the two kings, less than 32*64 or 16*64
     let vecbase = if signature.whitePawns() > 0 || signature.blackPawns() > 0 {
         1806

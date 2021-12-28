@@ -37,31 +37,26 @@ fn formatu64(u: u64, result: &mut String) {
 
 /// How much memory we may allocate for the compressed positions vector and the position hash map
 pub const MAX_USE_MEMORY_PERCENT: usize = 75;
+
 /// Size of a CPos
 pub const SIZE_CPOS: usize = 8;
+
 /// Average estimated size of an entry in the cache. If you expierience paging,
 /// - decrease `MAX_USE_MEMORY_PERCENT` or
 /// - increace this one so that less cache entries get allocated or
 /// - close google and vscode during runs :)
-const SIZE_CACHE_ENTRY_AVG: usize = 71 * 6; // 71 elements at 6 bytes
+const SIZE_CACHE_ENTRY_AVG: usize = 72 * 6; // 71 elements at 6 bytes
 
-/// Computes number of entries for allocation in positions vector and cache for memory processing.
-/// Returns two numbers, `a` and `b` such that 3/4 of the memory go to the vector and 1/4 to the cache.
-
-pub fn compute_sizes() -> (usize, usize) {
+/// Computes number of CPos possible to allocate^ when `reserved` bytes are not to be used.
+pub fn compute_vector_entries(reserved: usize) -> usize {
     let mut info = sysinfo::System::new();
     info.refresh_memory();
-    let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
-    // RAM = t * MAX_USE_MEMORY_PERCENT / 100
-    // (a * P + a/4 * C) / 1024 = total
-    // (a*P) = 3 *
-    let a = ((3 * total) / 4) / SIZE_CPOS;
-    let b = (total / 4) / SIZE_CACHE_ENTRY_AVG;
-    (a, b)
+    let total_bytes = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;
+    (total_bytes - reserved) / SIZE_CPOS
 }
 
 /// Compute the number of possible cache entries when we need `vecmax` vector entries.
-pub fn compute_hash(vecmax: usize) -> usize {
+pub fn compute_cache_entries(vecmax: usize) -> usize {
     let mut info = sysinfo::System::new();
     info.refresh_memory();
     let total = (MAX_USE_MEMORY_PERCENT * info.total_memory() as usize / 100) * 1024;

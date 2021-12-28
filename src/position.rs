@@ -2504,8 +2504,8 @@ pub const leftHalf: BitSet = BitSet { bits: 0x0f0f_0f0f_0f0f_0f0fu64 };
 pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
 
 impl CPos {
-    pub const blubb: u64 = 0x1234_4678_9ABC_DEF0;
     
+
     /// Compress an ordinary position, which must be a valid endgame position.
     /// Sets either INVALID_POS or UNKNOWN flags for both players.
     pub fn new(pos: &Position) -> CPos {
