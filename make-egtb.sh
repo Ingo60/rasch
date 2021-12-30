@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export EGTB=./egtb
+export EGTBTEMP=./egtbtemp
 set -e
 
 cargo build && cargo build --release

@@ -1,6 +1,111 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
+//! # The end game tablebase
+//!
+//! The EGTB is a collection of files in a dedicated directory.
+//! Each filename is composed of a `Signature` (like KQB-KQ) and an extension.
+//!
+//! The `Signature` describes the end game unanimously. For example, in KQB-KQ, one player
+//! has a queen and a bishop besides the king, the opponent has only a king and a queen.
+//!
+//! The extension describes what is in the file (we continue to use KQB-KQ as an example signature):
+//! - KQB-KQ.`egtb` is a sorted array of compressed end game positions. Each contained position has a status
+//! for white and black. The status tells what the position is worth for white and black.
+//! - KQB-KQ.`moves` is a sorted array of compressed end game positions. It contains only positions that have
+//! status CAN_MATE for a specific player. Instead of status codes, it contains an indication whether it is meant
+//! for black or for white and a move to reach mate.
+//!
+//! Not all possible moves for a position have to be in the `egtb` file. It is assumed that such positions
+//! are a draw if no player makes an error. For example, the `K-K.egtb` file is entirely empty.
+//!
+//! The following extensions are used during the process of making end game tables:
+//! - KQB-KQ.`sorted` can be the result of manual interruption (e.g. Ctrl+C) of the in-memory analysis.
+//! The next attempt to generate KQB-KQ will pick up this file and will continue where it left off.
+//! It can also be result of an explicit sort, see next paragraph.
+//! - KQB-KQ.`unsorted` will be created, when the available RAM is unable to hold all the possible positions.
+//! This is especially likely with the 6-piece tablebases.
+//! It is possible to sort such files and obtain KQB-KQ.`sorted`.
+//! - KQB-KQ.`um` (for *unsorted moves*) will be written during analysis. When analysis is complete,
+//! this file will be sorted and renamed to KQB-KQ.`moves`.
+//! - KQB-KQ.`chunk`*N* temporary files created during sorting. Should normally get removed once sorting completes.
+//! They can be forced to a certain directory by setting environment variable `EGTBTEMP`.
+//! Absent this, they go to the same directory as the other files.
+//! - KQB-KQ.`mc` (for *mates complete*) is a variant of KQB-KQ.`sorted`
+//! that is the result of an analysis pass that finds no new
+//! mate-related positions. The next analysis pass will do draw analysis, and this will either result in a new
+//! KQB-KQ.`mc` file or, if the draw analysis is also complete, in the KQB-KQ.`egtb` file.
+//! - KQB-KQ.`pass` is the already finished part of an analysis pass and is left on
+//! disk when the pass was manually interrupted. If the request to generate KQB-KQ finds
+//! KQB-KQ.`sorted` or KQB-KQ.`mc` and the
+//! positions do not fit into memory, the analysis will pick up at the point of interruption. When a pass through
+//! the sorted file is complete, this file becomes the new sorted file.
+//!
+//! ## Command line arguments for EGTB creation
+//!
+//! All commands expect the table base directory in the path given by environment variable EGTB.
+//! If not set, the local directory (or symbolic link) `./egtb` will be used.
+//!
+//! ### rasch gen KQB-KQ
+//!
+//! The `gen` verb expects a signature and has many functions,
+//! depending on the current state of the EGTB directory.
+//!
+//! The ultimate goal of `gen` is to produce the `egtb` and `moves` files for the given signature.
+//!
+//! 1. If there is already an `egtb` file and a `moves` file, nothing is done.
+//! You must remove these files manually if you want to generate them anew (but why would you?).
+//! This is so that you don't - for example - get a `gen` command from
+//! the shell history by accident and destroy the work of days and weeks.
+//!
+//! 2. If there is an `egtb` file and an `um` file, the latter will be sorted and thus a `moves` file created.
+//! You should then run a `stats` command for the signature in question to make sure everything is fine.
+//! This is a state of affairs that will normally not happen. Did a power out or shutdown occur, maybe?
+//! Chances are, that the existing files are corrupt or incomplete.
+//!
+//! 3. It is an error, if there is either one of `egtb` or `moves`/`um` present, but the other is missing.
+//! It is for now not possible to recreate the `moves` file from the `egtb` file, and it will never be
+//! possible the other way around.
+//!
+//! 4. If there is a `sorted` file this is the signal to restart the mate analysis. The `um` file will be continued.
+//! Whether the analysis is done in-memory or on disk depends on the available RAM. If it turns out to be disk based,
+//! a `pass` file will be honored.
+//!
+//! 5. If there is a `mc` file, the behavior is the same as with `sorted`, just that draw analysis will be done.
+//!
+//! 6. If there is an `unsorted` file, it will get sorted and all `pass` and `um` files for the given signature
+//! removed. It then proceeds like in paragraph 4.
+//!
+//! 7. If none of the above is the case, it will try a memory based analysis. If this isn't possible, it
+//! writes all possible moves to the `unsorted` file, and proceeds like in the previous paragraph.
+//!
+//! Note that generation for a given signature assumes the existence of the `egtb` files for signatures that
+//! will be needed for lookup when a capturing move or a pawn promotion happens. The generation will stop with
+//! a message that tells which EGTB is missing. The recipe is to generate first the K-K end game, then the end games
+//! with one extra piece, and so forth. Also, KP-K must be done only after KN-K, KB-K, KR-K and KQ-K are done,
+//! end games with more pawns only after the end games with one pawn less, and so forth.
+//!
+//! Analysis can be interruptet by entering Ctrl+C.
+//! In memory based runs, this will create a `sorted` file for restart.
+//! In disk based ones, the positions completed so far are written to the `pass` file.
+//!
+//! ### rasch sort KQB-KQ
+//!
+//! Separate sorting of an `unsorted` file to produce a `sorted` one.
+//! The `unsorted` one and all corresponding `pass` and `um` files are removed.
+//!
+//! ### rasch pass KQB-KQ
+//!
+//! Perform one pass of disk based analysis or continue an interrupted one.
+//! This needs a `sorted` or `mc` file as input, `um` files are continued and `pass` files will be honored.
+//!
+//! ### rasch stats KQB-KQ
+//!
+//! Reads a complete EGTB and checks for various conditions that would indicate corruption or incompleteness.
+//!
+
+use crate::sortegtb::sort_moves;
+
 use super::basic::{Move, Piece, Player};
 use super::cpos::{CPos, CPosState, EgtbMap, Signature};
 use super::fen::{decodeFEN, encodeFEN};
@@ -17,7 +122,7 @@ use super::util::*;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::{remove_file, File};
+use std::fs::{remove_file, File, OpenOptions};
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::ErrorKind::*;
@@ -151,7 +256,7 @@ fn expand_cannot_avoid_mate(positions: &Vec<Dtm>, visited: &mut HashSet<P::CPos>
                 /* noooo */
             } else {
                 visited.insert(cc);
-                result.push(Dtm { state: CAN_MATE_K, pos: r })
+                result.push(Dtm { state: CAN_MATE, pos: r })
             }
         }
     }
@@ -174,7 +279,11 @@ fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut EgtbMap) -> Option<
         let vec1 = expand_cannot_avoid_mate(&vec0, &mut visited);
         vec0 = expand_can_mate(&vec1, dbhash);
         u += 1;
-        eprintln!("# dist-to-mate in {}: found {} new CAN-MATE positions.", u, vec0.len());
+        eprintln!(
+            "# dist-to-mate in {}: found {} new CAN-MATE positions.",
+            u,
+            vec0.len()
+        );
         match vec0.iter().find(|x| x.state == MATE) {
             Some(_) => break Some(u),
             None => {}
@@ -258,7 +367,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             eprintln!("# {:?} to play finds stale mate", pos.turn());
             Err(String::from("STALEMATE"))
         }
-        CAN_MATE_P | CAN_MATE_K => match move_to_mate(pos, &mut hash) {
+        CAN_MATE => match move_to_mate(pos, &mut hash) {
             (mv, u) => {
                 eprintln!(
                     "# {:?} to play will enforce mate in {:?} with {}",
@@ -269,7 +378,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 Ok(mv)
             }
         },
-        CAN_DRAW_P | CAN_DRAW_K => {
+        CAN_DRAW => {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
@@ -285,7 +394,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     eprintln!(
                         "# {:?} to move will enforce {} with {}",
                         pos.turn(),
-                        if s == CAN_MATE_P || s == CAN_MATE_K { "mate" } else { "draw" },
+                        if s == CAN_MATE { "mate" } else { "draw" },
                         mv.showSAN(*pos)
                     );
                     Ok(mv)
@@ -301,7 +410,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     .find(&mut hash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
                     .map(|r| match r.state(other) {
-                        CAN_MATE_K | CAN_MATE_P => false,
+                        CAN_MATE => false,
                         STALEMATE => false,
                         _other => true,
                     })
@@ -325,7 +434,11 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
 /// Provide statistics for an endgame tablebase
 pub fn stats(sig: String) -> Result<(), String> {
     let dbfile = format!("{}/{}", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let egtbfile = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let egtbfile = format!(
+        "{}/{}.egtb",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
     let path = if Path::new(&sig).is_file() {
         sig
     } else if Path::new(&dbfile).is_file() {
@@ -342,8 +455,12 @@ pub fn stats(sig: String) -> Result<(), String> {
     let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let c0 = CPos { bits: 0 };
-    let mut wexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0];
-    let mut bexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0];
+    let mut wexamples = vec![
+        c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0,
+    ];
+    let mut bexamples = vec![
+        c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0,
+    ];
     let mut last = c0;
     let mut total = 0usize;
     let mut sorted = true;
@@ -438,23 +555,44 @@ pub fn gen(sig: String) -> Result<(), String> {
         ppsu
     } else {
         // let's switch the colours
-        ppsu.iter().copied().map(|(p, x)| (p.opponent(), x)).collect::<Vec<_>>()
+        ppsu.iter()
+            .copied()
+            .map(|(p, x)| (p.opponent(), x))
+            .collect::<Vec<_>>()
     };
     let signature = ppssig.mk_canonic();
     let sig = signature.display();
 
-    let egtbPath = format!("{}/{}.egtb", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let rawPath = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let sortPath = format!("{}/{}.sorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let egtb_path = format!(
+        "{}/{}.egtb",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
+    let raw_path = format!(
+        "{}/{}.unsorted",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
+    let sorted_path = format!(
+        "{}/{}.sorted",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
+    let um_path = format!("{}/{}.um", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let _moves_path = format!(
+        "{}/{}.moves",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
 
-    if Path::new(&egtbPath).is_file() {
+    if Path::new(&egtb_path).is_file() {
         eprintln!(
             "{} seems to exist already, please remove manually to re-create",
-            egtbPath
+            egtb_path
         );
         return Ok(());
     };
-    let restart = Path::new(&sortPath).is_file();
+    let restart = Path::new(&sorted_path).is_file();
     // Places to use for the white king.
     // If there are no pawns, it is enough to compute the positions where
     // the king is in the lower left quarter. The remaining positions
@@ -474,13 +612,13 @@ pub fn gen(sig: String) -> Result<(), String> {
     );
 
     let inMemory = if restart {
-        let mut file =
-            File::open(&sortPath).map_err(|ioe| format!("Can't read source file {} ({})", &sortPath, ioe))?;
+        let mut file = File::open(&sorted_path)
+            .map_err(|ioe| format!("Can't read sorted file {} ({})", &sorted_path, ioe))?;
         let bytes = file
             .seek(SeekFrom::End(0))
-            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sortPath, ioe))?;
+            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sorted_path, ioe))?;
         file.seek(SeekFrom::Start(0))
-            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sortPath, ioe))?;
+            .map_err(|ioe| format!("error seeking checkpoint file {} ({})", &sorted_path, ioe))?;
         let vecmax = (bytes as usize) / SIZE_CPOS;
         let mut brdr = BufReader::new(file);
         match positions.try_reserve_exact(vecmax) {
@@ -489,7 +627,12 @@ pub fn gen(sig: String) -> Result<(), String> {
                     match CPos::read_seq_with_eof(&mut brdr) {
                         Ok(None) => break,
                         Ok(Some(cp)) => positions.push(cp),
-                        Err(ioe) => return Err(format!("error reading checkpoint file {} ({})", &sortPath, ioe)),
+                        Err(ioe) => {
+                            return Err(format!(
+                                "error reading checkpoint file {} ({})",
+                                &sorted_path, ioe
+                            ))
+                        }
                     }
                 }
                 eprintln!("{} positions found.", formatted_sz(vecmax));
@@ -498,7 +641,7 @@ pub fn gen(sig: String) -> Result<(), String> {
             Err(_) => {
                 eprintln!(
                     "restart failed, {} too big ({} positions).",
-                    sortPath,
+                    sorted_path,
                     formatted_sz(vecmax)
                 );
                 false
@@ -518,8 +661,8 @@ pub fn gen(sig: String) -> Result<(), String> {
                 Sink::V(&mut positions)
             }
             Err(_) => {
-                eprint!("in {} ... ", rawPath);
-                let f = File::create(&rawPath).map_err(|e| format!("Can't create {} ({})", &rawPath, e))?;
+                eprint!("in {} ... ", raw_path);
+                let f = File::create(&raw_path).map_err(|e| format!("Can't create {} ({})", &raw_path, e))?;
                 Sink::W(BufWriter::new(f))
             }
         };
@@ -527,6 +670,9 @@ pub fn gen(sig: String) -> Result<(), String> {
             let pos1 = POSITION_NULL.place(WHITE, KING, P::bit(wk));
             // place the black king
             for bk in BitSet::all() {
+                if signature.is_symmetric() && !signature.has_pawns() && bk < wk {
+                    continue;
+                }
                 if pos1.isEmpty(bk) {
                     let pos2 = pos1.place(BLACK, KING, P::bit(bk));
                     if pos2.valid() {
@@ -538,7 +684,10 @@ pub fn gen(sig: String) -> Result<(), String> {
         sink.flush();
 
         if let Sink::V(_) = sink {
-            eprintln!("done: found {} possible positions.", formatted_sz(positions.len()));
+            eprintln!(
+                "done: found {} possible positions.",
+                formatted_sz(positions.len())
+            );
             if positions.len() > vecmax as usize {
                 eprintln!("WARNING: vecmax was calculated too low!");
             } else if positions.len() < vecmax as usize {
@@ -556,7 +705,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         return Err(String::from("the rest of the processing is not implemented yet."));
     }
 
-    eprintln!("    Generating EGTB for {} in {}", sig, egtbPath);
+    eprintln!("    Generating EGTB for {} in {}", sig, egtb_path);
 
     let mut pass = 2usize;
 
@@ -571,6 +720,16 @@ pub fn gen(sig: String) -> Result<(), String> {
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut mateonly = true;
     let mut openFiles: EgtbMap = HashMap::new();
+    let um_file = if restart {
+        OpenOptions::new()
+            .append(true)
+            .open(&um_path)
+            .map_err(|ioe| format!("Can't append to unsorted moves file {} ({})", um_path, ioe))
+    } else {
+        File::create(&um_path)
+            .map_err(|ioe| format!("Can't create unsorted moves file {} ({})", um_path, ioe))
+    }?;
+    let mut um_writer = BufWriter::with_capacity(BUFSZ, um_file);
     let npositions = positions.len();
     let mut posHash: PosHash = HashMap::with_capacity(0);
     let maxHashCap = alloc_working_memory(&sig, &positions, &mut posHash)?;
@@ -640,59 +799,86 @@ pub fn gen(sig: String) -> Result<(), String> {
                             let child = reached[u].1;
                             let chsig = child.signature();
                             let canon = child.canonical(chsig);
+
                             let csig = canon.signature();
                             let alien = csig != signature;
                             let rp = if child.state(other) == UNKNOWN {
                                 if !alien {
                                     // look in positions only
                                     match positions.binary_search(&canon) {
-                                        Ok(u) => Ok(positions[u]),
-                                        Err(_) => Err(format!("cannot happen alien={}", alien)),
+                                        Ok(u) => if canon.canonic_has_bw_switched() { 
+                                                Ok(positions[u].flipped_flags()) 
+                                            } else { 
+                                                Ok(positions[u]) 
+                                            },
+                                        Err(_) => Err(format!(
+                                            "cannot happen alien={},\n    child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}",
+                                            alien, child, child.bits, canon, canon.bits
+                                        )),
                                     }
                                 } else {
                                     // must be alien
-                                    canon.find_canonic(csig, &mut openFiles).map_err(|s| {
-                                        format!(
-                                        "could not find reached position because:\n{}\nfen: {}  canonical: {}  hex: \
-                                    0x{:016x}",
-                                        s,
-                                        encodeFEN(&reached[u].1.uncompressed(other)),
-                                        encodeFEN(&canon.uncompressed(other)),
-                                        canon.bits
-                                    )
-                                    })
+                                    canon
+                                        .find_canonic(csig, &mut openFiles)
+                                        .map_err(|s| {
+                                            format!(
+                                                "could not find reached position because:\n\
+                                                    {}\nfen: {}  canonical: {}  hex: 0x{:016x}",
+                                                s,
+                                                encodeFEN(&reached[u].1.uncompressed(other)),
+                                                encodeFEN(&canon.uncompressed(other)),
+                                                canon.bits
+                                            )
+                                        })
+                                        .map(|r| {
+                                            if canon.canonic_has_bw_switched() {
+                                                r.flipped_flags()
+                                            } else {
+                                                r
+                                            }
+                                        })
                                 }
                             } else {
-                                Ok(reached[u].1)
+                                Ok(child)
                             }?;
+
+                            /* if !alien && canon.canonic_has_bw_switched() {
+                                eprintln!(
+                                    "canon has bw switched, alien={}\n    child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}\n       rp={:?}  0x{:016x}",
+                                    alien, child, child.bits, canon, canon.bits, rp, rp.bits
+                                );
+                                let _x: bool = Err("ASSERTION FAILED")?;
+                            } */
+
                             let rpstate = rp.state(other);
                             if reached[u].1.state(other) != rpstate {
                                 reached[u].1 = rp;
                             }
                             all_unknown = all_unknown && rpstate == UNKNOWN;
-                            all_can_mate = all_can_mate && (rpstate == CAN_MATE_K || rpstate == CAN_MATE_P);
-                            all_can_draw = all_can_draw && (rpstate == CAN_DRAW_K || rpstate == CAN_DRAW_P);
+                            all_can_mate = all_can_mate && rpstate == CAN_MATE;
+                            all_can_draw = all_can_draw && rpstate == CAN_DRAW;
                             match rpstate {
                                 MATE | CANNOT_AVOID_MATE => {
                                     if mateonly {
                                         let mv = reached[u].0;
-                                        let can_mate = if mv.piece() == KING { CAN_MATE_K } else { CAN_MATE_P };
-                                        let idx = c.piece_index_by_player_mv(player, mv);
-                                        analyzed[can_mate as usize] += 1;
-                                        c = c.with_state_for(player, can_mate).with_piece_index_for(player, idx);
+                                        let mpos = c.mk_to_move(mv);
+                                        analyzed[CAN_MATE as usize] += 1;
+                                        c = c.with_state_for(player, CAN_MATE);
 
                                         all_can_mate = false;
                                         all_can_draw = false;
+
+                                        // write the move to the `um` file
+                                        mpos.write_seq(&mut um_writer).map_err(|ioe| {
+                                            format!("unexpected error ({}) while writing to {}", ioe, um_path)
+                                        })?;
                                         break 'children;
                                     }
                                 }
                                 STALEMATE | CANNOT_AVOID_DRAW => {
                                     if !mateonly {
-                                        let mv = reached[u].0;
-                                        let can_draw = if mv.piece() == KING { CAN_DRAW_K } else { CAN_DRAW_P };
-                                        let idx = c.piece_index_by_player_mv(player, mv);
-                                        analyzed[can_draw as usize] += 1;
-                                        c = c.with_state_for(player, can_draw).with_piece_index_for(player, idx);
+                                        analyzed[CAN_DRAW as usize] += 1;
+                                        c = c.with_state_for(player, CAN_DRAW);
 
                                         all_can_mate = false;
                                         all_can_draw = false;
@@ -737,8 +923,7 @@ pub fn gen(sig: String) -> Result<(), String> {
         }
 
         mateonly = analyzed[MATE as usize] > 0
-            || analyzed[CAN_MATE_P as usize] > 0
-            || analyzed[CAN_MATE_K as usize] > 0
+            || analyzed[CAN_MATE as usize] > 0
             || analyzed[CANNOT_AVOID_MATE as usize] > 0;
         for i in 0..analyzed.len() {
             if analyzed[i] != 0 {
@@ -753,12 +938,14 @@ pub fn gen(sig: String) -> Result<(), String> {
     }
 
     let interrupted = sigint_received.load(atomic::Ordering::SeqCst);
+
     let fkind = if interrupted { "checkpoint" } else { "EGBT" };
-    let writePath = if interrupted { sortPath.clone() } else { egtbPath.clone() };
-    eprint!("{} Pass {} - writing {} ...    0% ", sig, pass + 1, fkind);
-    let file =
-        File::create(&writePath).map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
-    let mut bufWriter = BufWriter::new(file);
+    let writePath = if interrupted { sorted_path.clone() } else { egtb_path.clone() };
+
+    eprint!("{} Pass {} - writing {} ...    0% ", sig, pass, fkind);
+    let file = File::create(&writePath)
+        .map_err(|ioe| format!("could not create {} file {} ({})", fkind, writePath, ioe))?;
+    let mut bufWriter = BufWriter::with_capacity(BUFSZ, file);
     let mut npos = 0usize;
     for i in 0..positions.len() {
         let mut cpos = positions[i];
@@ -791,15 +978,27 @@ pub fn gen(sig: String) -> Result<(), String> {
     }
     bufWriter
         .flush()
-        .map_err(|x| format!("couldn't flush buffer ({})", x))?;
+        .map_err(|x| format!("couldn't flush buffer for {} ({})", writePath, x))?;
     eprintln!(
         "done, {} positions written to file {}.",
         formatted_sz(npos),
         writePath,
         // formattedSZ(excl)
     );
+    pass += 1;
+    um_writer
+        .flush()
+        .map_err(|x| format!("couldn't flush buffer for {} ({})", um_path, x))?;
+    if !interrupted {
+        positions.clear();
+        positions.shrink_to_fit();
+        posHash.clear();
+        posHash.shrink_to_fit();
+        eprintln!("{} Pass {} - sorting moves.", sig, pass);
+        sort_moves(&sig)?;
+    }
     if restart && !interrupted {
-        remove_file(&sortPath).map_err(|ioe| format!("Can't remove {} ({})", &sortPath, ioe))?;
+        remove_file(&sorted_path).map_err(|ioe| format!("Can't remove {} ({})", &sorted_path, ioe))?;
     }
     if interrupted {
         Err(String::from("terminated by SIGINT"))
@@ -921,13 +1120,18 @@ fn expected_positions(signature: Signature) -> usize {
     // kings are not considered in further computations.
     let vecmax = vecbase
         * over(56, signature.white_pawns() as u64)
-        * over(56 - signature.white_pawns() as u64, signature.black_pawns() as u64)
+        * over(
+            56 - signature.white_pawns() as u64,
+            signature.black_pawns() as u64,
+        )
         * over(
             62 - signature.white_pawns() as u64 - signature.black_pawns() as u64,
             signature.white_knights() as u64,
         )
         * over(
-            62 - signature.white_pawns() as u64 - signature.black_pawns() as u64 - signature.white_knights() as u64,
+            62 - signature.white_pawns() as u64
+                - signature.black_pawns() as u64
+                - signature.white_knights() as u64,
             signature.black_knights() as u64,
         )
         * over(
