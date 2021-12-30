@@ -317,6 +317,7 @@ impl Signature {
         self.white_pawns() > 0 || self.black_pawns() > 0
     }
 
+    /// make a string like "KQ-KR" from the signature
     pub fn display(&self) -> String {
         let mut result = String::with_capacity(10);
         result.push('K');
@@ -746,7 +747,7 @@ impl CPos {
 
     /// Get the piece for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `EMPTY`
-    pub fn piece_at(&self, n: usize) -> Piece {
+    pub fn piece_at(&self, n: u64) -> Piece {
         match n & 3 {
             0 => match ((self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT) & 7 {
                 7 => PAWN,
@@ -814,11 +815,20 @@ impl CPos {
     pub fn piece_index_by_mv(&self, mv: Move) -> u64 {
         if self.piece_at(0) != EMPTY && self.player_at(0) == mv.player() && self.field_at(0) == mv.from() {
             0
-        } else if self.piece_at(1) != EMPTY && self.player_at(1) == mv.player() && self.field_at(1) == mv.from() {
+        } else if self.piece_at(1) != EMPTY
+            && self.player_at(1) == mv.player()
+            && self.field_at(1) == mv.from()
+        {
             1
-        } else if self.piece_at(2) != EMPTY && self.player_at(2) == mv.player() && self.field_at(2) == mv.from() {
+        } else if self.piece_at(2) != EMPTY
+            && self.player_at(2) == mv.player()
+            && self.field_at(2) == mv.from()
+        {
             2
-        } else if self.piece_at(3) != EMPTY && self.player_at(3) == mv.player() && self.field_at(3) == mv.from() {
+        } else if self.piece_at(3) != EMPTY
+            && self.player_at(3) == mv.player()
+            && self.field_at(3) == mv.from()
+        {
             3
         } else {
             0
@@ -828,7 +838,7 @@ impl CPos {
     /// make a `CPos` into a "move CPos" for a certain `Move`
     /// The move must have been computed for a `Position` that corresponds to this `CPos`,
     /// or else it will all be garbage.
-    pub fn mk_to_move(&self, mv: Move) -> CPos {
+    pub fn mpos_from_mv(&self, mv: Move) -> CPos {
         CPos {
             bits: (self.bits & CPos::COMP_BITS)
                 | if mv.player() == WHITE { CPos::WHITE_BIT } else { 0 }
@@ -841,6 +851,57 @@ impl CPos {
                     _other => 0,
                 } << CPos::PROMOTE_TO_SHIFT)
                 | ((mv.to() as u64) << CPos::TARGET_SHIFT),
+        }
+    }
+
+    /// Given some `CPos` with S_BIT, V_BIT or H_BIT set and a move `CPos` found for it, reconstruct the `Move`
+    /// The `self` is only needed for the flags.
+    pub fn mv_from_mpos(&self, mpos: CPos) -> Move {
+        let player = if (mpos.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK };
+        let piece = if (mpos.bits & CPos::KING_MOVE_BIT) != 0 {
+            KING
+        } else {
+            mpos.piece_at((mpos.bits & CPos::PIECE_INDEX_BITS) >> CPos::PIECE_INDEX_SHIFT)
+        };
+        let from = if (mpos.bits & CPos::KING_MOVE_BIT) != 0 {
+            if player == WHITE {
+                mpos.white_king()
+            } else {
+                mpos.black_king()
+            }
+        } else {
+            mpos.field_at((mpos.bits & CPos::PIECE_INDEX_BITS) >> CPos::PIECE_INDEX_SHIFT)
+        };
+        let to = Field::from((mpos.bits & CPos::TARGET_BITS) >> CPos::TARGET_SHIFT);
+        let prom =
+            if piece == PAWN && (player == WHITE && to.rank() == 8 || player == BLACK && to.rank() == 1) {
+                match (mpos.bits & CPos::PROMOTE_TO_BITS) >> CPos::PROMOTE_TO_SHIFT {
+                    0 => KNIGHT,
+                    1 => BISHOP,
+                    2 => ROOK,
+                    3 => QUEEN,
+                    _ => EMPTY,
+                }
+            } else {
+                EMPTY
+            };
+        let mv = Move::new(player, piece, prom, from, to);
+        let smv = if (self.bits & CPos::S_BIT) != 0 {
+            Move::new(
+                mv.player().opponent(),
+                mv.piece(),
+                mv.promote(),
+                mv.from(),
+                mv.to(),
+            )
+        } else {
+            mv
+        };
+        let hmv = if (self.bits & CPos::H_BIT) != 0 { smv.mirror_h() } else { smv };
+        if (self.bits & CPos::V_BIT) != 0 {
+            hmv.mirror_v()
+        } else {
+            hmv
         }
     }
 
@@ -1147,35 +1208,35 @@ impl CPos {
 
     /// A variant of `find` where the searched `CPos` is guaranteed canonical.
     pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
-        // We avoid to generate the string form of the signature at all costs
-        // This is done only on errors and to find the name of the file to open.
-        let blubb = hash.entry(canonsig).or_insert_with(|| {
+        if !hash.contains_key(&canonsig) {
             let path = format!(
                 "{}/{}.egtb",
                 env::var("EGTB").unwrap_or(String::from("egtb")),
                 canonsig.display()
             );
-            let mut rfile = File::open(&path)
-                .map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))
-                .unwrap();
+            let mut rfile =
+                File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
             let upper = rfile
                 .seek(SeekFrom::End(0))
-                .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))
-                .unwrap();
+                .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))?;
             let npos = upper / 8;
             let mid = npos / 2;
             let m_pos = if npos > 0 {
                 // this read must not be done for empty EGTBs
                 CPos::read_at(&mut rfile, SeekFrom::Start(8 * mid))
-                    .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8 * mid, ioe))
-                    .unwrap()
+                    .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8 * mid, ioe))?
             } else {
                 // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
                 // All searches will terminate immediately because the number of entries is 0.
                 CPos { bits: 0 }.with_state(INVALID_POS, INVALID_POS)
             };
-            Box::new((rfile, npos, m_pos))
-        });
+            hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
+        }
+        // the unwrap is justified because of the insert() above
+        // we don't want hash.entry(canonsig).or_insert(...) because this would open the file every time
+        // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
+        // of errors upwards.
+        let blubb = hash.get_mut(&canonsig).unwrap();
 
         let maxpos = blubb.1;
         let mid_cpos = blubb.2;
@@ -1192,10 +1253,15 @@ impl CPos {
                 Err(ioe) => {
                     let path = format!(
                         "{}/{}.egtb",
-                        env::var("EGTB").unwrap_or(String::from("egtb")),
+                        env::var("EGTB").unwrap_or(String::from("./egtb")),
                         canonsig.display()
                     );
-                    return Err(format!("error reading EGTB file {} at {} ({})", path, 8 * mid, ioe));
+                    return Err(format!(
+                        "error reading EGTB file {} at {} ({})",
+                        path,
+                        8 * mid,
+                        ioe
+                    ));
                 }
                 Ok(c) => {
                     if c == self {
@@ -1213,6 +1279,137 @@ impl CPos {
         // pretend we found a DRAW
         Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
     }
+
+    /// Find a move associated with a **canonic** `CPos`.
+    /// - it is an error if the status of the selected player is not `CAN_MATE`
+    /// - it is an error if the move is not found.
+    pub fn find_canonic_move(
+        self,
+        canonsig: Signature,
+        player: Player,
+        hash: &mut EgtbMap,
+    ) -> Result<CPos, String> {
+        let this = if self.state(player) == CAN_MATE {
+            Ok(CPos {
+                bits: if player == WHITE { CPos::WHITE_BIT } else { 0 } | (self.bits & CPos::COMP_BITS),
+            })
+        } else {
+            Err(String::from("CANT_MOVE"))
+        }?;
+
+        if !hash.contains_key(&canonsig) {
+            let path = format!(
+                "{}/{}.moves",
+                env::var("EGTB").unwrap_or(String::from("egtb")),
+                canonsig.display()
+            );
+            let mut rfile =
+                File::open(&path).map_err(|ioe| format!("could not open moves file {} ({})", path, ioe))?;
+            let upper = rfile
+                .seek(SeekFrom::End(0))
+                .map_err(|ioe| format!("error seeking moves file {} ({})", path, ioe))?;
+            let npos = upper / 8;
+            let mid = npos / 2;
+            let m_pos = if npos > 0 {
+                // this read must not be done for empty EGTBs
+                CPos::read_at(&mut rfile, SeekFrom::Start(8 * mid))
+                    .map_err(|ioe| format!("error reading moves file {} at {} ({})", path, 8 * mid, ioe))?
+            } else {
+                // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
+                // All searches will terminate immediately because the number of entries is 0.
+                CPos { bits: 0 }.with_state(INVALID_POS, INVALID_POS)
+            };
+            hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
+        }
+
+        // the unwrap is justified because of the insert() above
+        // we don't want hash.entry(canonsig).or_insert(...) because this would open the file every time
+        // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
+        // of errors upwards.
+        let blubb = hash.get_mut(&canonsig).unwrap();
+
+        let maxpos = blubb.1;
+        let mid_cpos = blubb.2;
+        let mut upper = maxpos;
+        let mut lower = 0;
+
+        while lower < upper {
+            let mid = lower + (upper - lower) / 2;
+            match if mid == maxpos / 2 {
+                Ok(mid_cpos)
+            } else {
+                CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
+            } {
+                Err(ioe) => {
+                    let path = format!(
+                        "{}/{}.moves",
+                        env::var("EGTB").unwrap_or(String::from("./egtb")),
+                        canonsig.display()
+                    );
+                    return Err(format!(
+                        "error reading EGTB file {} at {} ({})",
+                        path,
+                        8 * mid,
+                        ioe
+                    ));
+                }
+                Ok(c) => {
+                    if c == this {
+                        return Ok(c);
+                    } else if c < this {
+                        lower = mid + 1;
+                    } else
+                    /* c >  canon */
+                    {
+                        upper = mid;
+                    }
+                }
+            }
+        }
+        Err(String::from("NOT FOUND"))
+    }
+
+    /// debugging output for a move `CPos`
+    pub fn mpos_debug(&self) -> String {
+        let inx = (self.bits & CPos::PIECE_INDEX_BITS) >> CPos::PIECE_INDEX_SHIFT;
+        let to = Field::from((self.bits & CPos::TARGET_BITS) >> CPos::TARGET_SHIFT);
+        format!(
+            "{} {} {} {}  {}{} {}  {}{} {}  {}{} {}  {}{} {}  BK/WK {}/{}",
+            if (self.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK },
+            if (self.bits & CPos::KING_MOVE_BIT) != 0 {
+                "KING".to_string()
+            } else {
+                format!("P{}  ", 1 + inx)
+            },
+            if self.piece_at(inx) == PAWN && (to.rank() == 1 || to.rank() == 8) {
+                "promote to ".to_string()
+                    + match (self.bits & CPos::PROMOTE_TO_BITS) >> CPos::PROMOTE_TO_SHIFT {
+                        0 => "knight",
+                        1 => "bishop",
+                        2 => "rook",
+                        3 => "queen",
+                        _ => "rustc, be happy",
+                    }
+            } else {
+                "-".to_string()
+            },
+            to,
+            self.player_at(3),
+            self.piece_at(3),
+            self.field_at(3),
+            self.player_at(2),
+            self.piece_at(2),
+            self.field_at(2),
+            self.player_at(1),
+            self.piece_at(1),
+            self.field_at(1),
+            self.player_at(0),
+            self.piece_at(0),
+            self.field_at(0),
+            self.black_king(),
+            self.white_king()
+        )
+    }
 }
 
 impl fmt::Debug for CPos {
@@ -1227,7 +1424,7 @@ impl fmt::Debug for CPos {
         ))?;
         if self.piece_at(3) != EMPTY {
             f.write_str(&format!(
-                ", {:?} {} {}",
+                ", {}{} {}",
                 self.player_at(3),
                 self.piece_at(3),
                 self.field_at(3)
@@ -1235,7 +1432,7 @@ impl fmt::Debug for CPos {
         }
         if self.piece_at(2) != EMPTY {
             f.write_str(&format!(
-                ", {:?} {} {}",
+                ", {}{} {}",
                 self.player_at(2),
                 self.piece_at(2),
                 self.field_at(2)
@@ -1243,7 +1440,7 @@ impl fmt::Debug for CPos {
         }
         if self.piece_at(1) != EMPTY {
             f.write_str(&format!(
-                ", {:?} {} {}",
+                ", {}{} {}",
                 self.player_at(1),
                 self.piece_at(1),
                 self.field_at(1)
@@ -1251,7 +1448,7 @@ impl fmt::Debug for CPos {
         }
         if self.piece_at(0) != EMPTY {
             f.write_str(&format!(
-                ", {:?} {} {}",
+                ", {}{} {}",
                 self.player_at(0),
                 self.piece_at(0),
                 self.field_at(0)
