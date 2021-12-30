@@ -61,6 +61,27 @@ pub fn sort(sig: &str) -> Result<(), String> {
     // Ok(())
 }
 
+pub fn sort_moves(sig: &str) -> Result<(), String> {
+    let s_path = format!("{}/{}.moves", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let u_path = format!("{}/{}.um", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let c_path = format!(
+        "{}/{}.chunk",
+        env::var("EGTBTEMP")
+            .or(env::var("EGTB"))
+            .unwrap_or(String::from("egtb")),
+        sig
+    );
+    let path = Path::new(&s_path);
+    if path.is_file() {
+        return Err(format!("Destination file {} already exists.", &path.display()));
+    }
+    // do the work
+    split_parallel(&u_path, &c_path, &s_path).and_then(|_| {
+        remove_file(Path::new(&u_path))
+            .map_err(|ioerror| format!("couldn't remove unsorted file {} ({})", u_path, ioerror))
+    })
+}
+
 /// Split an unsorted file into sorted chunks.
 /// Returns a vector of path names of the generated chunks.
 pub fn split(unsorted: &str, c_path: &str) -> Result<Vec<String>, String> {
@@ -339,7 +360,7 @@ pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), 
 
     // sort the left over buffer
     {
-        eprint!("sorting last chunk ... ");
+        eprint!("    sorting last chunk ... ");
         if firstbuffer {
             if pos1.len() > 0 {
                 pos1.sort_unstable();
@@ -349,7 +370,7 @@ pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), 
                 pos2.sort_unstable();
             }
         }
-        eprintln!("... done.");
+        eprintln!("done.");
     }
 
     // merge this to the disk
