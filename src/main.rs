@@ -82,6 +82,13 @@ fn main() {
                 eprintln!("error: {}", s);
             }
         }
+    } else if argv[1].starts_with("check") && argv.len() >= 3 {
+        match E::check_moves(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+            }
+        }
     } else if argv[1].starts_with("play") && argv.len() == 3 {
         match E::play(&String::from(argv[2].clone())) {
             Ok(_) => {}
@@ -511,9 +518,13 @@ pub fn negaMax(
             ordered.push(hashmove);
             ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
             match checkBound(te.score) {
-                Ordering::Equal if te.depth >= depth => {
-                    Variation { length: te.pvLength, moves: te.pvMoves, score: te.score >> 2, nodes: 1, depth }
-                }
+                Ordering::Equal if te.depth >= depth => Variation {
+                    length: te.pvLength,
+                    moves: te.pvMoves,
+                    score: te.score >> 2,
+                    nodes: 1,
+                    depth,
+                },
 
                 Ordering::Less if te.depth >= depth => {
                     let alpha2 = max(alpha, (te.score - 1) >> 2);
@@ -555,7 +566,10 @@ pub fn negaMax(
             let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
+                    let mate = Variation {
+                        score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
+                        ..DRAW
+                    };
                     mate
                 } else {
                     DRAW
@@ -681,9 +695,13 @@ pub fn pvsSearch(
             ordered.push(hashmove);
             ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
             match checkBound(te.score) {
-                Ordering::Equal if te.depth >= depth => {
-                    Variation { length: te.pvLength, moves: te.pvMoves, score: te.score >> 2, nodes: 1, depth }
-                }
+                Ordering::Equal if te.depth >= depth => Variation {
+                    length: te.pvLength,
+                    moves: te.pvMoves,
+                    score: te.score >> 2,
+                    nodes: 1,
+                    depth,
+                },
 
                 Ordering::Less if te.depth >= depth => {
                     let alpha2 = max(alpha, (te.score - 1) >> 2);
@@ -725,7 +743,10 @@ pub fn pvsSearch(
             let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
             if ordered.len() == 0 {
                 if pos.inCheck(pos.turn()) {
-                    let mate = Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3, ..DRAW };
+                    let mate = Variation {
+                        score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
+                        ..DRAW
+                    };
                     mate
                 } else {
                     DRAW
@@ -798,7 +819,10 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
                 // P::showMoves(&kvec[..]));
                 let dur = locking.elapsed().as_millis();
                 if dur > 1 {
-                    println!("# negaDeep{}: it took only {}ms to lock the hash.", state.sid, dur);
+                    println!(
+                        "# negaDeep{}: it took only {}ms to lock the hash.",
+                        state.sid, dur
+                    );
                 }
                 search(
                     &mut hist,
@@ -827,7 +851,8 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
 
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
-            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }
+                .push(m);
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
@@ -917,7 +942,15 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
                         P::BLACK_IS_MATE,
                     )
                 } else {
-                    let pvx = pvsSearch(&mut hist, &mut hash, &mut killers, false, depth, -alpha, 1 - alpha);
+                    let pvx = pvsSearch(
+                        &mut hist,
+                        &mut hash,
+                        &mut killers,
+                        false,
+                        depth,
+                        -alpha,
+                        1 - alpha,
+                    );
                     if computing::thinkingFinished() {
                         state.tellNoMore();
                         return;
@@ -962,7 +995,8 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             }
 
             // the final version with our move pushed onto the end
-            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }
+                .push(m);
 
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
@@ -1052,7 +1086,12 @@ pub fn strategy_pvs(state: StrategyState) {
         if state.history.len() > 2 && !current.inEndgame() {
             // users position before his move
             let usrPos = state.history[state.history.len() - 2];
-            match usrPos.moves().iter().copied().find(|m| usrPos.apply(*m) == current) {
+            match usrPos
+                .moves()
+                .iter()
+                .copied()
+                .find(|m| usrPos.apply(*m) == current)
+            {
                 Some(userMv) => match state.trtable.try_lock() {
                     Ok(hash) => match hash.get(&usrPos) {
                         Some(tr)
@@ -1166,7 +1205,10 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
                 // P::showMoves(&kvec[..]));
                 let dur = locking.elapsed().as_millis();
                 if dur > 1 {
-                    println!("# iterSimple{}: it took only {}ms to lock the hash.", state.sid, dur);
+                    println!(
+                        "# iterSimple{}: it took only {}ms to lock the hash.",
+                        state.sid, dur
+                    );
                 }
                 if pvs.len() == 0 {
                     hash.retain(|p, t| {
@@ -1200,7 +1242,8 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
 
             // nodes += pv1.nodes;
             // the final version with our move pushed onto the end
-            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }.push(m);
+            let pv = Variation { score: -pv1.score, depth: depth + 1, nodes: pv1.nodes + nodes + 1, ..pv1 }
+                .push(m);
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
@@ -1380,7 +1423,11 @@ pub fn simpleMax(
             } else if depth > 2 && best.depth > 0 && best.length > 0 && best.score != 0 {
                 hash.insert(
                     current,
-                    SimpleTransp { halfmove: hist.len() as u32, moves: ordered, pv: Variation { nodes: 1, ..best } },
+                    SimpleTransp {
+                        halfmove: hist.len() as u32,
+                        moves: ordered,
+                        pv: Variation { nodes: 1, ..best },
+                    },
                 );
             };
         }
@@ -1524,7 +1571,10 @@ pub fn iterBNS(state: StrategyState) {
             alpha += 10;
             beta += 10;
         } else {
-            println!("# iterBNS{} no sub trees made it, widening search window", state.sid);
+            println!(
+                "# iterBNS{} no sub trees made it, widening search window",
+                state.sid
+            );
             alpha -= 50;
             beta += 50;
         }
