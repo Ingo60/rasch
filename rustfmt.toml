@@ -9,4 +9,4 @@ struct_variant_width = 80
 single_line_if_else_max_width=80
 wrap_comments = true
 comment_width = 72
-max_width = 120
+max_width = 110

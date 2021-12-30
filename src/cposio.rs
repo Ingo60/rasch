@@ -118,7 +118,7 @@ pub type CPosIterator = Box<dyn Iterator<Item = CPos>>;
 pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize, String> {
     let file = File::create(path).map_err(|ioe| format!("Can't create file {} ({})", path, ioe))?;
     let mut bufw = BufWriter::with_capacity(BUFSZ + BUFSZ / 2, file);
-    eprintln!("writing to {} ...", path);
+    eprint!("    writing to {} ... ", path);
     let mut written = 0;
     while match iter.next() {
         None => false,
@@ -136,7 +136,7 @@ pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize
             ioe, path
         )
     })?;
-    eprintln!("... writing done, {} positions written to {}", written, path);
+    eprintln!("done, {} positions written to {}", formatted_sz(written), path);
     Ok(written)
 }
 
@@ -148,7 +148,7 @@ pub fn read_a_chunk(
     bufr: &mut BufReader<File>,
 ) -> Result<bool, String> {
     pos.clear();
-    eprintln!("reading from {} ...", from_path);
+    eprintln!("    reading from {} ...", from_path);
     while pos.len() < n_pos {
         match CPos::read_seq(bufr) {
             Ok(it) => {
@@ -156,8 +156,8 @@ pub fn read_a_chunk(
             }
             Err(some) if some.kind() == UnexpectedEof => {
                 eprintln!(
-                    "... reading finally done, got {} positions from {}.",
-                    pos.len(),
+                    "    ... reading finally done, got {} positions from {}.",
+                    formatted_sz(pos.len()),
                     from_path
                 );
                 return Ok(true);
@@ -171,6 +171,10 @@ pub fn read_a_chunk(
             }
         }
     }
-    eprintln!("... reading done, got {} positions from {}", pos.len(), from_path);
+    eprintln!(
+        "    ... reading done, got {} positions from {}",
+        formatted_sz(pos.len()),
+        from_path
+    );
     Ok(false)
 }
