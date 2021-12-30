@@ -1,10 +1,11 @@
 use std::io::ErrorKind::UnexpectedEof;
 use std::{
+    env,
     fs::File,
     io::{BufReader, BufWriter, Write},
 };
 
-use crate::cpos::CPos;
+use crate::cpos::{CPos, Signature};
 use crate::util::*;
 
 /// An iterator over elements of some type `T: Ord` that merges two of the same kind.
@@ -177,4 +178,14 @@ pub fn read_a_chunk(
         from_path
     );
     Ok(false)
+}
+
+/// Make a path name from a signature and an extension.
+pub fn mk_egtb_path(s: Signature, ext: &str) -> String {
+    format!(
+        "{}/{}.{}",
+        env::var("EGTB").unwrap_or(String::from("./egtb")),
+        s.display(),
+        ext
+    )
 }
