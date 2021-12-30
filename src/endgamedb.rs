@@ -104,6 +104,7 @@
 //! Reads a complete EGTB and checks for various conditions that would indicate corruption or incompleteness.
 //!
 
+use crate::cposio::CPosReader;
 use crate::sortegtb::sort_moves;
 
 use super::basic::{Move, Piece, Player};
@@ -120,9 +121,9 @@ use super::position::Position;
 use super::util::*;
 // use crate::position::Mirrorable;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
-use std::fs::{remove_file, File, OpenOptions};
+use std::fs::{metadata, remove_file, File, OpenOptions};
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::ErrorKind::*;
@@ -143,6 +144,14 @@ const POSITION_NULL: Position = Position {
     rookSet: BitSet::empty(),
 };
 
+/// state machine for making a signature
+pub fn make(sig: &str) -> Result<(), String> {
+    let _signature = decodeSignature(sig)
+        .and_then(|v| Ok(Signature::from_vec(&v)))
+        .map(|s| s.mk_canonic())?;
+
+    Ok(())
+}
 /// Decode an endgame signature.
 ///
 /// Convert a string like `KBB-KNP` into a list that contains the
@@ -211,150 +220,37 @@ pub fn play(fen: &str) -> Result<(), String> {
     Err(String::from("DRAW (50 moves)"))
 }
 
-#[derive(Copy, Debug, Clone, PartialEq, Eq)]
-struct Dtm {
-    state: CPosState,
-    pos: P::Position,
-}
-
-/// Expand a list of CAN_MATE positions. Replace each position by the ones reached
-/// that are MATE or CANNOT_AVOID_MATE
-fn expand_can_mate(positions: &Vec<Dtm>, dbhash: &mut EgtbMap) -> Vec<Dtm> {
-    let mut result = Vec::with_capacity(10 * positions.len());
-    for d in positions {
-        // eprintln!("# d.pos fen {}", encodeFEN(&d.pos));
-        let moves = d.pos.moves();
-        let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
-        let states = reached
-            .iter()
-            .map(|p| p.compressed().find(dbhash).map(|c| c.state(p.turn())))
-            .collect::<Vec<_>>();
-        for rx in 0..reached.len() {
-            match &states[rx] {
-                Ok(s @ MATE) | Ok(s @ CANNOT_AVOID_MATE) => result.push(Dtm { state: *s, pos: reached[rx] }),
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("{}", e)
-                }
-            }
-        }
-    }
-    result
-}
-
-/// Expand a list of CANNOT_AVOID_MATE positions. Make sure to collect only those that have not been
-/// visited yet, nor equivalent positions judged by the canonical compressed position
-fn expand_cannot_avoid_mate(positions: &Vec<Dtm>, visited: &mut HashSet<P::CPos>) -> Vec<Dtm> {
-    let mut result = Vec::with_capacity(10 * positions.len());
-    for d in positions {
-        let moves = d.pos.moves();
-        let reached: Vec<P::Position> = moves.iter().copied().map(|m| d.pos.apply(m)).collect();
-        for r in reached {
-            let cu = r.compressed();
-            let cc = cu.canonical(cu.signature());
-            if let Some(_) = visited.get(&cc) {
-                /* noooo */
-            } else {
-                visited.insert(cc);
-                result.push(Dtm { state: CAN_MATE, pos: r })
-            }
-        }
-    }
-    result
-}
-
-/// must absolutely have status CANNOT_AVOID_MATE
-fn dist_to_mate(limit: u32, start: P::Position, dbhash: &mut EgtbMap) -> Option<u32> /* or die! */ {
-    let mut visited: HashSet<CPos> = HashSet::with_capacity(1000);
-    let ssig = start.compressed().signature();
-    let ccpos = start.compressed().mk_canonical();
-    let mut vec0 = vec![Dtm {
-        state: CANNOT_AVOID_MATE,
-        pos: ccpos.uncompressed(if ssig.is_canonic() { start.turn() } else { start.turn().opponent() }),
-    }];
-    let mut u = 0u32;
-    eprintln!("# dist-to-mate: start={}", encodeFEN(&start));
-    eprintln!("# dist-to-mate:   vec={}", encodeFEN(&vec0[0].pos));
-    loop {
-        let vec1 = expand_cannot_avoid_mate(&vec0, &mut visited);
-        vec0 = expand_can_mate(&vec1, dbhash);
-        u += 1;
-        eprintln!(
-            "# dist-to-mate in {}: found {} new CAN-MATE positions.",
-            u,
-            vec0.len()
-        );
-        match vec0.iter().find(|x| x.state == MATE) {
-            Some(_) => break Some(u),
-            None => {}
-        }
-        if u >= limit {
-            break None;
-        }
-    }
-}
-
-/// we absolutely must have status CAN_MATE here!
-fn move_to_mate(start: &P::Position, dbhash: &mut EgtbMap) -> (P::Move, u32) {
-    let mut result = None;
-    for m in start.moves() {
-        let reached = start.apply(m);
-        match reached.compressed().find(dbhash).map(|c| c.state(reached.turn())) {
-            Ok(MATE) => return (m, 1),
-            Ok(CANNOT_AVOID_MATE) => match result {
-                None => {
-                    for u in 10.. {
-                        if let Some(n) = dist_to_mate(u, reached, dbhash) {
-                            result = Some((m, n + 1));
-                            eprintln!("# move-to-mate: initial move {} in {}", m.showSAN(*start), n + 1);
-                            break;
-                        };
-                    }
-                }
-                Some((_, r)) => match dist_to_mate(r, reached, dbhash) {
-                    Some(n) if n + 1 < r => {
-                        eprintln!("# move-to-mate: better move {} in {}", m.showSAN(*start), n + 1);
-                        result = Some((m, n + 1))
-                    }
-                    _ => {}
-                },
-            },
-            _ => {}
-        }
-    }
-    result.unwrap()
-}
-
+/// feed in an end game position and get back an appropriate move, provided the EGTB exists
 pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     let cpos = if pos.validEndgame() {
         Ok(pos.compressed())
     } else {
         Err(String::from("position is no valid end game."))
     }?;
-    let mut hash: EgtbMap = HashMap::new();
+    let mut ehash: EgtbMap = HashMap::new();
+    let mut mhash: EgtbMap = HashMap::new();
     let sig = cpos.signature();
-    eprintln!("# {} is canonic {}", sig, sig.is_canonic());
-    let rpos = cpos.find(&mut hash)?;
+    println!("# {} is canonic {}", sig, sig.is_canonic());
+    let rpos = cpos.find(&mut ehash)?;
     if rpos != cpos {
-        eprintln!(
-            "# {} looked for    0x{:016x}  {:?}/{:?}  fen: {}",
+        println!(
+            "# {} looked for    0x{:016x}  {:?}  fen: {}",
             sig,
             cpos.bits,
-            cpos.state(BLACK),
-            cpos.state(WHITE),
+            cpos,
             encodeFEN(&cpos.uncompressed(pos.turn()))
         );
     }
-    eprintln!(
-        "# {} found canonic 0x{:016x}  {:?}/{:?}  fen: {}",
+    println!(
+        "# {} found canonic 0x{:016x}  {:?}  fen: {}",
         rpos.signature(),
         rpos.bits,
-        rpos.state(BLACK),
-        rpos.state(WHITE),
+        rpos,
         encodeFEN(&rpos.uncompressed(pos.turn()))
     );
 
-    let s = rpos.state(pos.turn());
+    let canonic_player = if rpos.canonic_has_bw_switched() { pos.turn().opponent() } else { pos.turn() };
+    let s = rpos.state(canonic_player);
     let other = pos.turn().opponent();
 
     match s {
@@ -367,23 +263,30 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             eprintln!("# {:?} to play finds stale mate", pos.turn());
             Err(String::from("STALEMATE"))
         }
-        CAN_MATE => match move_to_mate(pos, &mut hash) {
-            (mv, u) => {
-                eprintln!(
-                    "# {:?} to play will enforce mate in {:?} with {}",
-                    pos.turn(),
-                    u,
-                    mv.showSAN(*pos)
-                );
-                Ok(mv)
-            }
-        },
+        CAN_MATE => {
+            let mpos = rpos.find_canonic_move(rpos.signature(), canonic_player, &mut mhash)?;
+            println!(
+                "# {} found move    0x{:016x}  {}  fen: {}",
+                mpos.signature(),
+                mpos.bits,
+                mpos.mpos_debug(),
+                encodeFEN(&mpos.uncompressed(canonic_player))
+            );
+            let mv = rpos.mv_from_mpos(mpos);
+            println!(
+                "# {:?} to move will enforce mate with {}",
+                mv.player(),
+                mv.showSAN(*pos)
+            );
+            Ok(mv)
+        }
         CAN_DRAW => {
             match pos.moves().iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&mut hash) // Ok(rp) oder Err()
+                    .find(&mut ehash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
+                    .map(|r| if r.canonic_has_bw_switched() { r.flipped_flags() } else { r })
                     .map(|r| match r.state(other) {
                         STALEMATE | CANNOT_AVOID_DRAW => true,
                         _other => false,
@@ -391,7 +294,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                     .unwrap_or(false)
             }) {
                 Some(mv) => {
-                    eprintln!(
+                    println!(
                         "# {:?} to move will enforce {} with {}",
                         pos.turn(),
                         if s == CAN_MATE { "mate" } else { "draw" },
@@ -407,8 +310,9 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             let mv = match moves.iter().copied().find(|&mv| {
                 pos.apply(mv) // erreichte Position
                     .compressed() // komprimiert
-                    .find(&mut hash) // Ok(rp) oder Err()
+                    .find(&mut ehash) // Ok(rp) oder Err()
                     .ok() // Some(rp) oder None
+                    .map(|r| if r.canonic_has_bw_switched() { r.flipped_flags() } else { r })
                     .map(|r| match r.state(other) {
                         CAN_MATE => false,
                         STALEMATE => false,
@@ -419,7 +323,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 None => moves[0],
                 Some(mv) => mv,
             };
-            eprintln!(
+            println!(
                 "# {:?} to move cannot avoid {} so {} {}",
                 pos.turn(),
                 if s == CANNOT_AVOID_MATE { "mate" } else { "draw" },
@@ -431,9 +335,109 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     }
 }
 
-/// Provide statistics for an endgame tablebase
+/// ### Check sanity of move positions for a Signature
+/// - the moves file must exist
+/// - the moves file must be sorted
+/// - it must not contain duplicates
+/// - for each move position, there must be an entry in the associated EGTB file and the status for the player must be CAN_MATE
+/// - for each move position, the entry from the EGTB file must uncompress to a valid `Position`
+/// - for each move position, the reconstructed `Move` must occur in the moves list of that `Position`
+pub fn check_moves(arg: &str) -> Result<(), String> {
+    let signature = decodeSignature(arg)
+        .and_then(|v| Ok(Signature::from_vec(&v)))
+        .map(|s| s.mk_canonic())?;
+    let path = format!(
+        "{}/{}.moves",
+        env::var("EGTB").unwrap_or(String::from("./egtb")),
+        signature.display()
+    );
+    let mut hash: EgtbMap = HashMap::new();
+    let mut last = CPos { bits: 0 };
+    let mut sorted = true;
+    let mut dupl = false;
+    let mut unrelated = false;
+    let mut invalid = false;
+    let mut badmoves = false;
+    let rdr = CPosReader::new(&path)?;
+    let n_pos = match metadata(Path::new(&path)) {
+        Ok(md) => Ok(md.len() / 8),
+        Err(ioe) => Err(format!("can't stat {} ({})", path, ioe)),
+    }?;
+    let mut curr_pos = 0u64;
+    eprint!(
+        "{} checking {} move positions from {} ...   0% ",
+        signature.display(),
+        formatted64(n_pos),
+        path
+    );
+    for mpos in rdr {
+        curr_pos += 1;
+        if curr_pos % 1_000_000 == 0 && n_pos > 0 {
+            eprint!("\x08\x08\x08\x08\x08\x08{:>4}% ", curr_pos * 100 / n_pos);
+        }
+        sorted = sorted && last <= mpos;
+        dupl = dupl || last == mpos;
+        last = mpos;
+        let cpos = CPos { bits: mpos.bits & CPos::COMP_BITS & !CPos::WHITE_BIT }
+            .find_canonic(signature, &mut hash)?;
+        let player = if (mpos.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK };
+        unrelated = unrelated || cpos.state(player) != CAN_MATE;
+        let pos = cpos.uncompressed(player);
+        invalid = invalid || !pos.valid();
+        if pos.valid() {
+            let mvs = pos.moves();
+            let xmv = cpos.mv_from_mpos(mpos);
+            badmoves = badmoves
+                || match mvs.iter().copied().find(|x| *x == xmv) {
+                    Some(_mv) => false,
+                    None => true,
+                };
+        }
+    }
+    eprintln!("\x08\x08\x08\x08\x08\x08 done.");
+    if !sorted {
+        eprintln!("{} moves file {} is not sorted.", signature.display(), path);
+    }
+    if dupl {
+        eprintln!(
+            "{} moves file {} contains duplicate entries.",
+            signature.display(),
+            path
+        );
+    }
+    if unrelated {
+        eprintln!(
+            "{} moves file {} has unrelated entries.",
+            signature.display(),
+            path
+        );
+    }
+    if invalid {
+        eprintln!(
+            "{} moves file {} has entries that yield invalid positions.",
+            signature.display(),
+            path
+        );
+    }
+    if badmoves {
+        eprintln!(
+            "{} moves file {} has invalid/unknown moves.",
+            signature.display(),
+            path
+        );
+    }
+
+    if sorted && !dupl && !unrelated && !invalid && !badmoves {
+        Ok(())
+    } else {
+        Err(format!("moves file {} is corrupt", path))
+    }
+}
+
+/// Provide statistics for an endgame tablebase and perform basic checks.
 pub fn stats(sig: String) -> Result<(), String> {
-    let dbfile = format!("{}/{}", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let dbfile = format!("{}/{}", env::var("EGTB").unwrap_or(String::from("./egtb")), sig);
+
     let egtbfile = format!(
         "{}/{}.egtb",
         env::var("EGTB").unwrap_or(String::from("egtb")),
@@ -451,6 +455,15 @@ pub fn stats(sig: String) -> Result<(), String> {
         Ok(f) => f,
     };
     let mut rdr = BufReader::with_capacity(8 * 1024 * 1024, file);
+    let mv_path = path.replace(".egtb", ".moves");
+    let nmoves = if mv_path == path {
+        Err(String::from("can't derive moves file"))
+    } else {
+        match metadata(Path::new(&mv_path)) {
+            Ok(md) => Ok(md.len() / 8),
+            Err(ioe) => Err(format!("can't stat {} ({})", mv_path, ioe)),
+        }
+    }?;
 
     let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -465,6 +478,7 @@ pub fn stats(sig: String) -> Result<(), String> {
     let mut total = 0usize;
     let mut sorted = true;
     let mut duplic = false;
+    let mut moves_wrong = false;
     loop {
         match CPos::read_seq(&mut rdr) {
             Err(x) if x.kind() == UnexpectedEof => break,
@@ -504,6 +518,14 @@ pub fn stats(sig: String) -> Result<(), String> {
         }
     }
     eprintln!("{:>12} positions total", formatted_sz(total));
+    if wkinds[CAN_MATE as usize] + bkinds[CAN_MATE as usize] != nmoves as usize {
+        eprintln!(
+            "Warning: we have {} CAN_MATE positions but {} moves.",
+            formatted_sz(wkinds[CAN_MATE as usize] + bkinds[CAN_MATE as usize]),
+            formatted64(nmoves)
+        );
+        moves_wrong = true;
+    }
     if wkinds[UNKNOWN as usize] + bkinds[UNKNOWN as usize] > 0 {
         eprintln!("Warning: the table contains positions with UNKNOWN state.");
     }
@@ -513,7 +535,7 @@ pub fn stats(sig: String) -> Result<(), String> {
     if duplic {
         eprintln!("Warning: the table contains duplicates.");
     }
-    if wkinds[UNKNOWN as usize] > 0 || bkinds[UNKNOWN as usize] > 0 || !sorted || duplic {
+    if wkinds[UNKNOWN as usize] > 0 || bkinds[UNKNOWN as usize] > 0 || !sorted || duplic || moves_wrong {
         eprintln!("Warning: This is an invalid or yet incomplete end game table.");
     }
 
@@ -806,10 +828,10 @@ pub fn gen(sig: String) -> Result<(), String> {
                                 if !alien {
                                     // look in positions only
                                     match positions.binary_search(&canon) {
-                                        Ok(u) => if canon.canonic_has_bw_switched() { 
-                                                Ok(positions[u].flipped_flags()) 
-                                            } else { 
-                                                Ok(positions[u]) 
+                                        Ok(u) => if canon.canonic_has_bw_switched() {
+                                                Ok(positions[u].flipped_flags())
+                                            } else {
+                                                Ok(positions[u])
                                             },
                                         Err(_) => Err(format!(
                                             "cannot happen alien={},\n    child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}",
@@ -861,7 +883,7 @@ pub fn gen(sig: String) -> Result<(), String> {
                                 MATE | CANNOT_AVOID_MATE => {
                                     if mateonly {
                                         let mv = reached[u].0;
-                                        let mpos = c.mk_to_move(mv);
+                                        let mpos = c.mpos_from_mv(mv);
                                         analyzed[CAN_MATE as usize] += 1;
                                         c = c.with_state_for(player, CAN_MATE);
 
