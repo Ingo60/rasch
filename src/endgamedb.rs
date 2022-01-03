@@ -1296,11 +1296,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
 /// - for each move position, the reconstructed `Move` must occur in the moves list of that `Position`
 pub fn check_moves(arg: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(arg)?;
-    let path = format!(
-        "{}/{}.moves",
-        env::var("EGTB").unwrap_or(String::from("./egtb")),
-        signature.display()
-    );
+    let path = mk_egtb_path(signature, "moves");
     let mut hash: EgtbMap = HashMap::new();
     let mut last = CPos { bits: 0 };
     let mut sorted = true;
@@ -1492,7 +1488,7 @@ pub fn alloc_working_memory(vec: &Vec<CPos>, hash: &mut Cache) -> Result<usize, 
     let hsize = compute_cache_entries(vec.len()).min(2 * vec.len());
     hash.try_reserve(hsize).map_err(|ioe| {
         format!(
-            "cannot reserve space for {} hasmap entries ({}).",
+            "cannot reserve space for {} hash entries ({}).",
             formatted_sz(hsize),
             ioe
         )
@@ -1514,6 +1510,7 @@ pub fn alloc_working_memory(vec: &Vec<CPos>, hash: &mut Cache) -> Result<usize, 
 /// An EGTB basically counts as small if we can allocate a vector of the required size.
 /// However, for smooth processing we also want to have a hash.
 ///
+#[deprecated]
 pub fn gen(sig: String) -> Result<(), String> {
     let ppsu = decode_str_sig(&sig)?;
     let ppssig = Signature::from_vec(&ppsu);
