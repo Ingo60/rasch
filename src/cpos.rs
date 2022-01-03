@@ -16,7 +16,7 @@ use std::{
     io::{BufReader, ErrorKind::UnexpectedEof, Read, Seek, SeekFrom, Write},
 };
 
-use crate::basic::{Move, Piece, Player};
+use crate::basic::{decode_str_sig, Move, Piece, Player, PlayerPiece};
 use crate::fieldset::{BitSet, Field};
 use crate::position::{bit, Position, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, WHITE_TO_MOVE};
 use Field::*;
@@ -264,6 +264,49 @@ impl Signature {
             }
         }
         Signature { white, black }
+    }
+    /// Make a vector of `PlayerPosition`s (`KING`s not included)
+    pub fn to_vec(&self) -> Vec<PlayerPiece> {
+        let mut result: Vec<PlayerPiece> = Vec::new();
+        //result.push('K');
+        for _ in 0..self.white_queens() {
+            result.push((WHITE, QUEEN));
+        }
+        for _ in 0..self.white_rooks() {
+            result.push((WHITE, ROOK));
+        }
+        for _ in 0..self.white_bishops() {
+            result.push((WHITE, BISHOP));
+        }
+        for _ in 0..self.white_knights() {
+            result.push((WHITE, KNIGHT));
+        }
+        for _ in 0..self.white_pawns() {
+            result.push((WHITE, PAWN));
+        }
+        for _ in 0..self.black_queens() {
+            result.push((BLACK, QUEEN));
+        }
+        for _ in 0..self.black_rooks() {
+            result.push((BLACK, ROOK));
+        }
+        for _ in 0..self.black_bishops() {
+            result.push((BLACK, BISHOP));
+        }
+        for _ in 0..self.black_knights() {
+            result.push((BLACK, KNIGHT));
+        }
+        for _ in 0..self.black_pawns() {
+            result.push((BLACK, PAWN));
+        }
+        result
+    }
+
+    /// decode a signature from a string, return the canonic one, if any
+    pub fn new_from_str_canonic(desc: &str) -> Result<Signature, String> {
+        decode_str_sig(desc)
+            .and_then(|v| Ok(Signature::from_vec(&v)))
+            .map(|s| s.mk_canonic())
     }
     /// If the `Signature` of a `CPos` is **not** canonic, then the corresponding CPos will have the
     /// colours of the pieces changed and a possible search result needs the flags switched.

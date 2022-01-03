@@ -1,8 +1,9 @@
 use std::io::ErrorKind::UnexpectedEof;
 use std::{
     env,
-    fs::File,
+    fs::{metadata, File, OpenOptions},
     io::{BufReader, BufWriter, Write},
+    path::Path,
 };
 
 use crate::cpos::{CPos, Signature};
@@ -141,7 +142,9 @@ pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize
     Ok(written)
 }
 
-/// read a number of CPos from a buffered reader
+/// Read a number of CPos from a buffered reader.
+///
+/// Return **true** if end-of-file was reached.
 pub fn read_a_chunk(
     pos: &mut Vec<CPos>,
     from_path: &str,
@@ -188,4 +191,38 @@ pub fn mk_egtb_path(s: Signature, ext: &str) -> String {
         s.display(),
         ext
     )
+}
+
+/// Get the number of positions in a CPos file
+pub fn cpos_file_size(path: &str) -> Result<usize, String> {
+    let m = metadata(Path::new(path)).map_err(|e| format!("can't stat {} ({})", path, e))?;
+    let u = m.len() / 8;
+    if m.len() & 7 != 0 {
+        Err(format!(
+            "length of {} not divisible by size of a CPos ({})",
+            path, SIZE_CPOS
+        ))
+    } else {
+        Ok(u as usize)
+    }
+}
+
+pub fn cpos_create_writer(path: &str) -> Result<BufWriter<File>, String> {
+    File::create(path)
+        .and_then(|f| Ok(BufWriter::with_capacity(BUFSZ, f)))
+        .map_err(|e| format!("Can't create {} ({})", path, e))
+}
+
+pub fn cpos_append_writer(path: &str) -> Result<BufWriter<File>, String> {
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|f| Ok(BufWriter::with_capacity(BUFSZ, f)))
+        .map_err(|e| format!("Can't create {} ({})", path, e))
+}
+
+pub fn cpos_open_reader(path: &str) -> Result<BufReader<File>, String> {
+    File::open(path)
+        .and_then(|f| Ok(BufReader::with_capacity(BUFSZ, f)))
+        .map_err(|e| format!("Can't create {} ({})", path, e))
 }

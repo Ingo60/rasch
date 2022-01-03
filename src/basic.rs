@@ -8,6 +8,8 @@ use std::fmt::{Display, Formatter};
 pub use Piece::*;
 pub use Player::*;
 
+pub type PlayerPiece = (Player, Piece);
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub enum Player {
     BLACK,
@@ -261,7 +263,11 @@ impl Move {
     /// from field and to field
     pub const fn new(pl: Player, pc: Piece, pr: Piece, from: Field, to: Field) -> Move {
         Move {
-            mv: ((pl as u32) << 18) | ((pc as u32) << 15) | ((pr as u32) << 12) | ((to as u32) << 6) | (from as u32),
+            mv: ((pl as u32) << 18)
+                | ((pc as u32) << 15)
+                | ((pr as u32) << 12)
+                | ((to as u32) << 6)
+                | (from as u32),
         }
     }
 
@@ -302,7 +308,11 @@ impl Move {
             }
         }
         let vs: Vec<_> = list.iter().map(|x| x.algebraic()).collect();
-        Err(format!("Move {} does not appear in [{}]", src, &vs[..].join(", ")))
+        Err(format!(
+            "Move {} does not appear in [{}]",
+            src,
+            &vs[..].join(", ")
+        ))
     }
 
     /// Show a move in standard algebraic notation (SAN)
@@ -373,4 +383,55 @@ pub fn showMovesSAN(moves: &[Move], start: Position) -> String {
         pos = pos.apply(*m);
     }
     sans.join(" ")
+}
+
+/// Decode an endgame signature.
+///
+/// Convert a string like `KBB-KNP` into a list that contains the
+/// pieces taking part in an endgame except for the 2 `Piece::KING`s
+/// which are redundant. The result in this case should be a vector with
+/// 2 white bishops, a black knight and a black pawn.
+///
+/// The convention is to list the pieces ordered by descending value.
+/// The `'K'`s are optional and the white pieces must be separated from
+/// the black ones by a dash. If there is more than one dash ore any
+/// other character than `'K`, `'Q'`, `'R'`, `'B'`, `'N'` or `'P'` the
+/// siganture is invalid and an empty vector is returned.
+///
+/// ```
+/// use rasch::basic as E;
+/// use rasch::basic::Player::*;
+/// use rasch::basic::Piece::*;
+///
+/// assert_eq!(E::decode_str_sig("KRP-KQ"), Ok(vec![(WHITE,ROOK),(WHITE,PAWN),(BLACK,QUEEN)]));
+/// assert!(E::decode_str_sig("blödsinn").is_err());
+/// ```
+pub fn decode_str_sig(desc: &str) -> Result<Vec<PlayerPiece>, String> {
+    let mut result = Vec::new();
+    let mut wer = WHITE;
+    for c in desc.chars() {
+        match c.to_ascii_uppercase() {
+            'K' => {}
+            'Q' => {
+                result.push((wer, QUEEN));
+            }
+            'R' => {
+                result.push((wer, ROOK));
+            }
+            'B' => {
+                result.push((wer, BISHOP));
+            }
+            'N' => {
+                result.push((wer, KNIGHT));
+            }
+            'P' => {
+                result.push((wer, PAWN));
+            }
+            '-' if wer == WHITE => {
+                wer = BLACK;
+            }
+            _ => return Err(format!("invalid signature '{}': at char '{}'\n", desc, c)),
+        }
+    }
+    Ok(result)
 }

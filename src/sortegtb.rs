@@ -4,7 +4,7 @@
 // use super::fen::{decodeFEN, encodeFEN};
 // use super::fieldset::*;
 // use super::position as P;
-use super::position::CPos;
+use crate::cpos::{CPos, Signature};
 use crate::cposio::*;
 use crate::util::*;
 // use super::position::CPosState;
@@ -35,8 +35,16 @@ use crossbeam::thread::scope;
 ///
 /// Can be run independently with `rasch sort sig'
 pub fn sort(sig: &str) -> Result<(), String> {
-    let s_path = format!("{}/{}.sorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let u_path = format!("{}/{}.unsorted", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let s_path = format!(
+        "{}/{}.sorted",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
+    let u_path = format!(
+        "{}/{}.unsorted",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
     let c_path = format!(
         "{}/{}.chunk",
         env::var("EGTBTEMP")
@@ -61,8 +69,30 @@ pub fn sort(sig: &str) -> Result<(), String> {
     // Ok(())
 }
 
+pub fn sort_from_to(signature: Signature, u_path: &str, s_path: &str) -> Result<(), String> {
+    let c_path = format!(
+        "{}/{}.chunk",
+        env::var("EGTBTEMP")
+            .or(env::var("EGTB"))
+            .unwrap_or(String::from("./egtb")),
+        signature
+    );
+    if Path::new(s_path).is_file() {
+        return Err(format!("destination file {} already exists.", s_path));
+    }
+    // do the work
+    split_parallel(u_path, &c_path, s_path).and_then(|_| {
+        remove_file(Path::new(u_path))
+            .map_err(|ioerror| format!("couldn't remove unsorted file {} ({})", u_path, ioerror))
+    })
+}
+
 pub fn sort_moves(sig: &str) -> Result<(), String> {
-    let s_path = format!("{}/{}.moves", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
+    let s_path = format!(
+        "{}/{}.moves",
+        env::var("EGTB").unwrap_or(String::from("egtb")),
+        sig
+    );
     let u_path = format!("{}/{}.um", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
     let c_path = format!(
         "{}/{}.chunk",
@@ -73,7 +103,7 @@ pub fn sort_moves(sig: &str) -> Result<(), String> {
     );
     let path = Path::new(&s_path);
     if path.is_file() {
-        return Err(format!("Destination file {} already exists.", &path.display()));
+        return Err(format!("destination file {} already exists.", &path.display()));
     }
     // do the work
     split_parallel(&u_path, &c_path, &s_path).and_then(|_| {
@@ -85,7 +115,8 @@ pub fn sort_moves(sig: &str) -> Result<(), String> {
 /// Split an unsorted file into sorted chunks.
 /// Returns a vector of path names of the generated chunks.
 pub fn split(unsorted: &str, c_path: &str) -> Result<Vec<String>, String> {
-    let file = File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
+    let file =
+        File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
     let mut bufr = BufReader::with_capacity(BUFSZ, file);
     let mut positions: Vec<CPos> = Vec::with_capacity(0);
     let mut n_pos = CHUNK;
@@ -149,7 +180,8 @@ pub fn split(unsorted: &str, c_path: &str) -> Result<Vec<String>, String> {
             positions.sort_unstable();
             println!("done.");
             let name = format!("{}{}", c_path, chunks.len());
-            let chunk = File::create(&name).map_err(|ioe| format!("Can't create chunk file {} ({})", name, ioe))?;
+            let chunk =
+                File::create(&name).map_err(|ioe| format!("Can't create chunk file {} ({})", name, ioe))?;
             let mut bufw = BufWriter::with_capacity(BUFSZ, chunk);
             print!("writing sorted {}   0% ", &name);
             io::stdout().flush().unwrap_or_default();
@@ -162,7 +194,8 @@ pub fn split(unsorted: &str, c_path: &str) -> Result<Vec<String>, String> {
                 cpos.write_seq(&mut bufw)
                     .map_err(|ioe| format!("error writing {}th position to {} ({})", i + 1, name, ioe))?;
             }
-            bufw.flush().map_err(|x| format!("couldn't flush buffer ({})", x))?;
+            bufw.flush()
+                .map_err(|x| format!("couldn't flush buffer ({})", x))?;
             chunks.push(name);
             println!("done.");
         }
@@ -189,7 +222,8 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
             break Err(String::from("Can't merge 0 chunks, stupid!"));
         } else if chunks.len() == 1 {
             let name = chunks.remove(0);
-            break rename(&name, s_path).map_err(|ioe| format!("Can't rename {} → {} ({})", name, s_path, ioe));
+            break rename(&name, s_path)
+                .map_err(|ioe| format!("Can't rename {} → {} ({})", name, s_path, ioe));
         } else {
             let name1 = chunks.remove(0);
             let name2 = chunks.remove(0);
@@ -197,11 +231,14 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
             suffix += 1;
             print!("merging {} and {} into {} ... - ", name1, name2, name3);
             io::stdout().flush().unwrap_or_default();
-            let file1 = File::open(&name1).map_err(|ioe| format!("Can't read chunk file {} ({})", name1, ioe))?;
+            let file1 =
+                File::open(&name1).map_err(|ioe| format!("Can't read chunk file {} ({})", name1, ioe))?;
             let mut bufr1 = BufReader::with_capacity(BUFSZ, file1);
-            let file2 = File::open(&name2).map_err(|ioe| format!("Can't read chunk file {} ({})", name2, ioe))?;
+            let file2 =
+                File::open(&name2).map_err(|ioe| format!("Can't read chunk file {} ({})", name2, ioe))?;
             let mut bufr2 = BufReader::with_capacity(BUFSZ, file2);
-            let chunk = File::create(&name3).map_err(|ioe| format!("Can't create chunk file {} ({})", name3, ioe))?;
+            let chunk =
+                File::create(&name3).map_err(|ioe| format!("Can't create chunk file {} ({})", name3, ioe))?;
             let mut bufw = BufWriter::with_capacity(2 * BUFSZ, chunk);
             let mut p1 = CPos::read_seq_with_eof(&mut bufr1)
                 .map_err(|ioe| format!("unexpected read error on {} ({})", name1, ioe))?;
@@ -224,13 +261,15 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
                     Some(c1) => match p2 {
                         Some(c2) => {
                             if c1 <= c2 {
-                                c1.write_seq(&mut bufw)
-                                    .map_err(|ioe| format!("unexpected write error on {} ({})", name3, ioe))?;
+                                c1.write_seq(&mut bufw).map_err(|ioe| {
+                                    format!("unexpected write error on {} ({})", name3, ioe)
+                                })?;
                                 p1 = CPos::read_seq_with_eof(&mut bufr1)
                                     .map_err(|ioe| format!("unexpected read error on {} ({})", name1, ioe))?;
                             } else {
-                                c2.write_seq(&mut bufw)
-                                    .map_err(|ioe| format!("unexpected write error on {} ({})", name3, ioe))?;
+                                c2.write_seq(&mut bufw).map_err(|ioe| {
+                                    format!("unexpected write error on {} ({})", name3, ioe)
+                                })?;
                                 p2 = CPos::read_seq_with_eof(&mut bufr2)
                                     .map_err(|ioe| format!("unexpected read error on {} ({})", name2, ioe))?;
                             }
@@ -281,9 +320,9 @@ fn split_step(
         /* sort */
         let sort_thread = {
             splitting.spawn(|_| {
-                eprintln!("sorting ... ");
+                eprintln!("    sorting chunk ... ");
                 posa.sort_unstable();
-                eprintln!("... sorting done.");
+                eprintln!("    ... sorting done.");
                 to_disk(c_name, &mut posa.iter().copied())
             })
         };
@@ -299,7 +338,8 @@ fn split_step(
 /// Split an unsorted file into sorted chunks.
 /// Returns a vector of `CPosIterator`s.
 pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), String> {
-    let file = File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
+    let file =
+        File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
     let mut bufr = BufReader::with_capacity(BUFSZ, file);
     let mut pos1: Vec<CPos> = Vec::with_capacity(0);
     let mut pos2: Vec<CPos> = Vec::with_capacity(0);

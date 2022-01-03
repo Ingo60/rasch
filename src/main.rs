@@ -67,8 +67,16 @@ fn main() {
         let mut info = sysinfo::System::new_all();
         info.refresh_memory();
         println!("We have {}M memory.", info.total_memory() / 1024);
-    } else if argv[1].starts_with("gen") && argv.len() >= 3 {
+    } else if argv[1].starts_with("gen-deprecated") && argv.len() >= 3 {
         match E::gen(String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1].starts_with("make") && argv.len() >= 3 {
+        match E::make(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
@@ -141,7 +149,7 @@ fn main() {
             \n    {0} [negamin|negamax|pvs|bns|mtdf]     # default is `negamin`
             \nDeveloper tools:\
             \n    {0} flamegraph [N]    # used to get data for cargo flamegraph\
-            \n    {0} gen sig           # genereate end game table\
+            \n    {0} make sig          # genereate end game table\
             \n    {0} stats sig         # print statistics for end game table\
             \n    {0} play 'fen'        # simulate end game from position given in FEN notation\
             \n    {0} move 'fen'        # like \"play\", but only one move\
