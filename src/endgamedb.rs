@@ -197,7 +197,11 @@ pub fn make(sig: &str) -> Result<(), String> {
 
     // initial state depends on the files in the EGTB directory
     let mut state = if Path::new(&egtb_path).is_file() {
-        EgtbPresent
+        if Path::new(&moves_path).is_file() {
+            Done
+        } else {
+            EgtbPresent
+        }
     } else if Path::new(&sorted_path).is_file() {
         SortedPresent
     } else if Path::new(&unsorted_path).is_file() {
@@ -216,7 +220,7 @@ pub fn make(sig: &str) -> Result<(), String> {
 
     while state != Done {
         pass += 1;
-        eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
+        // eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
         match state {
             EgtbPresent => {
                 positions.clear();
@@ -259,7 +263,7 @@ pub fn make(sig: &str) -> Result<(), String> {
             }
             AnalyzeMemory(mateonly) => {
                 eprint!(
-                    "{}  Pass {:2} - analyzing {} positions   0% ",
+                    "{}  Pass {:2} - analyzing {} positions    0‰ ",
                     signature,
                     pass,
                     if mateonly { "mate" } else { "draw" }
@@ -458,13 +462,12 @@ pub fn make(sig: &str) -> Result<(), String> {
                 let pass_items = cpos_file_size(&pass_path)?;
                 let sorted_items = cpos_file_size(read_path)?;
                 eprintln!(
-                    "{}  Pass {:2} - analyzing {} positions ({}/{}/{})    0‰ ",
+                    "{}  Pass {:2} - analyzing {} positions, buffer {} of {}    0‰ ",
                     signature,
                     pass,
                     if mateonly { "mate" } else { "draw" },
-                    formatted_sz(pass_items),
-                    formatted_sz(m_items),
-                    formatted_sz(sorted_items - (m_items + pass_items))
+                    formatted_sz(pass_items / m_items + 1),
+                    formatted_sz((sorted_items + (m_items - 1)) / m_items)
                 );
 
                 let mut pfile =
@@ -601,6 +604,12 @@ fn analyze_on_disk(
     let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut cache_hits = 0usize;
     let mut cache_lookups = 0usize;
+    let mut lookup_low = 0usize;
+    let mut lookup_mem = 0usize;
+    let mut lookup_high = 0usize;
+    let mut lookup_alien = 0usize;
+    let c_min = if m_items > 0 { positions[0] } else { CPos { bits: 0 } };
+    let c_max = if m_items > 0 { positions[m_items - 1] } else { CPos { bits: !0 } };
 
     for i in 0..m_items {
         if (i % 1024) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
@@ -652,7 +661,8 @@ fn analyze_on_disk(
                             if child.state(other) == UNKNOWN {
                                 if !alien {
                                     // look in pass file, positions or sorted file
-                                    if canon < positions[0] {
+                                    if canon < c_min {
+                                        lookup_low += 1;
                                         binary_file_search(canon, pfile, 0, pass_items)
                                             .map(|p| {
                                                 if canon.canonic_has_bw_switched() {
@@ -668,22 +678,8 @@ fn analyze_on_disk(
                                                     alien, child, child.bits, canon, canon.bits
                                                 )
                                             })
-                                    } else if canon <= positions[m_items - 1] {
-                                        match positions.binary_search(&canon) {
-                                            Ok(u) => {
-                                                if canon.canonic_has_bw_switched() {
-                                                    Ok(positions[u].flipped_flags())
-                                                } else {
-                                                    Ok(positions[u])
-                                                }
-                                            }
-                                            Err(_) => Err(format!(
-                                                "cannot happen alien={},\n    \
-                                                child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}",
-                                                alien, child, child.bits, canon, canon.bits
-                                            )),
-                                        }
-                                    } else {
+                                    } else if canon > c_max {
+                                        lookup_high += 1;
                                         binary_file_search(canon, sfile, pass_items + m_items, sorted_items)
                                             .map(|p| {
                                                 if canon.canonic_has_bw_switched() {
@@ -699,8 +695,28 @@ fn analyze_on_disk(
                                                     alien, child, child.bits, canon, canon.bits
                                                 )
                                             })
+                                    } else
+                                    /* canon >= c_min && canon <= c_max */
+                                    {
+                                        lookup_mem += 1;
+                                        // binary search in memory
+                                        match positions.binary_search(&canon) {
+                                            Ok(u) => {
+                                                if canon.canonic_has_bw_switched() {
+                                                    Ok(positions[u].flipped_flags())
+                                                } else {
+                                                    Ok(positions[u])
+                                                }
+                                            }
+                                            Err(_) => Err(format!(
+                                                "cannot happen alien={},\n    \
+                                                child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}",
+                                                alien, child, child.bits, canon, canon.bits
+                                            )),
+                                        }
                                     }
                                 } else {
+                                    lookup_alien += 1;
                                     // must be alien
                                     canon
                                         .find_canonic(csig, egtb_map)
@@ -790,11 +806,22 @@ fn analyze_on_disk(
             } // unknown state
         }
     }
+    eprintln!("done.");
     eprintln!(
-        "done. Cache hit rate {}%, new hash size {}",
+        "    Cache hit rate {}%, new hash size {}",
         if cache_lookups > 0 { cache_hits * 100 / cache_lookups } else { 100 },
         formatted_sz(cache.len())
     );
+    let lookup_total = lookup_low + lookup_high + lookup_mem + lookup_alien;
+    if lookup_total > 0 {
+        eprintln!(
+            "    Lookups low {}%  mem {}%  high {}%  alien {}%",
+            lookup_low * 100 / lookup_total,
+            lookup_mem * 100 / lookup_total,
+            lookup_high * 100 / lookup_total,
+            lookup_alien * 100 / lookup_total
+        );
+    }
 
     // are we done with this buffer?
     if analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
@@ -845,8 +872,9 @@ fn binary_file_search(this: CPos, file: &mut File, low: usize, high: usize) -> R
 }
 
 /// One pass of in-memory analysis.
+/// This is just a special case of `analyze_on_disk` with a single buffer.
 ///
-/// Result can be `WriteEgtb`, `Interrupted(n)`, `AnalyzeMemory(true/false)`
+/// Result can be `WriteEgtb`, `InterruptedMemory`, `AnalyzeMemory(true/false)`
 fn analyze_in_memory(
     signature: Signature,
     mateonly: bool,
@@ -856,198 +884,31 @@ fn analyze_in_memory(
     egtb_map: &mut EgtbMap,
     um_writer: &mut BufWriter<File>,
 ) -> Result<MakeState, String> {
-    // let sigint_received = Arc::new(atomic::AtomicBool::new(false));
-
-    let mut analyzed = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let npositions = positions.len();
-    let mut cache_hits = 0usize;
-    let mut cache_lookups = 0usize;
-
-    for i in 0..npositions {
-        if (i % 100) == 0 && sigint_received.load(atomic::Ordering::SeqCst) {
-            eprintln!(" canceled.");
-            return Ok(InterruptedMemory);
+    let mut pfile = File::open("/dev/null").map_err(|e| format!("cannot read /dev/null ({})", e))?;
+    let mut sfile = File::open("/dev/null").map_err(|e| format!("cannot read /dev/null ({})", e))?;
+    analyze_on_disk(
+        signature,
+        mateonly,
+        0,
+        positions.len(),
+        0,
+        positions,
+        cache,
+        cache_max,
+        egtb_map,
+        um_writer,
+        &mut pfile,
+        &mut sfile,
+    )
+    .map(|s| match s {
+        BufferDone(true) => AnalyzeMemory(false),
+        BufferDone(false) => WriteEgtb,
+        AnalyzeBuffer(m) => AnalyzeMemory(m),
+        InterruptedBuffer(_) => InterruptedMemory,
+        _other => {
+            panic!("analyze in memory: cannot map state {:?}", s);
         }
-        if i % 500_000 == 0 || i + 1 == npositions {
-            eprint!("\x08\x08\x08\x08\x08{:3}% ", (i + 1) * 100 / positions.len());
-        }
-
-        // do the following for BLACK, then for WHITE
-        // a bit clumsy, as we can't implement trait Step for Player right now.
-        let black = 0;
-        let white = 1;
-        for colour in black..=white {
-            let player = Player::from(colour != black);
-            let other = player.opponent();
-            let mut c = positions[i];
-
-            if c.state(player) == UNKNOWN {
-                let p = c.uncompressed(player);
-                let key = 2 * i + player as usize;
-                let cache_len = cache.len();
-                cache_lookups += 1;
-                cache_hits += 1;
-                let reached = cache.entry(key).or_insert_with(|| {
-                    cache_hits -= 1;
-                    p.moves()
-                        .iter()
-                        .copied()
-                        .map(|m| (m, p.apply(m).compressed()))
-                        .collect::<Vec<(Move, CPos)>>()
-                });
-
-                let mut all_can_mate = true;
-                let mut all_can_draw = true;
-                let mut all_unknown = true;
-                if reached.len() == 0 {
-                    let s = if p.inCheck(player) { MATE } else { STALEMATE };
-                    analyzed[s as usize] += 1;
-                    c = c.with_state_for(player, s);
-                } else {
-                    'children: for u in 0..reached.len() {
-                        let child = reached[u].1;
-                        let chsig = child.signature();
-                        let canon = child.canonical(chsig);
-
-                        let csig = canon.signature();
-                        let alien = csig != signature;
-                        let rp = if child.state(other) == UNKNOWN {
-                            if !alien {
-                                // look in positions only
-                                match positions.binary_search(&canon) {
-                                    Ok(u) => if canon.canonic_has_bw_switched() {
-                                            Ok(positions[u].flipped_flags())
-                                        } else {
-                                            Ok(positions[u])
-                                        },
-                                    Err(_) => Err(format!(
-                                        "cannot happen alien={},\n    child={:?}  0x{:016x}\n    canon={:?}  0x{:016x}",
-                                        alien, child, child.bits, canon, canon.bits
-                                    )),
-                                }
-                            } else {
-                                // must be alien
-                                canon
-                                    .find_canonic(csig, egtb_map)
-                                    .map_err(|s| {
-                                        format!(
-                                            "could not find reached position because:\n\
-                                                {}\nfen: {}  canonical: {}  hex: 0x{:016x}",
-                                            s,
-                                            encodeFEN(&reached[u].1.uncompressed(other)),
-                                            encodeFEN(&canon.uncompressed(other)),
-                                            canon.bits
-                                        )
-                                    })
-                                    .map(
-                                        |r| {
-                                            if canon.canonic_has_bw_switched() {
-                                                r.flipped_flags()
-                                            } else {
-                                                r
-                                            }
-                                        },
-                                    )
-                            }
-                        } else {
-                            Ok(child)
-                        }?;
-
-                        let rpstate = rp.state(other);
-                        if reached[u].1.state(other) != rpstate {
-                            reached[u].1 = rp;
-                        }
-                        all_unknown = all_unknown && rpstate == UNKNOWN;
-                        all_can_mate = all_can_mate && rpstate == CAN_MATE;
-                        all_can_draw = all_can_draw && rpstate == CAN_DRAW;
-                        match rpstate {
-                            MATE | CANNOT_AVOID_MATE => {
-                                if mateonly {
-                                    let mv = reached[u].0;
-                                    let mpos = c.mpos_from_mv(mv);
-                                    analyzed[CAN_MATE as usize] += 1;
-                                    c = c.with_state_for(player, CAN_MATE);
-
-                                    all_can_mate = false;
-                                    all_can_draw = false;
-
-                                    // write the move to the `um` file
-                                    mpos.write_seq(um_writer).map_err(|ioe| {
-                                        format!(
-                                            "unexpected error ({}) while writing to {}",
-                                            ioe,
-                                            mk_egtb_path(signature, "um")
-                                        )
-                                    })?;
-                                    break 'children;
-                                }
-                            }
-                            STALEMATE | CANNOT_AVOID_DRAW => {
-                                if !mateonly {
-                                    analyzed[CAN_DRAW as usize] += 1;
-                                    c = c.with_state_for(player, CAN_DRAW);
-
-                                    all_can_mate = false;
-                                    all_can_draw = false;
-                                    break 'children;
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
-                    if all_can_mate && mateonly {
-                        analyzed[CANNOT_AVOID_MATE as usize] += 1;
-                        c = c.with_state_for(player, CANNOT_AVOID_MATE);
-                    } else if !all_can_mate && all_can_draw && !mateonly {
-                        analyzed[CANNOT_AVOID_DRAW as usize] += 1;
-                        c = c.with_state_for(player, CANNOT_AVOID_DRAW);
-                    }
-                }
-
-                if c.state(player) != UNKNOWN
-                    || (all_unknown && cache_max < 2 * npositions)
-                    || cache_len >= cache_max
-                {
-                    cache.remove(&key);
-                }
-
-                if c.state(player) != UNKNOWN {
-                    positions[i] = c;
-                }
-            } // unknown state
-        } // black/white
-    } // loop over positions
-    eprintln!(
-        "done. Cache hit rate {}%, new hash size {}",
-        if cache_lookups > 0 { cache_hits * 100 / cache_lookups } else { 100 },
-        formatted_sz(cache.len())
-    );
-
-    // are we done yet?
-    if !mateonly && analyzed.iter().fold(0, |acc, x| acc + x) == 0 {
-        eprintln!("    Construction of end game table completed.");
-        Ok(WriteEgtb)
-    } else {
-        let nextstate = if analyzed[MATE as usize] > 0
-            || analyzed[CAN_MATE as usize] > 0
-            || analyzed[CANNOT_AVOID_MATE as usize] > 0
-        {
-            AnalyzeMemory(true)
-        } else {
-            AnalyzeMemory(false)
-        };
-        for i in 0..analyzed.len() {
-            if analyzed[i] != 0 {
-                eprintln!(
-                    "    Found {} new {:?} positions.",
-                    formatted_sz(analyzed[i]),
-                    CPosState::from(i as u64)
-                );
-                analyzed[i] = 0;
-            }
-        }
-        Ok(nextstate)
-    }
+    })
 }
 
 /// Sort the um file, if present.
@@ -1099,7 +960,7 @@ fn make_positions(
 ) -> Result<MakeState, String> {
     let vecmax = expected_positions(signature);
     eprint!(
-        "{}  Pass {:2} - generate positions, up to {} are expected ... ",
+        "{}  Pass {:2} - generate positions, up to {} are expected ",
         signature,
         pass,
         formatted_sz(vecmax)
