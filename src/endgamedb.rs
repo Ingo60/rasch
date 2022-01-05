@@ -1901,6 +1901,7 @@ fn complete(
                 // for all pawns that could have moved a double step we need to make a
                 // position where the player whose turn it is could
                 // capture this pawn en passant.
+                /*
                 for pf in p.pawns() {
                     // which player's pawn?
                     let pc = if p.whites.member(pf) { WHITE } else { BLACK };
@@ -1929,7 +1930,7 @@ fn complete(
                             }
                         }
                     }
-                }
+                } */
             } else {
                 complete(&p, index + 1, pps, positions)?;
             }
@@ -1946,15 +1947,15 @@ fn expected_positions(signature: Signature) -> usize {
     } else {
         903
     };
-    // compute estimated number of moves, taking kind and number into account as well as already
-    // hypothetically
-    // for example, assuming 2 queens would yield a factor of 64*64 would be a great overestimation
+    // compute estimated number of moves, taking kind and number into account
+    //
+    // For example, assuming 2 queens would yield a factor of 64*64 would be a great overestimation
     // The computed number is in most cases a slight over-estimation because positions where both
-    // kings are not considered in further computations.
+    // kings are in check will not be considered in further computations.
     let vecmax = vecbase
-        * over(56, signature.white_pawns() as u64)
+        * over(48, signature.white_pawns() as u64)
         * over(
-            56 - signature.white_pawns() as u64,
+            48 - signature.white_pawns() as u64,
             signature.black_pawns() as u64,
         )
         * over(

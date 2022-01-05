@@ -350,19 +350,19 @@ pub fn canBlackPawn(from: Field, to: Field) -> BitSet {
 }
 
 /**
- * Given a `from` and a `to` field, compute the set of fields that must be empty on the board
- * for the move to be possible with a bishop.
- *
- * Note that for legal moves, the target field will not be a member of the result set.
- * This is because capturing moves are legal when the target field is occupied by the opponent.
- *
- * A result of `BitSet::empty()` indicates there are no intermediate fields that must be empty
- * and the move is legal.
- *
- * An illegal move will be indicated with a return value `!BitSet::empty()`, requiring all fields
- * of the board to be empty to be leagl. Of course, in all regular chess matches, this condition
- * can never be satisfied.
- */
+Given a `from` and a `to` field, compute the set of fields that must be empty on the board
+for the move to be possible with a bishop.
+
+Note that for legal moves, the target field will not be a member of the result set.
+This is because capturing moves are legal when the target field is occupied by the opponent.
+
+A result of `BitSet::empty()` indicates there are no intermediate fields that must be empty
+and the move is legal.
+
+An illegal move will be indicated with a return value `!BitSet::empty()`, requiring all fields
+of the board to be empty to be leagl. Of course, in all regular chess matches, this condition
+can never be satisfied.
+*/
 pub fn canBishop(from: Field, to: Field) -> BitSet {
     unsafe { BitSet::from(bishopFromTo[((from as usize) << 6) + (to as usize)]) }
 }

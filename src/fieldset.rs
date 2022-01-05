@@ -308,7 +308,7 @@ impl BitSet {
         BitSet { bits: 1 << m as u8 }
     }
     #[inline]
-    /// tue if and only if the given field is a member of this BitSet
+    /// `true` if and only if the given field is a member of this BitSet
     pub const fn member(self, m: Field) -> bool {
         self.bits & BitSet::singleton(m).bits != 0
     }
@@ -359,7 +359,8 @@ impl BitSet {
     /// (but use BitSet::empty() instead of BitSet::new(&[]) and
     /// BitSet::singleton(f) instead of BitSet::new(&[Field::D5])
     pub fn new(flds: &[Field]) -> BitSet {
-        flds.iter().fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f))
+        flds.iter()
+            .fold(BitSet::empty(), |acc, f| acc + BitSet::singleton(*f))
     }
 }
 
@@ -479,7 +480,10 @@ mod tests {
 
     #[test]
     fn test_iter() {
-        assert_eq!("[]", format!("{:?}", BitSet::empty().into_iter().collect::<Vec<_>>()));
+        assert_eq!(
+            "[]",
+            format!("{:?}", BitSet::empty().into_iter().collect::<Vec<_>>())
+        );
         assert_eq!(
             "[A1, B1, C1]",
             format!("{:?}", (!BitSet::empty()).into_iter().take(3).collect::<Vec<_>>())
@@ -579,7 +583,10 @@ mod tests {
             + BitSet::singleton(Field::B6)
             + BitSet::singleton(Field::C7)
             + BitSet::singleton(Field::E8);
-        assert_eq!(a5b6c7e8, BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8]));
+        assert_eq!(
+            a5b6c7e8,
+            BitSet::new(&[Field::A5, Field::B6, Field::C7, Field::E8])
+        );
     }
 
     #[test]

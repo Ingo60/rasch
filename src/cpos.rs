@@ -15,9 +15,12 @@ use std::{
     io::{BufReader, ErrorKind::UnexpectedEof, Read, Seek, SeekFrom, Write},
 };
 
-use crate::basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece};
-use crate::fieldset::{BitSet, Field};
-use crate::position::{bit, Position, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, WHITE_TO_MOVE};
+use super::{
+    basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
+    fen::encodeFEN,
+    fieldset::{BitSet, Field},
+    position::{bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, WHITE_TO_MOVE},
+};
 use CPosState::*;
 use Field::*;
 use Piece::*;
@@ -429,7 +432,6 @@ impl Display for Signature {
 /// - 3/11 - BLACK/WHITE BISHOP
 /// - 4/12 - BLACK/WHITE ROOK
 /// - 5/13 - BLACK/WHITE QUEEN
-/// - 7/15 - BLACK/WHITE PAWN that has just done a double move and can be captured en passant.
 ///
 ///
 /// In order to identify equal positions, the pieces must occur from left to right in **ascending field order**.
@@ -562,7 +564,12 @@ impl CPos {
     pub fn new(pos: &Position) -> CPos {
         // this makes sure that we never use more than 40 bits for encoding of pieces
         if !pos.validEndgame() {
-            panic!("not an endgame position {}", pos);
+            // it is possible that we reach en-passant positions, but we ignore them anyway
+            let mut xpos = *pos;
+            xpos.flags = xpos.flags - EN_PASSANT_BITS;
+            if !xpos.validEndgame() {
+                panic!("not an endgame position {}", encodeFEN(&xpos));
+            }
         }
 
         let mut pieces = 0;
@@ -599,11 +606,7 @@ impl CPos {
             let p_on = pos.pieceOn(f);
             if p_on != KING {
                 let color = if pos.whites.member(f) { 8 } else { 0 };
-                let pcode = match p_on {
-                    PAWN if f.rank() == 4 && color == 8 && pos.flags.member(Field::from(f as u8 - 8)) => 15,
-                    PAWN if f.rank() == 5 && color == 0 && pos.flags.member(Field::from(f as u8 + 8)) => 7,
-                    piece => color | piece as u64,
-                };
+                let pcode = color | p_on as u64;
                 pieces <<= 4;
                 pieces |= pcode;
                 pieces <<= 6;
@@ -649,14 +652,6 @@ impl CPos {
                 3 => BISHOP,
                 4 => ROOK,
                 5 => QUEEN,
-                7 => {
-                    if c == WHITE {
-                        pos.flags = pos.flags + bit(Field::from(f as u8 - 8))
-                    } else {
-                        pos.flags = pos.flags + bit(Field::from(f as u8 + 8))
-                    }
-                    PAWN
-                }
                 _other => {
                     panic!("illegal piece code {} in compressed position", pcs & 7);
                     // EMPTY
@@ -680,7 +675,7 @@ impl CPos {
 
     /// Get the player for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `BLACK`
-    pub fn player_at(&self, n: usize) -> Player {
+    pub fn player_at(&self, n: u64) -> Player {
         match n & 3 {
             0 => {
                 if (self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT >= 8 {
@@ -719,19 +714,15 @@ impl CPos {
     pub fn piece_at(&self, n: u64) -> Piece {
         match n & 3 {
             0 => match ((self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT) & 7 {
-                7 => PAWN,
                 p => Piece::from(p as u32),
             },
             1 => match ((self.bits & CPos::CODE2_BITS) >> CPos::CODE2_SHIFT) & 7 {
-                7 => PAWN,
                 p => Piece::from(p as u32),
             },
             2 => match ((self.bits & CPos::CODE3_BITS) >> CPos::CODE3_SHIFT) & 7 {
-                7 => PAWN,
                 p => Piece::from(p as u32),
             },
             3 => match ((self.bits & CPos::CODE4_BITS) >> CPos::CODE4_SHIFT) & 7 {
-                7 => PAWN,
                 p => Piece::from(p as u32),
             },
             _ => EMPTY,
@@ -867,11 +858,8 @@ impl CPos {
             mv
         };
         let hmv = if (self.bits & CPos::H_BIT) != 0 { smv.mirror_h() } else { smv };
-        if (self.bits & CPos::V_BIT) != 0 {
-            hmv.mirror_v()
-        } else {
-            hmv
-        }
+        let rmv = if (self.bits & CPos::V_BIT) != 0 { hmv.mirror_v() } else { hmv };
+        rmv
     }
 
     /// get the field number of the white king
@@ -882,6 +870,15 @@ impl CPos {
     /// get the field number of the black king
     pub fn black_king(&self) -> Field {
         Field::from((self.bits & CPos::BLACK_KING_BITS) >> CPos::BLACK_KING_SHIFT)
+    }
+
+    /// get the field number of player's king
+    pub fn players_king(&self, player: Player) -> Field {
+        if player == WHITE {
+            self.white_king()
+        } else {
+            self.black_king()
+        }
     }
 
     #[inline]

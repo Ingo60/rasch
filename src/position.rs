@@ -1626,8 +1626,9 @@ impl Position {
     /// Does this position represent a valid endgame position?
     /// 1. There must be at most 4 pieces besides the kings.
     /// 2. No castling rights must be present anymore.
+    /// 3. No en-passant capturing is possible.
     pub fn validEndgame(&self) -> bool {
-        self.occupied().card() < 7 && (self.flags * CASTLING_BITS).null()
+        self.occupied().card() < 7 && (self.flags * CASTLING_BITS).null() && (self.flags * EN_PASSANT_BITS).null()
     }
 }
 

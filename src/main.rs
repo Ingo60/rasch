@@ -26,6 +26,7 @@ use rasch::position::Piece::*;
 // use rasch::position::Player;
 use rasch::position::Position;
 // use rasch::zobrist as Z;
+use rasch::cposmove as CM;
 use rasch::endgamedb as E;
 use rasch::sortegtb as S;
 use sysinfo::SystemExt;
@@ -69,6 +70,14 @@ fn main() {
         println!("We have {}M memory.", info.total_memory() / 1024);
     } else if argv[1].starts_with("gen-deprecated") && argv.len() >= 3 {
         match E::gen(String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1].starts_with("test1") && argv.len() >= 3 {
+        match CM::test1(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
