@@ -112,8 +112,8 @@ use crate::cposio::{
 };
 use crate::sortegtb::{sort_from_to, sort_moves};
 
-use super::basic::{decode_str_sig, Move, Piece, Player, PlayerPiece};
-use super::cpos::{CPos, CPosState, EgtbMap, Signature};
+use super::basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece};
+use super::cpos::{CPos, EgtbMap, Signature};
 use super::fen::{decodeFEN, encodeFEN};
 use super::fieldset::*;
 use super::position as P;

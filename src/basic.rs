@@ -1,6 +1,8 @@
 //! Basic data types `Player`, `Piece` and `Move`
+//! Also `CPosState` and `Signature`
 
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
 
 use super::fieldset::Field;
 use super::position::Position;
@@ -384,6 +386,80 @@ pub fn showMovesSAN(moves: &[Move], start: Position) -> String {
     }
     sans.join(" ")
 }
+
+/// Result of retrograde analysis.
+/// - MATE is given to all positions where the player cannot make any legal move and is in check.
+/// - STALEMATE is given to all positions where the player cannot move, but is not in check.
+/// - CAN_MATE is given to all positions where the player has a move such that
+/// the resulting position is either MATE or CANNOT_AVOID_MATE.
+/// - CAN_DRAW is given to all positions that are not CAN_MATE where the player has a move such that
+/// the resulting position is either STALEMATE or CANNOT_AVOID_DRAW.
+/// - CANNOT_AVOID_DRAW is given to positions where all moves that do not lead to CAN_MATE for the opponent are
+/// lead to STALEMATE or CAN_DRAW
+/// In addition, this is reported for positions not found in a database search.
+/// - CANNOT_AVOID_MATE is givon to positions where all moves lead to CAN_MATE.
+///
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CPosState {
+    /// not yet analyzed (this must map from and to u0!)
+    UNKNOWN,
+
+    /// no moves possible and the king is in check
+    MATE,
+
+    /// no moves possible, but not in check
+    STALEMATE,
+
+    /// there is at least 1 move in this position that reaches a position that is `MATE`,
+    /// or `CANNOT_AVOID_MATE`
+    CAN_MATE,
+
+    /// there is at least 1 move in this position that reaches a position that is `STALEMATE`,
+    /// or `CANNOT_AVOID_DRAW`
+    CAN_DRAW,
+
+    /// For every possible move, the opponent can answer with a move that forces a draw or a mate,
+    /// but for at least one move only a draw can be enforced.
+    ///
+    /// Also given to positions missing from database files. The rationale is that
+    /// (assuming this program is correct) if the player can neither force mate but can avoid mate for himself,
+    /// then it must be a draw. And this is true for endless repetitions and lack of material.
+    /// Hence, the *K-K* table is just an empty file.
+    CANNOT_AVOID_DRAW,
+
+    /// For every possible move, the opponent can answer with a move
+    /// that leads to mate for this player sooner or later. Sorry!
+    CANNOT_AVOID_MATE,
+
+    /// Position is not valid for the player this flags apply to.
+    /// This happens when the opposite KING would be in check or
+    /// there is a PAWN of this player who is eligible for en-passant
+    /// capturing. But this would only be possible when it is the
+    /// other player's move.
+    INVALID_POS,
+}
+
+impl From<u64> for CPosState {
+    /// cast a number to CPosState
+    /// ```
+    /// assert!((0..8).all(|n| n == rasch::cpos::CPosState::from(n) as u64))
+    /// ```
+    fn from(u: u64) -> CPosState {
+        match u & 7 {
+            0 => UNKNOWN,
+            1 => MATE,
+            2 => STALEMATE,
+            3 => CAN_MATE,
+            4 => CAN_DRAW,
+            5 => CANNOT_AVOID_DRAW,
+            6 => CANNOT_AVOID_MATE,
+            7 => INVALID_POS,
+            _ => UNKNOWN, // to make rustc happy
+        }
+    }
+}
+
+pub use CPosState::*;
 
 /// Decode an endgame signature.
 ///
