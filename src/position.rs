@@ -1195,7 +1195,7 @@ impl Position {
     /// Given a position and a field, generate the possible moves for
     /// the piece standing there.
     /// 
-    /// The generated moves may still be illegal because the expose the king for check!
+    /// The generated moves may still be illegal because they expose the king for check!
     fn genMove(&self, vec: &mut Vec<Move>, from: Field) {
         let piece = self.pieceOn(from);
         let player = self.turn();
