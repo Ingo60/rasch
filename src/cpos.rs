@@ -17,8 +17,10 @@ use std::{
 
 use super::{
     basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
+    cposmove::CPosMoveIterator,
     fen::encodeFEN,
     fieldset::{BitSet, Field},
+    mdb,
     position::{bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, WHITE_TO_MOVE},
 };
 use CPosState::*;
@@ -543,12 +545,16 @@ impl CPos {
     pub const CODE4_SHIFT: u32 = CPos::CODE4_BITS.trailing_zeros();
     /// Mask the field number of piece 4
     pub const FIELD4_BITS: u64 = CPos::FIELD3_BITS << 10;
+    pub const FIELD4_SHIFT: u32 = CPos::FIELD4_BITS.trailing_zeros();
     /// Maskt the field number of piece 3
     pub const FIELD3_BITS: u64 = CPos::FIELD2_BITS << 10;
+    pub const FIELD3_SHIFT: u32 = CPos::FIELD3_BITS.trailing_zeros();
     /// Maskt the field number of piece 2
     pub const FIELD2_BITS: u64 = CPos::FIELD1_BITS << 10;
+    pub const FIELD2_SHIFT: u32 = CPos::FIELD2_BITS.trailing_zeros();
     /// Maskt the field number of piece 1
     pub const FIELD1_BITS: u64 = 0x3f << 12;
+    pub const FIELD1_SHIFT: u32 = CPos::FIELD1_BITS.trailing_zeros();
     /// Mask the field of the white `KING`
     pub const WHITE_KING_BITS: u64 = 0x0000_0000_0000_003f;
     pub const WHITE_KING_SHIFT: u32 = CPos::WHITE_KING_BITS.trailing_zeros();
@@ -669,8 +675,14 @@ impl CPos {
         pos
     }
 
+    /// compute the `Signature` of this position
     pub fn signature(&self) -> Signature {
         Signature::new(*self)
+    }
+
+    /// make a move iterator from this CPos
+    pub fn move_iterator(&self, player: Player) -> CPosMoveIterator {
+        CPosMoveIterator::new(*self, player)
     }
 
     /// Get the player for piece1, piece2, piece3 or piece4
@@ -733,10 +745,10 @@ impl CPos {
     /// Wrong input values are masked away and if the index is not occupied, it will return `A1`
     pub fn field_at(&self, index: u64) -> Field {
         match index & 3 {
-            0 => Field::from((self.bits & CPos::FIELD1_BITS) >> CPos::FIELD1_BITS.trailing_zeros()),
-            1 => Field::from((self.bits & CPos::FIELD2_BITS) >> CPos::FIELD2_BITS.trailing_zeros()),
-            2 => Field::from((self.bits & CPos::FIELD3_BITS) >> CPos::FIELD3_BITS.trailing_zeros()),
-            3 => Field::from((self.bits & CPos::FIELD4_BITS) >> CPos::FIELD4_BITS.trailing_zeros()),
+            0 => Field::from((self.bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT),
+            1 => Field::from((self.bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT),
+            2 => Field::from((self.bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT),
+            3 => Field::from((self.bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT),
             _other => A1, // be happy, rustc
         }
     }
@@ -771,6 +783,86 @@ impl CPos {
         }
     }
 
+    /// Check which piece of the CPos is on Field `field`
+    ///
+    /// Answer will be Ok(0..3) for piece1..piece4, or Err(KING) if it's a king or Err(EMPTY) if none.
+    pub fn piece_index_by_field(&self, field: Field) -> Result<u64, Piece> {
+        if self.white_king() == field || self.black_king() == field {
+            Err(KING)
+        } else if self.piece_at(0) != EMPTY && self.field_at(0) == field {
+            Ok(0)
+        } else if self.piece_at(1) != EMPTY && self.field_at(1) == field {
+            Ok(1)
+        } else if self.piece_at(2) != EMPTY && self.field_at(2) == field {
+            Ok(2)
+        } else if self.piece_at(3) != EMPTY && self.field_at(3) == field {
+            Ok(3)
+        } else {
+            Err(EMPTY)
+        }
+    }
+
+    /// Clear one of the pieces. The CPos must be `ordered()` afterwards.
+    ///
+    /// When the index is not 0,1,2 or 3, an unchanged CPos will be returned.
+    pub fn clear_piece(&self, inx: u64) -> CPos {
+        let mask = match inx {
+            0 => CPos::CODE1_BITS | CPos::FIELD1_BITS,
+            1 => CPos::CODE2_BITS | CPos::FIELD2_BITS,
+            2 => CPos::CODE3_BITS | CPos::FIELD3_BITS,
+            3 => CPos::CODE4_BITS | CPos::FIELD4_BITS,
+            _ => 0,
+        };
+        CPos { bits: self.bits & !mask }
+    }
+
+    /// Move a piece to a different position. The CPos must be `ordered()` afterwards.
+    ///
+    /// When the index is not 0,1,2 or 3, an unchanged CPos will be returned.
+    pub fn move_piece(&self, inx: u64, to: Field) -> CPos {
+        let bits = self.bits;
+        match inx {
+            0 => CPos { bits: (bits & !CPos::FIELD1_BITS) | ((to as u64) << CPos::FIELD1_SHIFT) },
+            1 => CPos { bits: (bits & !CPos::FIELD2_BITS) | ((to as u64) << CPos::FIELD2_SHIFT) },
+            2 => CPos { bits: (bits & !CPos::FIELD3_BITS) | ((to as u64) << CPos::FIELD3_SHIFT) },
+            3 => CPos { bits: (bits & !CPos::FIELD4_BITS) | ((to as u64) << CPos::FIELD4_SHIFT) },
+            _ => CPos { bits },
+        }
+    }
+
+    /// Move a king
+    pub fn move_king(&self, player: Player, to: Field) -> CPos {
+        match player {
+            WHITE => CPos {
+                bits: (self.bits & !CPos::WHITE_KING_BITS) | ((to as u64) << CPos::WHITE_KING_SHIFT),
+            },
+            BLACK => CPos {
+                bits: (self.bits & !CPos::BLACK_KING_BITS) | ((to as u64) << CPos::BLACK_KING_SHIFT),
+            },
+        }
+    }
+
+    /// Change the piece at index. The colour of the piece will not change!
+    ///
+    /// When the index is not 0,1,2 or 3, an unchanged CPos will be returned.
+    pub fn change_piece(&self, inx: u64, p: Piece) -> CPos {
+        match inx {
+            0 => CPos {
+                bits: (self.bits & !(7 << CPos::CODE1_SHIFT)) | ((p as u64) << CPos::CODE1_SHIFT),
+            },
+            1 => CPos {
+                bits: (self.bits & !(7 << CPos::CODE2_SHIFT)) | ((p as u64) << CPos::CODE2_SHIFT),
+            },
+            2 => CPos {
+                bits: (self.bits & !(7 << CPos::CODE3_SHIFT)) | ((p as u64) << CPos::CODE3_SHIFT),
+            },
+            3 => CPos {
+                bits: (self.bits & !(7 << CPos::CODE4_SHIFT)) | ((p as u64) << CPos::CODE4_SHIFT),
+            },
+            _ => CPos { bits: self.bits },
+        }
+    }
+
     /// piece CPos::index for player and move
     pub fn piece_index_by_mv(&self, mv: Move) -> u64 {
         if self.piece_at(0) != EMPTY && self.player_at(0) == mv.player() && self.field_at(0) == mv.from() {
@@ -792,6 +884,100 @@ impl CPos {
             3
         } else {
             0
+        }
+    }
+
+    /// Return true iff, assuming it is `players` turn, the opponent's `KING` is **not** in check
+    pub fn valid(&self, player: Player) -> bool {
+        let his_king = self.players_king(player.opponent());
+        let my_king = self.players_king(player);
+        if mdb::kingTargets(my_king).member(his_king) {
+            false
+        } else {
+            let occupied = bit(self.white_king())
+                + bit(self.black_king())
+                + if self.piece_at(0) != EMPTY { bit(self.field_at(0)) } else { BitSet::empty() }
+                + if self.piece_at(1) != EMPTY { bit(self.field_at(1)) } else { BitSet::empty() }
+                + if self.piece_at(2) != EMPTY { bit(self.field_at(2)) } else { BitSet::empty() }
+                + if self.piece_at(3) != EMPTY { bit(self.field_at(3)) } else { BitSet::empty() };
+            for u in 0..4 {
+                if self.player_at(u) == player {
+                    let from = self.field_at(u);
+                    match self.piece_at(u) {
+                        EMPTY => return true, /* no attacker can be found further left */
+                        QUEEN => {
+                            if occupied.intersection(mdb::canBishop(from, his_king)).null()
+                                || occupied.intersection(mdb::canRook(from, his_king)).null()
+                            {
+                                return false;
+                            }
+                        }
+                        ROOK => {
+                            if occupied.intersection(mdb::canRook(from, his_king)).null() {
+                                return false;
+                            }
+                        }
+                        BISHOP => {
+                            if occupied.intersection(mdb::canBishop(from, his_king)).null() {
+                                return false;
+                            }
+                        }
+                        KNIGHT => {
+                            if mdb::knightTargets(from).member(his_king) {
+                                return false;
+                            }
+                        }
+                        PAWN => {
+                            if player == BLACK && mdb::targetOfBlackPawns(his_king).member(from)
+                                || player == WHITE && mdb::targetOfWhitePawns(his_king).member(from)
+                            {
+                                return false;
+                            }
+                        }
+                        xp => panic!("bad piece {}", xp),
+                    }
+                }
+            }
+            true
+        }
+    }
+
+    /// Return a `CPos` where the move has been applied.
+    pub fn apply(&self, mv: Move) -> CPos {
+        let mut new = *self;
+        let mut need_order = false;
+
+        // clear target piece, if there is one
+        // if the removed piece is not at index 3, a reordering is probably needed
+        // actually, it is only needed if the piece after it is occupied
+        match new.piece_index_by_field(mv.to()) {
+            Ok(u) => {
+                need_order = need_order || (u < 3 && new.piece_at(u + 1) != EMPTY);
+                new = new.clear_piece(u)
+            }
+            Err(KING) => panic!("attempt to capture KING: {}  CPos {:?}", mv, new),
+            Err(_) => { /* non capturing */ }
+        }
+        // move the piece or KING
+        match new.piece_index_by_field(mv.from()) {
+            Ok(u) => {
+                need_order = need_order
+                    || (u < 3 && new.piece_at(u + 1) != EMPTY && mv.to() < new.field_at(u + 1)
+                        || u > 0 && new.piece_at(u - 1) != EMPTY && mv.to() > new.field_at(u - 1));
+                if mv.promote() != EMPTY {
+                    new = new.change_piece(u, mv.promote())
+                }
+                new = new.move_piece(u, mv.to());
+            }
+            Err(KING) => {
+                new = new.move_king(mv.player(), mv.to());
+            }
+            Err(x) => panic!("attempt to move from {:?} field {}", x, mv.from()),
+        }
+        if need_order {
+            new.ordered()
+        } else {
+            new
         }
     }
 
@@ -1014,9 +1200,10 @@ impl CPos {
 
     /// order position 1 2 and 3 in a CPos, at max 3 swaps
     fn order3(mut bits: u64) -> u64 {
-        // move the smallest to position 3
-        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_BITS.trailing_zeros())
-            > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_BITS.trailing_zeros())
+        // move the smallest/empty one to position 3
+        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
+            > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
+            || (bits & CPos::CODE2_BITS) == 0
         {
             bits = CPos::swap_pieces(
                 bits,
@@ -1024,8 +1211,9 @@ impl CPos {
                 CPos::CODE2_BITS | CPos::FIELD2_BITS,
             );
         }
-        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_BITS.trailing_zeros())
-            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_BITS.trailing_zeros())
+        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
+            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
+            || (bits & CPos::CODE1_BITS) == 0
         {
             bits = CPos::swap_pieces(
                 bits,
@@ -1035,8 +1223,9 @@ impl CPos {
         }
         // ... and bring 1 and 2 in the correct order
         // swap 2 and 1, if 2 is greater
-        if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_BITS.trailing_zeros())
-            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_BITS.trailing_zeros())
+        if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
+            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
+            || (bits & CPos::CODE1_BITS) == 0
         {
             bits = CPos::swap_pieces(
                 bits,
@@ -1047,15 +1236,17 @@ impl CPos {
         bits
     }
 
-    /// Order the pieces of a CPos in such a way that field numbers are ascending from left to right.
+    /// Return a CPos with the pieces ordered in such a way that field numbers are ascending from left to right.
+    /// Also, EMPTY pieces will be placed in the most possible left piece.
     /// This is crucial for sorting.
     /// Could be done by uncompressing and compressing, but this should be faster. It does at max 6 swaps.
     pub fn ordered(&self) -> CPos {
         let mut bits = self.bits;
         if (bits & CPos::CODE4_BITS) != 0 {
             // swap the minimum to 4 and sort the remaining 3
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_BITS.trailing_zeros())
-                > ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_BITS.trailing_zeros())
+            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
+                > ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
+                || (bits & CPos::CODE3_BITS) == 0
             {
                 bits = CPos::swap_pieces(
                     bits,
@@ -1063,8 +1254,9 @@ impl CPos {
                     CPos::CODE3_BITS | CPos::FIELD3_BITS,
                 );
             }
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_BITS.trailing_zeros())
-                > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_BITS.trailing_zeros())
+            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
+                > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
+                || (bits & CPos::CODE2_BITS) == 0
             {
                 bits = CPos::swap_pieces(
                     bits,
@@ -1072,8 +1264,9 @@ impl CPos {
                     CPos::CODE2_BITS | CPos::FIELD2_BITS,
                 );
             }
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_BITS.trailing_zeros())
-                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_BITS.trailing_zeros())
+            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
+                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
+                || (bits & CPos::CODE1_BITS) == 0
             {
                 bits = CPos::swap_pieces(
                     bits,
@@ -1086,8 +1279,9 @@ impl CPos {
             CPos { bits: CPos::order3(bits) }
         } else if (bits & CPos::CODE2_BITS) != 0 {
             // swap 2 and 1, if 2 is greater
-            if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_BITS.trailing_zeros())
-                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_BITS.trailing_zeros())
+            if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
+                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
+                || (bits & CPos::CODE1_BITS) == 0
             {
                 bits = CPos::swap_pieces(
                     bits,

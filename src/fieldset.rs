@@ -5,8 +5,8 @@
    Implement sets of fields using 64-bit integers
 */
 
-use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::{Debug, Display};
 use std::iter::FromIterator;
 use std::ops::Add;
 use std::ops::Mul;
@@ -280,7 +280,7 @@ impl Into<usize> for Field {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BitSet {
     pub bits: u64,
 }
@@ -441,6 +441,13 @@ impl<'a> FromIterator<&'a Field> for BitSet {
 }
 
 impl Display for BitSet {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let v: Vec<String> = self.into_iter().map(|f| f.to_string()).collect();
+        write!(f, "[{}]", &v[..].join(", "))
+    }
+}
+
+impl Debug for BitSet {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let v: Vec<String> = self.into_iter().map(|f| f.to_string()).collect();
         write!(f, "[{}]", &v[..].join(", "))

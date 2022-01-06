@@ -68,7 +68,8 @@ fn main() {
         let mut info = sysinfo::System::new_all();
         info.refresh_memory();
         println!("We have {}M memory.", info.total_memory() / 1024);
-    } else if argv[1].starts_with("gen-deprecated") && argv.len() >= 3 {
+    }
+    /* else if argv[1].starts_with("gen-deprecated") && argv.len() >= 3 {
         match E::gen(String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
@@ -76,8 +77,17 @@ fn main() {
                 std::process::exit(1)
             }
         }
-    } else if argv[1].starts_with("test1") && argv.len() >= 3 {
+    } */
+    else if argv[1] == "test1" && argv.len() >= 3 {
         match CM::test1(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1] == "test1p" && argv.len() >= 3 {
+        match CM::test1p(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
