@@ -378,41 +378,11 @@ pub fn test1(sig: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn test1p(sig: &str) -> Result<(), String> {
+pub fn test2(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
-    let egtb_path = mk_egtb_path(signature, "egtb");
-    let unsorted_path = mk_egtb_path(signature, "unsorted");
-    let mut path: &str = &egtb_path;
-    let rdr = CPosReader::new(&egtb_path).or_else(|_| {
-        path = &unsorted_path;
-        CPosReader::new(&unsorted_path)
-    })?;
-    let expected = cpos_file_size(path)?;
-    let mut done = 0;
-    let mut moves = 0u64;
-    eprint!("{} Pass  1 - test1 Position {}    0‰ ", signature, path);
-    for cpos in rdr {
-        done += 1;
-        if done % (1024 * 1024) == 0 || done + 1 == expected {
-            eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", (done + 1) * 1000 / expected);
-        }
-
-        for pl in [BLACK, WHITE] {
-            let pos = cpos.uncompressed(pl);
-            let v = pos.valid();
-            let s = cpos.state(pl);
-            if v && s == INVALID_POS || !v && s != INVALID_POS {
-                eprintln!("failed.");
-                println!("valid={}, state={:?}", v, s);
-                println!("POS={}", pos);
-                println!("CPOS={:?}", cpos);
-                return Err("failed".to_string());
-            }
-            if v {
-                moves += pos.moves().len() as u64;
-            }
-        }
+    println!("{} predecessors:", signature);
+    for each in signature.predecessors().iter() {
+        print!("{} through {:?}", each.0, each.1);
     }
-    eprintln!("done, {} moves", formatted64(moves));
     Ok(())
 }
