@@ -81,17 +81,36 @@ pub struct Signature {
 impl Signature {
     /// the signature for K-K
     pub const SIGNATURE_KK: Signature = Signature { white: 0, black: 0 };
-    pub const PAWN_BITS: u32 = 0x3f;
+    /// 1 nibble per piece
+    pub const BITS_PER_PIECE: u32 = 4;
+    pub const PIECE_BITS: u32 = (1 << Signature::BITS_PER_PIECE) - 1;
+
     pub const PAWN_SHIFT: u32 = 0;
-    pub const KNIGHT_BITS: u32 = Signature::PAWN_BITS << 6;
-    pub const KNIGHT_SHIFT: u32 = 6;
-    pub const BISHOP_BITS: u32 = Signature::KNIGHT_BITS << 6;
-    pub const BISHOP_SHIFT: u32 = 12;
-    pub const ROOK_BITS: u32 = Signature::BISHOP_BITS << 6;
-    pub const ROOK_SHIFT: u32 = 18;
-    pub const QUEEN_BITS: u32 = Signature::ROOK_BITS << 6;
-    pub const QUEEN_SHIFT: u32 = 24;
-    pub fn new(cpos: CPos) -> Signature {
+    pub const KNIGHT_SHIFT: u32 = Signature::PAWN_SHIFT + Signature::BITS_PER_PIECE;
+    pub const BISHOP_SHIFT: u32 = Signature::KNIGHT_SHIFT + Signature::BITS_PER_PIECE;
+    pub const ROOK_SHIFT: u32 = Signature::BISHOP_SHIFT + Signature::BITS_PER_PIECE;
+    pub const QUEEN_SHIFT: u32 = Signature::ROOK_SHIFT + Signature::BITS_PER_PIECE;
+
+    pub const PAWN_BITS: u32 = Signature::PIECE_BITS << Signature::PAWN_SHIFT;
+    pub const KNIGHT_BITS: u32 = Signature::PIECE_BITS << Signature::KNIGHT_SHIFT;
+    pub const BISHOP_BITS: u32 = Signature::PIECE_BITS << Signature::BISHOP_SHIFT;
+    pub const ROOK_BITS: u32 = Signature::PIECE_BITS << Signature::ROOK_SHIFT;
+    pub const QUEEN_BITS: u32 = Signature::PIECE_BITS << Signature::QUEEN_SHIFT;
+
+    const fn one(p: Piece) -> u32 {
+        match p {
+            PAWN => 1 << Signature::PAWN_SHIFT,
+            KNIGHT => 1 << Signature::KNIGHT_SHIFT,
+            BISHOP => 1 << Signature::BISHOP_SHIFT,
+            ROOK => 1 << Signature::ROOK_SHIFT,
+            QUEEN => 1 << Signature::QUEEN_SHIFT,
+            _ => 0,
+        }
+    }
+
+    /// A canonic CPos will result in a canonic Signature, but not every CPos that has a canonic signature
+    /// is itself canonic (the white KING could not be in the LEFT_HALF, for instance)
+    pub const fn new(cpos: CPos) -> Signature {
         let mut white = 0u32;
         let mut black = 0u32;
         // do this 4 times for each piece code
@@ -235,37 +254,12 @@ impl Signature {
         let mut black = 0u32;
         for pp in vec {
             match pp {
-                (WHITE, QUEEN) => {
-                    white += 1 << Signature::QUEEN_SHIFT;
+                (WHITE, p) => {
+                    white += Signature::one(*p);
                 }
-                (WHITE, ROOK) => {
-                    white += 1 << Signature::ROOK_SHIFT;
+                (BLACK, p) => {
+                    black += Signature::one(*p);
                 }
-                (WHITE, BISHOP) => {
-                    white += 1 << Signature::BISHOP_SHIFT;
-                }
-                (WHITE, KNIGHT) => {
-                    white += 1 << Signature::KNIGHT_SHIFT;
-                }
-                (WHITE, PAWN) => {
-                    white += 1 << Signature::PAWN_SHIFT;
-                }
-                (BLACK, QUEEN) => {
-                    black += 1 << Signature::QUEEN_SHIFT;
-                }
-                (BLACK, ROOK) => {
-                    black += 1 << Signature::ROOK_SHIFT;
-                }
-                (BLACK, BISHOP) => {
-                    black += 1 << Signature::BISHOP_SHIFT;
-                }
-                (BLACK, KNIGHT) => {
-                    black += 1 << Signature::KNIGHT_SHIFT;
-                }
-                (BLACK, PAWN) => {
-                    black += 1 << Signature::PAWN_SHIFT;
-                }
-                _other => {}
             }
         }
         Signature { white, black }
@@ -315,53 +309,61 @@ impl Signature {
     }
     /// If the `Signature` of a `CPos` is **not** canonic, then the corresponding CPos will have the
     /// colours of the pieces changed and a possible search result needs the flags switched.
-    pub fn is_canonic(&self) -> bool {
+    pub const fn is_canonic(&self) -> bool {
         self.white >= self.black
     }
     /// A `Signature` is **symmetric** if both players have the same set of pieces.
     /// A symmetric `Signature` is also canonic.
-    pub fn is_symmetric(&self) -> bool {
+    pub const fn is_symmetric(&self) -> bool {
         self.white == self.black
     }
-    pub fn mk_canonic(&self) -> Signature {
+
+    /// The canonic form of this `Signature`
+    pub const fn mk_canonic(&self) -> Signature {
         if self.is_canonic() {
             *self
         } else {
             Signature { white: self.black, black: self.white }
         }
     }
-    pub fn white_queens(&self) -> u32 {
+
+    /// A Signature with the values for black/white flipped
+    pub const fn opposite(&self) -> Signature {
+        Signature { white: self.black, black: self.white }
+    }
+
+    pub const fn white_queens(&self) -> u32 {
         (self.white & Signature::QUEEN_BITS) >> Signature::QUEEN_SHIFT
     }
-    pub fn white_rooks(&self) -> u32 {
+    pub const fn white_rooks(&self) -> u32 {
         (self.white & Signature::ROOK_BITS) >> Signature::ROOK_SHIFT
     }
-    pub fn white_bishops(&self) -> u32 {
+    pub const fn white_bishops(&self) -> u32 {
         (self.white & Signature::BISHOP_BITS) >> Signature::BISHOP_SHIFT
     }
-    pub fn white_knights(&self) -> u32 {
+    pub const fn white_knights(&self) -> u32 {
         (self.white & Signature::KNIGHT_BITS) >> Signature::KNIGHT_SHIFT
     }
-    pub fn white_pawns(&self) -> u32 {
+    pub const fn white_pawns(&self) -> u32 {
         self.white & Signature::PAWN_BITS
     }
-    pub fn black_queens(&self) -> u32 {
+    pub const fn black_queens(&self) -> u32 {
         (self.black & Signature::QUEEN_BITS) >> Signature::QUEEN_SHIFT
     }
-    pub fn black_rooks(&self) -> u32 {
+    pub const fn black_rooks(&self) -> u32 {
         (self.black & Signature::ROOK_BITS) >> Signature::ROOK_SHIFT
     }
-    pub fn black_bishops(&self) -> u32 {
+    pub const fn black_bishops(&self) -> u32 {
         (self.black & Signature::BISHOP_BITS) >> Signature::BISHOP_SHIFT
     }
-    pub fn black_knights(&self) -> u32 {
+    pub const fn black_knights(&self) -> u32 {
         (self.black & Signature::KNIGHT_BITS) >> Signature::KNIGHT_SHIFT
     }
-    pub fn black_pawns(&self) -> u32 {
+    pub const fn black_pawns(&self) -> u32 {
         self.black & Signature::PAWN_BITS
     }
     /// A `Signature` has pawns if it has white pawns or black pawns.
-    pub fn has_pawns(&self) -> bool {
+    pub const fn has_pawns(&self) -> bool {
         self.white_pawns() > 0 || self.black_pawns() > 0
     }
 
@@ -403,6 +405,112 @@ impl Signature {
         }
         result
     }
+
+    /// helper function for predecessor, computes the predecessors obtained by capturing one of `player`s officers.
+    fn capture(
+        &self,
+        player: Player,
+        map: &mut HashMap<Signature, Alienation>,
+        cap: &dyn Fn(Piece) -> Alienation,
+    ) {
+        for (p, u) in [
+            (QUEEN, Signature::QUEEN_SHIFT),
+            (ROOK, Signature::ROOK_SHIFT),
+            (BISHOP, Signature::BISHOP_SHIFT),
+            (KNIGHT, Signature::KNIGHT_SHIFT),
+        ] {
+            if player == WHITE {
+                if self.white & (Signature::PIECE_BITS << u) != 0 {
+                    map.insert(
+                        Signature { black: self.black, white: self.white - (1 << u) },
+                        cap(p),
+                    );
+                }
+            } else {
+                if self.black & (Signature::PIECE_BITS << u) != 0 {
+                    map.insert(
+                        Signature { white: self.white, black: self.black - (1 << u) },
+                        cap(p),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A signature defines a set of chess positions.
+    /// However, by capturing pieces and promoting pawns
+    /// one obtains positions that are members of a different set.
+    /// This function computes the sets that are reachable with a
+    /// single move from a given one.
+    ///
+    /// We assume that for any two Signatures A and B the following holds:
+    /// 1. if B is a predecessor of A, A is not a predecessor of B
+    /// 2. from 1) it follows immediatly that A is not its own predecessor.
+    /// 3. if B is a predecessor of A, then there is one and only one alienation transformation that turns A into B.
+    ///
+    /// To prove 1.
+    /// - If B is a predecessor of A, there is a transformation X that turns A into B.
+    /// - If X is Capture(p), then B has one piece less than A. But there is no transformation that increases
+    /// the number of pieces, hence there can be no transformation that turns B into A.
+    /// - If X is Promotion(p), then B has one PAWN less than A. But there is no transformation that increases
+    /// then number of pawns, hence there can be no transformation that turns B into A.
+    /// - If X is PromoteAndCapture(p1, p2), then again B has one PAWN less than A. As before,
+    /// there is no transformation that turns B into A.
+    /// - If A were a predecessor of B, there would have to be a transformation Y that turns B into A.
+    /// But we have shown that there can be no such transformation if B is a predecessor of A.
+    /// Therefore, A cannot be a predecessor of B if B is a predecessor of A. q.e.d
+    pub fn predecessors(&self) -> HashMap<Signature, Alienation> {
+        let mut map = HashMap::new();
+
+        let capw = |p| Capture(WHITE, p);
+        let capb = |p| Capture(BLACK, p);
+
+        // for each kind, assume one of the pieces got captured
+        self.capture(WHITE, &mut map, &capw);
+        self.capture(BLACK, &mut map, &capb);
+
+        // PAWNs are a bit more difficult
+        if self.white_pawns() > 0 {
+            let one_pawn_less = Signature { black: self.black, white: self.white - Signature::one(PAWN) };
+            // the case where one of the pawns was simply captured
+            map.insert(one_pawn_less, Capture(WHITE, PAWN));
+            // now the cases where a pawn promotes to some other piece
+            for piece in [QUEEN, ROOK, BISHOP, KNIGHT] {
+                let promoted = Signature {
+                    black: one_pawn_less.black,
+                    white: one_pawn_less.white + Signature::one(piece),
+                };
+                map.insert(promoted, Promote(WHITE, piece));
+                // but with the promotion, the pawn could have captured an opponents' piece
+                // e.g. KP-KQ could become KN-KQ but also KN-K
+                // (by capturing the black queen on the 8th rank and promoting to a knight)
+                // Note that we could never capture a PAWN this way, though.
+                let pcap = |p| PromoteAndCapture(WHITE, piece, p);
+                promoted.capture(BLACK, &mut map, &pcap);
+            }
+        };
+
+        if self.black_pawns() > 0 {
+            let one_pawn_less = Signature { white: self.white, black: self.black - Signature::one(PAWN) };
+            // the case where one of the pawns was simply captured
+            map.insert(one_pawn_less, Capture(BLACK, PAWN));
+            // now the cases where a pawn promotes to some other piece
+            for piece in [QUEEN, ROOK, BISHOP, KNIGHT] {
+                let promoted = Signature {
+                    white: one_pawn_less.white,
+                    black: one_pawn_less.black + Signature::one(piece),
+                };
+                map.insert(promoted, Promote(BLACK, piece));
+                // but with the promotion, the pawn could have captured an opponents' piece
+                // e.g. KP-KQ could become KN-KQ but also KN-K
+                // (by capturing the black queen on the 8th rank and promoting to a knight)
+                // Note that we could never capture a PAWN this way, though.
+                let pcap = |p| PromoteAndCapture(BLACK, piece, p);
+                promoted.capture(WHITE, &mut map, &pcap);
+            }
+        };
+        map
+    }
 }
 
 impl Display for Signature {
@@ -410,6 +518,19 @@ impl Display for Signature {
         f.write_str(&self.display())
     }
 }
+
+/// `Alienation` is a transformation that turns a `Signature` into one of their predecessors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Alienation {
+    /// - by capturing a piece of a certain kind, e.g. KQ-KN → KN-K with Capture(WHITE, QUEEN)
+    Capture(Player, Piece),
+    /// - by promoting a PAWN, e.g. KR-KP → KQ-KR wih Promote(BLACK, QUEEN)
+    Promote(Player, Piece),
+    /// - by promoting a PAWN with a capturing move, e.g. KR-KP → KB-K with PromoteAndCapture(BLACK, BISHOP, ROOK)
+    /// (It goes without saying that the captured piece must be one of the opponent's pieces.)
+    PromoteAndCapture(Player, Piece, Piece),
+}
+pub use Alienation::*;
 
 /// # Compressed position for the endgame tablebases.
 
