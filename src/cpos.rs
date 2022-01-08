@@ -17,7 +17,7 @@ use std::{
 
 use super::{
     basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
-    cposmove::CPosMoveIterator,
+    cposmove::{CPosMoveIterator, CPosReverseMoveIterator},
     fen::encodeFEN,
     fieldset::{BitSet, Field},
     mdb,
@@ -806,6 +806,11 @@ impl CPos {
         CPosMoveIterator::new(*self, player)
     }
 
+    /// make a reverse move iterator from this CPos
+    pub fn reverse_move_iterator(&self, player: Player) -> CPosReverseMoveIterator {
+        CPosReverseMoveIterator::new(*self, player)
+    }
+
     /// Get the player for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `BLACK`
     pub fn player_at(&self, n: u64) -> Player {
@@ -1061,6 +1066,56 @@ impl CPos {
             }
             true
         }
+    }
+
+    /// **true** if there are 4 pieces coded
+    pub fn is_full(&self) -> bool {
+        self.piece_at(3) != EMPTY
+    }
+
+    /// give the index of the first free place or panic
+    pub fn index_of_free(&self) -> u64 {
+        for u in 0..4 {
+            if self.piece_at(u) == EMPTY {
+                return u;
+            }
+        }
+        panic!("no free piece in {:?}", self);
+    }
+
+    /// Return a `CPos` that yields this one when applying the move.
+    pub fn unapply(&self, mv: Move, uncapture: Piece) -> CPos {
+        let mut new = *self;
+
+        if mv.is_capture_by_pawn() && (uncapture < PAWN || uncapture > QUEEN) {
+            panic!(
+                "unapplying capturing PAWN move {}, un-capturing {:?} not possible ",
+                mv, uncapture
+            );
+        }
+        if !mv.is_capture_by_pawn() && mv.piece() == PAWN && uncapture != EMPTY {
+            panic!(
+                "unapplying non-capturing PAWN move {}, un-capturing {:?} not possible ",
+                mv, uncapture
+            );
+        }
+        match new.piece_index_by_field(mv.to()) {
+            Ok(u) => {
+                if mv.promote() != EMPTY {
+                    new = new.change_piece(u, PAWN);
+                }
+                new = new.move_piece(u, mv.from());
+            }
+            Err(KING) => new = new.move_king(mv.player(), mv.from()),
+            Err(x) => {
+                panic!("attempt to unapply {}, but {} is {:?}", mv, mv.to(), x);
+            }
+        }
+        if uncapture != EMPTY {
+            let u = new.index_of_free();
+            new = new.change_piece(u, uncapture).move_piece(u, mv.to());
+        }
+        new.ordered()
     }
 
     /// Return a `CPos` where the move has been applied.

@@ -680,5 +680,19 @@ pub fn test3(pos: &Position) -> Result<(), String> {
         print!(" {}", mv);
     }
     println!();
+    for mv in cpos.reverse_move_iterator(pos.turn()) {
+        let unc = if mv.is_capture_by_pawn() { QUEEN } else { EMPTY };
+        let prev = cpos.unapply(mv, unc);
+        let v = prev.valid(pos.turn().opponent());
+        println!("unapplying {} yields {:?} (valid:{})", mv, prev, v);
+        if v {
+            let rpos = prev.apply(mv);
+            if rpos == cpos {
+                println!("re-applying {} yields original.", mv)
+            } else {
+                println!("re-applying {} yields different {:?}", mv, rpos);
+            }
+        }
+    }
     Ok(())
 }
