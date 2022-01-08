@@ -6,7 +6,7 @@ use super::cpos::{CPos, Signature};
 use super::cposio::{cpos_file_size, mk_egtb_path, CPosReader};
 use super::fieldset::{BitSet, Field};
 use super::mdb;
-use super::position::{bit, pieceTargets, showMoves, showMovesSAN};
+use super::position::{bit, pieceTargets, showMoves, showMovesSAN, Position};
 use crate::fen::encodeFEN;
 // use crate::util::formatted64;
 
@@ -44,9 +44,9 @@ pub fn piece_sources(piece: Piece, player: Player, to: Field) -> BitSet {
 }
 
 /// Find raw `Move`s for position in `cpos` attribute assuming it is `player`s turn.
-/// The `CPos` must be `CPos::valid` for the player, otherwise applying them may panic.
+/// The `CPos` must be `CPos::valid` for the player, otherwise applying the generated moves may panic.
 ///
-/// Generated `Move`s must be checked for validity after application. General pattern is like
+/// Generated `Move`s must also be checked for validity after application. General pattern is like
 ///
 /// ```
 /// if cpos.valid(player) {
@@ -449,6 +449,109 @@ impl CPosReverseMoveIterator {
     }
 }
 
+impl Iterator for CPosReverseMoveIterator {
+    type Item = Move;
+    /// Give us the next **raw** backwards move. Must be checked for validity.
+    fn next(&mut self) -> Option<Self::Item> {
+        let me = self.player.opponent();
+        while self.index < 5 {
+            match self.sources.next() {
+                None if self.promotion => {
+                    let rank = if me == WHITE { 8 } else { 1 };
+                    self.index += 1;
+                    if self.index < 4 {
+                        let pc = self.cpos.piece_at(self.index);
+                        let f = self.cpos.field_at(self.index);
+                        if pc < KING && pc > PAWN && self.cpos.player_at(self.index) == me && f.rank() == rank
+                        {
+                            // found next piece
+                            self.sources =
+                                if me == WHITE { mdb::whitePawnSources(f) } else { mdb::blackPawnSources(f) };
+                        };
+                        // if this was not a piece eligible for promotion,
+                        // continue with still empty self.sources, this'll try the next one
+                    } else {
+                        self.promotion = false;
+                        for u in 0..4 {
+                            if self.cpos.piece_at(u) != EMPTY && self.cpos.player_at(u) == me {
+                                self.index = u;
+                                break;
+                            }
+                        }
+                        self.sources = if self.index < 4 {
+                            piece_sources(self.cpos.piece_at(self.index), me, self.cpos.field_at(self.index))
+                        } else {
+                            piece_sources(KING, me, self.cpos.players_king(me))
+                        };
+                    };
+                }
+                None => {
+                    // continue with next piece, if any, or the king
+                    self.index += 1;
+                    if self.index < 4 {
+                        let pc = self.cpos.piece_at(self.index);
+                        if pc != EMPTY && self.cpos.player_at(self.index) == me {
+                            // found next piece
+                            self.sources = piece_sources(pc, me, self.cpos.field_at(self.index));
+                        };
+                    } else if self.index == 4 {
+                        self.sources = piece_sources(KING, me, self.cpos.players_king(me));
+                    } else
+                    /* if self.index > 4 */
+                    {
+                        return None;
+                    };
+                }
+                Some(from) if self.occupied.member(from) => {}
+                Some(from) => {
+                    let to = if self.index < 4 {
+                        self.cpos.field_at(self.index)
+                    } else {
+                        self.cpos.players_king(me)
+                    };
+                    let piece = if self.index < 4 { self.cpos.piece_at(self.index) } else { KING };
+                    let mv = Move::new(me, piece, EMPTY, from, to);
+                    match piece {
+                        PAWN => {
+                            let es = match me {
+                                WHITE => mdb::canWhitePawn(from, to) - bit(to),
+                                BLACK => mdb::canBlackPawn(from, to) - bit(to),
+                            };
+                            // since to is a PAWN, this was not a promotion
+                            if self.all_empty(es) {
+                                return Some(mv);
+                            };
+                        }
+                        KNIGHT | BISHOP | ROOK | QUEEN if self.promotion => {
+                            // promotional move
+                            return Some(Move::new(me, PAWN, piece, from, to));
+                        }
+                        BISHOP => {
+                            if self.all_empty(mdb::canBishop(from, to)) {
+                                return Some(mv);
+                            }
+                        }
+                        ROOK => {
+                            if self.all_empty(mdb::canRook(from, to)) {
+                                return Some(mv);
+                            }
+                        }
+                        QUEEN => {
+                            if self.all_empty(mdb::canBishop(from, to))
+                                || self.all_empty(mdb::canRook(from, to))
+                            {
+                                return Some(mv);
+                            }
+                        }
+                        _other => return Some(mv),
+                    };
+                }
+            }
+        }
+        None
+    }
+}
+
 pub fn test1(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let egtb_path = mk_egtb_path(signature, "egtb");
@@ -567,5 +670,15 @@ pub fn test2(sig: &str) -> Result<(), String> {
     for each in signature.predecessors().iter() {
         print!("{} through {:?}", each.0, each.1);
     }
+    Ok(())
+}
+
+pub fn test3(pos: &Position) -> Result<(), String> {
+    let cpos = pos.compressed();
+    print!("{:?} is result of one of:", cpos);
+    for mv in CPosReverseMoveIterator::new(cpos, pos.turn()) {
+        print!(" {}", mv);
+    }
+    println!();
     Ok(())
 }

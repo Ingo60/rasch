@@ -94,6 +94,18 @@ fn main() {
                 std::process::exit(1)
             }
         }
+    } else if argv[1] == "test3" && argv.len() == 8 {
+        let mut fen = String::from(argv[2].clone());
+        for i in 3..8 {
+            fen.push(' ');
+            fen.push_str(&argv[i]);
+        }
+        match decodeFEN(&fen).and_then(|p| CM::test3(&p)) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+            }
+        }
     } else if argv[1].starts_with("make") && argv.len() >= 3 {
         match E::make(&argv[2]) {
             Ok(_) => {}
