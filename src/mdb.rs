@@ -122,6 +122,13 @@ static mut whitePawnFrom: [u64; 64] = [0; 64];
 static mut blackPawnFrom: [u64; 64] = [0; 64];
 
 /**
+Like `whitePawnFrom`, but lists also the fields a PAWN could come from without capturing.
+For example: `whitePawnComeTo[E4] = {E2,E3,D3,F3}`
+ */
+static mut whitePawnComeTo: [u64; 64] = [0; 64];
+static mut blackPawnComeTo: [u64; 64] = [0; 64];
+
+/**
      tell if we can go into a certain direction from some field
 */
 pub fn canGo(from: u64, direction: i32) -> bool {
@@ -184,24 +191,28 @@ unsafe fn genPawn() {
         if canGo(from, NORTH) {
             let to = goTowards(from, NORTH);
             whitePawnTo[setToIndex(from)] |= to;
+            whitePawnComeTo[setToIndex(to)] |= from;
             whitePawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = to;
             if (from & 0xff00u64) != 0 && canGo(to, NORTH) {
                 // A2..H2 second rank
                 let mask = to;
                 let to = goTowards(to, NORTH);
                 whitePawnTo[setToIndex(from)] |= to;
+                whitePawnComeTo[setToIndex(to)] |= from;
                 whitePawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = to | mask;
             }
         }
         if canGo(from, SOUTH) {
             let to = goTowards(from, SOUTH);
             blackPawnTo[setToIndex(from)] |= to;
+            blackPawnComeTo[setToIndex(to)] |= from;
             blackPawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = to;
             if (from & 0x00ff000000000000u64) != 0 && canGo(to, SOUTH) {
                 // A7..H7 seventh rank
                 let mask = to;
                 let to = goTowards(to, SOUTH);
                 blackPawnTo[setToIndex(from)] |= to;
+                blackPawnComeTo[setToIndex(to)] |= from;
                 blackPawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = to | mask;
             }
         }
@@ -209,24 +220,28 @@ unsafe fn genPawn() {
             let to = goTowards(from, NE);
             whitePawnTo[setToIndex(from)] |= to;
             whitePawnFrom[setToIndex(to)] |= from;
+            whitePawnComeTo[setToIndex(to)] |= from;
             whitePawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = LEGAL;
         }
         if canGo(from, NW) {
             let to = goTowards(from, NW);
             whitePawnTo[setToIndex(from)] |= to;
             whitePawnFrom[setToIndex(to)] |= from;
+            whitePawnComeTo[setToIndex(to)] |= from;
             whitePawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = LEGAL;
         }
         if canGo(from, SE) {
             let to = goTowards(from, SE);
             blackPawnTo[setToIndex(from)] |= to;
             blackPawnFrom[setToIndex(to)] |= from;
+            blackPawnComeTo[setToIndex(to)] |= from;
             blackPawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = LEGAL;
         }
         if canGo(from, SW) {
             let to = goTowards(from, SW);
             blackPawnTo[setToIndex(from)] |= to;
             blackPawnFrom[setToIndex(to)] |= from;
+            blackPawnComeTo[setToIndex(to)] |= from;
             blackPawnFromTo[(setToIndex(from) << 6) + setToIndex(to)] = LEGAL;
         }
         from <<= 1;
@@ -390,9 +405,19 @@ pub fn whitePawnTargets(from: Field) -> BitSet {
     unsafe { BitSet::from(whitePawnTo[from as usize]) }
 }
 
+/// The set of fields from whence a white pawn could come to field `to`.
+pub fn whitePawnSources(to: Field) -> BitSet {
+    unsafe { BitSet::from(whitePawnComeTo[to as usize]) }
+}
+
 /// The set of fields that can be reached with a black pawn standing on `from`.
 pub fn blackPawnTargets(from: Field) -> BitSet {
     unsafe { BitSet::from(blackPawnTo[from as usize]) }
+}
+
+/// The set of fields from whence a black pawn could come to field `to`.
+pub fn blackPawnSources(to: Field) -> BitSet {
+    unsafe { BitSet::from(blackPawnComeTo[to as usize]) }
 }
 
 /// The set of fields that can be reached with a bishop standing on `from`.

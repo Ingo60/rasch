@@ -8,13 +8,55 @@ use super::fieldset::{BitSet, Field};
 use super::mdb;
 use super::position::{bit, pieceTargets, showMoves, showMovesSAN};
 use crate::fen::encodeFEN;
-use crate::util::formatted64;
+// use crate::util::formatted64;
 
 use CPosState::*;
 use Field::*;
 use Piece::*;
 use Player::*;
 
+/// the set of fields from whence a piece can come to a given field.
+/// ```
+/// use rasch::fieldset::{BitSet, Field};
+/// use rasch::position::bit;
+/// use rasch::basic::{Piece, Player};
+/// use Field::*;
+/// use Piece::*;
+/// use Player::*;
+/// use rasch::cposmove::*;
+/// use rasch::mdb::initStatic;
+/// initStatic();
+/// assert!(piece_sources(PAWN, WHITE, E4) == bit(E3)+bit(E2)+bit(D3)+bit(F3));
+/// ```
+pub fn piece_sources(piece: Piece, player: Player, to: Field) -> BitSet {
+    match piece {
+        PAWN => match player {
+            WHITE => mdb::whitePawnSources(to),
+            BLACK => mdb::blackPawnSources(to),
+        },
+        KNIGHT => mdb::knightTargets(to),
+        BISHOP => mdb::bishopTargets(to),
+        ROOK => mdb::rookTargets(to),
+        QUEEN => mdb::rookTargets(to) + mdb::bishopTargets(to),
+        KING => mdb::kingTargets(to),
+        EMPTY => BitSet::empty(),
+    }
+}
+
+/// Find raw `Move`s for position in `cpos` attribute assuming it is `player`s turn.
+/// The `CPos` must be `CPos::valid` for the player, otherwise applying them may panic.
+///
+/// Generated `Move`s must be checked for validity after application. General pattern is like
+///
+/// ```
+/// if cpos.valid(player) {
+///     for mv in cpos.move_iterator() {
+///         if cpos.apply(mv).valid(player.opponent()) {
+///             // the mv was valid
+///         }
+///     }
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CPosMoveIterator {
     cpos: CPos,
@@ -24,6 +66,48 @@ pub struct CPosMoveIterator {
     whites: BitSet,
     occupied: BitSet,
     targets: BitSet,
+}
+
+/// Find raw `Move`s of the opponent of `player` that could have resulted in the given `cpos`.
+/// The `CPos` should be `CPos::valid` for the player, else it doesn't make sense.
+///
+/// By `CPos::unapply`ing the generated moves to the `CPos` one obtains possible positions (not necessarily
+/// valid ones, one has to check for this) from where
+/// applying the same move will result in the original `CPos`.
+///
+/// Note that unapplying a capturing pawn move **requires** a piece to be placed on the vacated `to` field.
+/// The piece may not be a `KING`, of course, and if it is also a pawn promotion, it may not be a `PAWN`.
+/// For example:
+/// ```
+/// cpos.unapply(Move:new(WHITE, PAWN, QUEEN, A7, B8), ROOK)
+/// ```
+/// will result in  a position where A7 is a white pawn and the white queen on B8 is replaced with a BLACK ROOK.
+///
+/// General pattern looks like:
+///
+/// ```
+/// if cpos.valid(player) {
+///     for mv in cpos.reverse_move_iterator() {
+///         let prev = if mv.is_capture_by_pawn() {
+///             cpos.unapply(mv, piece); // where piece is not EMPTY or KING
+///                                      // and PAWN only if no promotion
+///         }
+///         else { cpos.unapply(mv, EMPTY) } // or any piece except KING and PAWN on promotion rank
+///         if prev.valid(player.opponent()) {
+///             assert!(prev.apply(mv) == cpos);
+///         }
+///     }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CPosReverseMoveIterator {
+    cpos: CPos,
+    player: Player,
+    promotion: bool,
+    index: u64,
+    whites: BitSet,
+    occupied: BitSet,
+    sources: BitSet,
 }
 
 impl CPosMoveIterator {
@@ -263,6 +347,105 @@ impl Iterator for CPosMoveIterator {
             }
         }
         None
+    }
+}
+
+impl CPosReverseMoveIterator {
+    pub fn new(p: CPos, player: Player) -> CPosReverseMoveIterator {
+        let mut this = CPosReverseMoveIterator {
+            cpos: p,
+            player,
+            promotion: true, // e.g. give a pawn move e7e8q for a queen on e8
+            whites: BitSet::empty(),
+            occupied: BitSet::empty(),
+            index: 4,
+            sources: BitSet::empty(),
+        };
+        let wkbit = bit(p.white_king());
+        this.occupied = this.occupied + wkbit;
+        this.whites = this.whites + wkbit;
+        this.occupied = this.occupied + bit(p.black_king());
+        for u in 0..4 {
+            let piece = p.piece_at(u);
+            if piece != EMPTY {
+                let f = p.field_at(u);
+                let fbs = bit(f);
+                this.occupied = this.occupied + fbs;
+                if p.player_at(u) == WHITE {
+                    this.whites = this.whites + fbs;
+                    if player == BLACK && f.rank() == 8 && u < this.index && piece < KING && piece > PAWN {
+                        this.index = u;
+                    }
+                } else
+                /* piece is black */
+                {
+                    if player == WHITE && f.rank() == 1 && u < this.index && piece < KING && piece > PAWN {
+                        this.index = u;
+                    }
+                }
+            }
+        }
+        if this.index < 4 {
+            // there is some piece that could be the result of a promotion
+            let f = p.field_at(this.index);
+            this.sources = if this.player == BLACK {
+                mdb::whitePawnSources(f)
+            } else {
+                mdb::blackPawnSources(f)
+            };
+        } else {
+            this.promotion = false;
+            this.index = 4;
+            for u in 0..4 {
+                if p.piece_at(u) != EMPTY && p.player_at(u) != this.player {
+                    this.index = u;
+                    break;
+                }
+            }
+            this.sources = if this.index < 4 {
+                piece_sources(
+                    p.piece_at(this.index),
+                    this.player.opponent(),
+                    p.field_at(this.index),
+                )
+            } else {
+                piece_sources(
+                    KING,
+                    this.player.opponent(),
+                    p.players_king(this.player.opponent()),
+                )
+            };
+        }
+
+        this
+    }
+
+    /// set of fields occupied by player
+    pub fn occupied_by_player(&self) -> BitSet {
+        if self.player == WHITE {
+            self.whites
+        } else {
+            self.occupied - self.whites
+        }
+    }
+
+    /// set of fields occupied by opponent
+    pub fn occupied_by_opponent(&self) -> BitSet {
+        if self.player == WHITE {
+            self.occupied - self.whites
+        } else {
+            self.whites
+        }
+    }
+
+    /// set of empty fields in this position
+    pub fn empty(&self) -> BitSet {
+        !self.occupied
+    }
+
+    /// tell if all fields in given bitset are empty
+    pub fn all_empty(&self, fields: BitSet) -> bool {
+        self.occupied.intersection(fields).null()
     }
 }
 
