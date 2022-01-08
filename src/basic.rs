@@ -231,6 +231,17 @@ impl Move {
         self != NO_MOVE
     }
 
+    /// `true` if and only if this is a capturing pawn moves
+    #[inline]
+    pub fn is_capture_by_pawn(self) -> bool {
+        let p = self.player();
+        let from = self.mv & 0x3f;
+        let to = (self.mv >> 6) & 0x3f;
+        self.piece() == PAWN
+            && (p == WHITE && from < to && (to - from == 7 || to - from == 9)
+                || p == BLACK && to < from && (from - to == 7 || from - to == 9))
+    }
+
     /// Which player is moving?
     #[inline]
     pub fn player(self) -> Player {
