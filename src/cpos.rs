@@ -1259,7 +1259,7 @@ impl CPos {
         if bits & CPos::CODE4_BITS != 0 {
             bits ^= 8 << CPos::CODE4_SHIFT;
         }
-        // we also need to exchange kings and piece codes
+        // we also need to exchange kings
         // we assume here that fixed black bits are further left than the corresponding white ones
         // safer, but slower, would be `(bits & CPos::BLACK_KING) >> CPos::BLACK_KING_SHIFT << CPos::WHITE_KING_SHIFT)`
         bits = (bits & !CPos::KING_BITS)                      // clear affected bits

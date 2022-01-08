@@ -1,6 +1,8 @@
 //! Move generation for CPos
 //!
 
+use std::collections::HashSet;
+
 use super::basic::{CPosState, Move, Piece, Player};
 use super::cpos::{CPos, Signature};
 use super::cposio::{cpos_file_size, mk_egtb_path, CPosReader};
@@ -668,7 +670,23 @@ pub fn test2(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     println!("{} predecessors:", signature);
     for each in signature.predecessors().iter() {
-        print!("{} through {:?}", each.0, each.1);
+        println!("{} through {:?}", each.0, each.1);
+    }
+    let pmap = signature.predecessors();
+    for p in pmap.keys() {
+        if !p.is_canonic() && pmap.contains_key(&p.mk_canonic()) {
+            let a1 = pmap.get(&p).unwrap();
+            let a2 = pmap.get(&p.mk_canonic()).unwrap();
+            println!(
+                "{} has {} (by {:?}) and {} (by {:?}) as predecessors.",
+                signature,
+                p,
+                a1,
+                p.mk_canonic(),
+                a2
+            );
+            // return Err("Mist".to_string());
+        }
     }
     Ok(())
 }
@@ -691,6 +709,95 @@ pub fn test3(pos: &Position) -> Result<(), String> {
                 println!("re-applying {} yields original.", mv)
             } else {
                 println!("re-applying {} yields different {:?}", mv, rpos);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Does it ever happen that SigA and canonic(SigA) are both predecessors of Sig?
+/// ```
+/// rasch::cposmove::test4().unwrap();
+/// ```
+pub fn test4() -> Result<(), String> {
+    let qrbnp = vec![QUEEN, ROOK, BISHOP, KNIGHT, PAWN];
+    let mut sigs: HashSet<Signature> = HashSet::new();
+    let mut vsig = Vec::new();
+    for a in qrbnp.clone() {
+        vsig.clear();
+        vsig.push((WHITE, a));
+        sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+
+        for b in qrbnp.clone() {
+            vsig.clear();
+            vsig.push((WHITE, a));
+            vsig.push((WHITE, b));
+            sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+            vsig.clear();
+            vsig.push((WHITE, a));
+            vsig.push((BLACK, b));
+            sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+
+            for c in qrbnp.clone() {
+                vsig.clear();
+                vsig.push((WHITE, a));
+                vsig.push((WHITE, b));
+                vsig.push((WHITE, c));
+                sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                vsig.clear();
+                vsig.push((WHITE, a));
+                vsig.push((WHITE, b));
+                vsig.push((BLACK, c));
+                sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                vsig.clear();
+                vsig.push((WHITE, a));
+                vsig.push((BLACK, b));
+                vsig.push((BLACK, c));
+                sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                for d in qrbnp.clone() {
+                    vsig.clear();
+                    vsig.push((WHITE, a));
+                    vsig.push((WHITE, b));
+                    vsig.push((WHITE, c));
+                    vsig.push((WHITE, d));
+                    sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                    vsig.clear();
+                    vsig.push((WHITE, a));
+                    vsig.push((WHITE, b));
+                    vsig.push((WHITE, c));
+                    vsig.push((BLACK, d));
+                    sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                    vsig.clear();
+                    vsig.push((WHITE, a));
+                    vsig.push((WHITE, b));
+                    vsig.push((BLACK, c));
+                    vsig.push((BLACK, d));
+                    sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                    vsig.clear();
+                    vsig.push((WHITE, a));
+                    vsig.push((BLACK, b));
+                    vsig.push((BLACK, c));
+                    vsig.push((BLACK, d));
+                    sigs.insert(Signature::from_vec(&vsig).mk_canonic());
+                }
+            }
+        }
+    }
+    for sig in sigs {
+        let pmap = sig.predecessors();
+        for p in pmap.keys() {
+            if !p.is_canonic() && pmap.contains_key(&p.mk_canonic()) {
+                let a1 = pmap.get(&p).unwrap();
+                let a2 = pmap.get(&p.mk_canonic()).unwrap();
+                println!(
+                    "{} has {} (by {:?}) and {} (by {:?}) as predecessors.",
+                    sig,
+                    p,
+                    a1,
+                    p.mk_canonic(),
+                    a2
+                );
+                // return Err("Mist".to_string());
             }
         }
     }
