@@ -68,7 +68,7 @@ pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
 /// EGTB file.
 ///
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Signature {
     /// encoding is 6 bits for each piece type, where the most significant bits hold the number of queens and the least
     /// significant ones the number of pawns.
@@ -511,9 +511,41 @@ impl Signature {
         };
         map
     }
+
+    /// Get all the predecessor `Signatures` with canonic/non-canonic ones grouped properly
+    pub fn get_relatives(&self) -> Vec<RelationMode> {
+        let mut result = Vec::with_capacity(16);
+        let map = self.predecessors();
+        for (&s1, &a1) in map.iter() {
+            let s2 = s1.opposite();
+
+            match map.get(&s2) {
+                Some(&a2) if s1 != s2 => {
+                    if s1.is_canonic() {
+                        result.push(Both(s1, a1, s2, a2));
+                    };
+                    // we either had (s2,s1) before, or it will come later
+                }
+                _none => {
+                    if s1.is_canonic() {
+                        result.push(Canonic(s1, a1))
+                    } else {
+                        result.push(NonCanonic(s1, a1))
+                    }
+                }
+            }
+        }
+        result
+    }
 }
 
 impl Display for Signature {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl fmt::Debug for Signature {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.write_str(&self.display())
     }
@@ -523,14 +555,33 @@ impl Display for Signature {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Alienation {
     /// - by capturing a piece of a certain kind, e.g. KQ-KN → KN-K with Capture(WHITE, QUEEN)
+    /// One has to look for opponent's moves here.
     Capture(Player, Piece),
     /// - by promoting a PAWN, e.g. KR-KP → KQ-KR wih Promote(BLACK, QUEEN)
+    /// Look for `Player`s `PAWN` moves.
     Promote(Player, Piece),
     /// - by promoting a PAWN with a capturing move, e.g. KR-KP → KB-K with PromoteAndCapture(BLACK, BISHOP, ROOK)
     /// (It goes without saying that the captured piece must be one of the opponent's pieces.)
+    /// Look for `Player`s `PAWN` moves.
     PromoteAndCapture(Player, Piece, Piece),
 }
 pub use Alienation::*;
+
+/// `RelationMode` describes how a `Signature` is related to one of its predecessors.
+/// It is possible that a non-canonic `Signature` is a predecessor of some `Signature` and the canonic
+/// counterpart is not. It is also possible that both are predecessors.
+///
+/// We need this to avoid scanning predecessor EGTBs multiple times.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationMode {
+    /// only the canonic one is predecessor
+    Canonic(Signature, Alienation),
+    /// only the non-canonic one is predecessor
+    NonCanonic(Signature, Alienation),
+    /// both canonic and non-canonic ones are predecessors
+    Both(Signature, Alienation, Signature, Alienation),
+}
+pub use RelationMode::*;
 
 /// # Compressed position for the endgame tablebases.
 
@@ -807,6 +858,35 @@ impl CPos {
     }
 
     /// make a reverse move iterator from this CPos
+    ///
+    /// By `CPos::unapply`ing the generated moves to the `CPos` one obtains possible positions (not necessarily
+    /// valid ones, one has to check for this) from where
+    /// applying the same move will result in the original `CPos`.
+    ///
+    /// Note that unapplying a capturing pawn move **requires** a piece to be placed on the vacated `to` field.
+    /// The piece may not be a `KING`, of course, and if it is also a pawn promotion, it may not be a `PAWN`.
+    /// For example:
+    /// ```
+    /// cpos.unapply(Move:new(WHITE, PAWN, QUEEN, A7, B8), ROOK)
+    /// ```
+    /// will result in  a position where A7 is a white pawn and the white queen on B8 is replaced with a BLACK ROOK.
+    ///
+    /// General pattern looks like:
+    ///
+    /// ```
+    /// if cpos.valid(player) {
+    ///     for mv in cpos.reverse_move_iterator() {
+    ///         let prev = if mv.is_capture_by_pawn() {
+    ///             cpos.unapply(mv, piece); // where piece is not EMPTY or KING
+    ///                                      // and PAWN only if no promotion
+    ///         }
+    ///         else { cpos.unapply(mv, EMPTY) } // or any piece except KING and PAWN on promotion rank
+    ///         if prev.valid(player.opponent()) {
+    ///             assert!(prev.apply(mv) == cpos);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub fn reverse_move_iterator(&self, player: Player) -> CPosReverseMoveIterator {
         CPosReverseMoveIterator::new(*self, player)
     }
@@ -1298,11 +1378,11 @@ impl CPos {
         if !LEFT_HALF.member(kf) {
             this = this.mirror_v();
         }
-        assert!(LEFT_HALF.member(this.white_king()));
+        debug_assert!(LEFT_HALF.member(this.white_king()));
         // the king is now in the left half
         if !has_pawns && !LOWER_HALF.member(kf) {
             this = this.mirror_h();
-            assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
+            debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
         }
         // now we need to sort out the positions where the black king is smaller than the white one
         if sig.is_symmetric() && !has_pawns && this.white_king() > this.black_king() {
@@ -1314,7 +1394,7 @@ impl CPos {
             // Thus, if the field of the former black king was smaller,
             // this now white king must be in the lower half.
             // After mirror_v, it is thus in the lower left quarter.
-            assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
+            debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
         }
         if this.canonic_was_mirrored() {
             this.ordered()
