@@ -1,16 +1,16 @@
 //! Move generation for CPos
 //!
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::basic::{CPosState, Move, Piece, Player};
 use super::cpos::{CPos, Signature};
 use super::cposio::{cpos_file_size, mk_egtb_path, CPosReader};
+use super::fen::encodeFEN;
 use super::fieldset::{BitSet, Field};
 use super::mdb;
 use super::position::{bit, pieceTargets, showMoves, showMovesSAN, Position};
-use crate::fen::encodeFEN;
-// use crate::util::formatted64;
+use super::util::formatted_sz;
 
 use CPosState::*;
 use Field::*;
@@ -669,24 +669,9 @@ pub fn test1(sig: &str) -> Result<(), String> {
 pub fn test2(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     println!("{} predecessors:", signature);
-    for each in signature.predecessors().iter() {
-        println!("{} through {:?}", each.0, each.1);
-    }
-    let pmap = signature.predecessors();
-    for p in pmap.keys() {
-        if !p.is_canonic() && pmap.contains_key(&p.mk_canonic()) {
-            let a1 = pmap.get(&p).unwrap();
-            let a2 = pmap.get(&p.mk_canonic()).unwrap();
-            println!(
-                "{} has {} (by {:?}) and {} (by {:?}) as predecessors.",
-                signature,
-                p,
-                a1,
-                p.mk_canonic(),
-                a2
-            );
-            // return Err("Mist".to_string());
-        }
+    let relatives = signature.get_relatives();
+    for r in relatives {
+        println!("{:?}", r);
     }
     Ok(())
 }
@@ -715,7 +700,7 @@ pub fn test3(pos: &Position) -> Result<(), String> {
     Ok(())
 }
 
-/// Does it ever happen that SigA and canonic(SigA) are both predecessors of Sig?
+/// Does it ever happen that SigA and canonic(SigA) are both predecessors of SigB?
 /// ```
 /// rasch::cposmove::test4().unwrap();
 /// ```
@@ -800,6 +785,58 @@ pub fn test4() -> Result<(), String> {
                 // return Err("Mist".to_string());
             }
         }
+    }
+    Ok(())
+}
+
+/// look for MATE positions in sorted file
+pub fn test5(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let egtb_path = mk_egtb_path(signature, "egtb");
+    let sorted_path = mk_egtb_path(signature, "sorted");
+    let mut path: &str = &egtb_path;
+    let rdr = CPosReader::new(&egtb_path).or_else(|_| {
+        path = &sorted_path;
+        CPosReader::new(&sorted_path)
+    })?;
+    let mut mate = vec![0, 0];
+    let mut canm = vec![0, 0];
+    // let mut egtbmap = HashMap::new();
+    for cpos in rdr {
+        for player in [BLACK, WHITE] {
+            if cpos.state(player) != INVALID_POS && cpos.state(player.opponent()) == INVALID_POS {
+                // player's KING in check
+                if let None = cpos
+                    .move_iterator(player)
+                    .filter(|&mv| cpos.apply(mv).valid(player.opponent()))
+                    .next()
+                {
+                    mate[player as usize] += 1;
+                    assert!(cpos.state(player) == MATE);
+                    for mv in cpos.reverse_move_iterator(player) {
+                        if !mv.is_capture_by_pawn() && !mv.is_promotion() {
+                            let can_mate = cpos.unapply(mv, EMPTY);
+                            if can_mate.valid(player.opponent()) {
+                                let canonic_can_mate = can_mate.mk_canonical(); // find(&mut egtbmap)?;
+                                let winner = if canonic_can_mate.canonic_has_bw_switched() {
+                                    player
+                                } else {
+                                    player.opponent()
+                                };
+                                // assert!(canonic_can_mate.state(winner) == CAN_MATE);
+                                canm[winner as usize] += 1;
+                            }
+                        }
+                    }
+                } else {
+                    assert!(cpos.state(player) != MATE);
+                }
+            }
+        }
+    }
+    for player in [BLACK, WHITE] {
+        println!("{:?} is mate: {}", player, formatted_sz(mate[player as usize]));
+        println!("{:?} can mate: {}", player, formatted_sz(canm[player as usize]));
     }
     Ok(())
 }

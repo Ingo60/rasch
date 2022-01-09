@@ -113,6 +113,14 @@ fn main() {
                 eprintln!("error: {}", s);
             }
         }
+    } else if argv[1] == "test5" && argv.len() >= 3 {
+        match CM::test5(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
     } else if argv[1].starts_with("make") && argv.len() >= 3 {
         match E::make(&argv[2]) {
             Ok(_) => {}
