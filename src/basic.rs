@@ -242,6 +242,14 @@ impl Move {
                 || p == BLACK && to < from && (from - to == 7 || from - to == 9))
     }
 
+    /// `true` if and only if this is a promotion
+    pub fn is_promotion(self) -> bool {
+        self.piece() == PAWN
+            && self.promote() > PAWN
+            && self.promote() < KING
+            && self.to().rank() == if self.player() == WHITE { 8 } else { 1 }
+    }
+
     /// Which player is moving?
     #[inline]
     pub fn player(self) -> Player {
