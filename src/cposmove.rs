@@ -1,7 +1,7 @@
 //! Move generation for CPos
 //!
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::basic::{CPosState, Move, Piece, Player};
 use super::cpos::{CPos, Signature};

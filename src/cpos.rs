@@ -8,7 +8,7 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
-    env, fmt,
+    fmt,
     fmt::{Display, Formatter},
     fs::File,
     hash::{Hash, Hasher},
@@ -17,6 +17,7 @@ use std::{
 
 use super::{
     basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
+    cposio::mk_egtb_path,
     cposmove::{CPosMoveIterator, CPosReverseMoveIterator},
     fen::encodeFEN,
     fieldset::{BitSet, Field},
@@ -1622,14 +1623,11 @@ impl CPos {
                 CPos { bits: (cp.bits & !CPos::TRANS_BITS) | (canon.bits & CPos::TRANS_BITS) })
     }
 
-    /// A variant of `find` where the searched `CPos` is guaranteed canonical.
-    pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
+    /// Helper function for managing the EGTB map
+    /// Makes sure the file corresponding to the given signature is open.
+    fn egtb_open(canonsig: Signature, ext: &str, hash: &mut EgtbMap) -> Result<(), String> {
         if !hash.contains_key(&canonsig) {
-            let path = format!(
-                "{}/{}.egtb",
-                env::var("EGTB").unwrap_or(String::from("egtb")),
-                canonsig.display()
-            );
+            let path = mk_egtb_path(canonsig, ext);
             let mut rfile =
                 File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
             let upper = rfile
@@ -1648,6 +1646,13 @@ impl CPos {
             };
             hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
         }
+        Ok(())
+    }
+
+    /// A variant of `find` where the searched `CPos` is guaranteed canonical.
+    pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
+        CPos::egtb_open(canonsig, "egtb", hash)?;
+
         // the unwrap is justified because of the insert() above
         // we don't want hash.entry(canonsig).or_insert(...) because this would open the file every time
         // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
@@ -1667,11 +1672,7 @@ impl CPos {
                 CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
             } {
                 Err(ioe) => {
-                    let path = format!(
-                        "{}/{}.egtb",
-                        env::var("EGTB").unwrap_or(String::from("./egtb")),
-                        canonsig.display()
-                    );
+                    let path = mk_egtb_path(canonsig, "egtb");
                     return Err(format!(
                         "error reading EGTB file {} at {} ({})",
                         path,
@@ -1713,35 +1714,9 @@ impl CPos {
             Err(String::from("CANT_MOVE"))
         }?;
 
-        if !hash.contains_key(&canonsig) {
-            let path = format!(
-                "{}/{}.moves",
-                env::var("EGTB").unwrap_or(String::from("egtb")),
-                canonsig.display()
-            );
-            let mut rfile =
-                File::open(&path).map_err(|ioe| format!("could not open moves file {} ({})", path, ioe))?;
-            let upper = rfile
-                .seek(SeekFrom::End(0))
-                .map_err(|ioe| format!("error seeking moves file {} ({})", path, ioe))?;
-            let npos = upper / 8;
-            let mid = npos / 2;
-            let m_pos = if npos > 0 {
-                // this read must not be done for empty EGTBs
-                CPos::read_at(&mut rfile, SeekFrom::Start(8 * mid))
-                    .map_err(|ioe| format!("error reading moves file {} at {} ({})", path, 8 * mid, ioe))?
-            } else {
-                // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
-                // All searches will terminate immediately because the number of entries is 0.
-                CPos { bits: 0 }.with_state(INVALID_POS, INVALID_POS)
-            };
-            hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
-        }
+        CPos::egtb_open(canonsig, "moves", hash)?;
 
-        // the unwrap is justified because of the insert() above
-        // we don't want hash.entry(canonsig).or_insert(...) because this would open the file every time
-        // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
-        // of errors upwards.
+        // the unwrap is justified because of the egtb_open() above
         let blubb = hash.get_mut(&canonsig).unwrap();
 
         let maxpos = blubb.1;
@@ -1757,11 +1732,7 @@ impl CPos {
                 CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
             } {
                 Err(ioe) => {
-                    let path = format!(
-                        "{}/{}.moves",
-                        env::var("EGTB").unwrap_or(String::from("./egtb")),
-                        canonsig.display()
-                    );
+                    let path = mk_egtb_path(canonsig, "moves");
                     return Err(format!(
                         "error reading EGTB file {} at {} ({})",
                         path,
