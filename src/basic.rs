@@ -242,12 +242,22 @@ impl Move {
                 || p == BLACK && to < from && (from - to == 7 || from - to == 9))
     }
 
+    /// `true` if and only if this is a `PAWN` move that does not capture
+    pub fn is_non_capture_pawn_mv(self) -> bool {
+        self.piece() == PAWN && !self.is_capture_by_pawn()
+    }
+
     /// `true` if and only if this is a promotion
     pub fn is_promotion(self) -> bool {
         self.piece() == PAWN
             && self.promote() > PAWN
             && self.promote() < KING
             && self.to().rank() == if self.player() == WHITE { 8 } else { 1 }
+    }
+
+    /// `true` if and only if this capturing move could capture, `false` for non capturing `PAWN` moves.
+    pub fn may_capture(self) -> bool {
+        self.piece() != PAWN || self.is_capture_by_pawn()
     }
 
     /// Which player is moving?
