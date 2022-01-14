@@ -1,8 +1,7 @@
-use std::io::ErrorKind::UnexpectedEof;
 use std::{
     env,
     fs::{metadata, File, OpenOptions},
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter, ErrorKind::UnexpectedEof, SeekFrom, Write},
     path::Path,
 };
 
@@ -225,4 +224,98 @@ pub fn cpos_open_reader(path: &str) -> Result<BufReader<File>, String> {
     File::open(path)
         .and_then(|f| Ok(BufReader::with_capacity(BUFSZ, f)))
         .map_err(|e| format!("Can't create {} ({})", path, e))
+}
+
+pub fn cpos_rw_file(path: &str) -> Result<File, String> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("Can't read/write {} ({})", path, e))
+}
+
+pub enum CPosDirect {
+    Disk(File, usize, usize),
+    Memory(Vec<CPos>),
+}
+
+use CPosDirect::*;
+
+impl CPosDirect {
+    pub fn new_disk(path: &str) -> Result<CPosDirect, String> {
+        let f = cpos_rw_file(path)?;
+        let sz = cpos_file_size(path)?;
+        Ok(Disk(f, 0, sz))
+    }
+
+    pub fn new_memory(v: Vec<CPos>) -> Result<CPosDirect, String> {
+        Ok(Memory(v))
+    }
+
+    pub fn lookup(&mut self, cpos: CPos) -> Result<(CPos, usize), String> {
+        match self {
+            Disk(f, low, high) => binary_file_search(cpos, f, *low, *high),
+            Memory(v) => v
+                .binary_search(&cpos)
+                .and_then(|u| Ok((v[u], u)))
+                .map_err(|_| String::from("NOT FOUND")),
+        }
+    }
+
+    pub fn update(&mut self, cpos: CPos, u: usize) -> Result<(), String> {
+        match self {
+            Disk(f, _, _) => cpos
+                .write_at(f, SeekFrom::Start(8 * u as u64))
+                .map_err(|_e| format!("update error at offset {}", u)),
+            Memory(v) => {
+                v[u] = cpos;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn _test() -> Result<(), String> {
+    let cpos = CPos { bits: 0 };
+    let path = mk_egtb_path(cpos.signature(), "xyz");
+    let mut disk = CPosDirect::new_disk(&path)?;
+    let v = Vec::new();
+    let mut mem = CPosDirect::new_memory(v)?;
+    let _r1 = disk.lookup(cpos);
+    let _r2 = mem.lookup(cpos);
+    Ok(())
+}
+
+pub fn binary_file_search(
+    this: CPos,
+    file: &mut File,
+    low: usize,
+    high: usize,
+) -> Result<(CPos, usize), String> {
+    let mut lower = low;
+    let mut upper = high;
+    while lower < upper {
+        let mid = lower + (upper - lower) / 2;
+        match CPos::read_at(file, SeekFrom::Start(8 * mid as u64)) {
+            Err(ioe) => {
+                return Err(format!(
+                    "error while searching pass/sorted file at {} ({})",
+                    8 * mid,
+                    ioe
+                ));
+            }
+            Ok(c) => {
+                if c == this {
+                    return Ok((c, mid));
+                } else if c < this {
+                    lower = mid + 1;
+                } else
+                /* c >  canon */
+                {
+                    upper = mid;
+                }
+            }
+        }
+    }
+    Err(String::from("NOT FOUND"))
 }
