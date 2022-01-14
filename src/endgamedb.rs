@@ -106,21 +106,24 @@
 //! equals the number of CAN_MATE positions found.
 //!
 
-use crate::cposio::{
+use super::cposio::{
     cpos_append_writer, cpos_create_writer, cpos_file_size, cpos_open_reader, mk_egtb_path, read_a_chunk,
-    CPosReader,
+    CPosDirect, CPosReader,
 };
 use crate::sortegtb::{sort_from_to, sort_moves};
 
 use super::basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece};
-use super::cpos::{CPos, EgtbMap, Signature};
+use super::cpos::{Alienation, CPos, EgtbMap, RelationMode, Signature};
+use super::cposio as CIO;
 use super::fen::{decodeFEN, encodeFEN};
 use super::fieldset::*;
 use super::position as P;
 
+use Alienation::*;
 use CPosState::*;
 use Piece::*;
 use Player::*;
+use RelationMode::*;
 
 use super::position::Position;
 use super::util::*;
@@ -843,32 +846,7 @@ fn analyze_on_disk(
 }
 
 fn binary_file_search(this: CPos, file: &mut File, low: usize, high: usize) -> Result<CPos, String> {
-    let mut lower = low;
-    let mut upper = high;
-    while lower < upper {
-        let mid = lower + (upper - lower) / 2;
-        match CPos::read_at(file, SeekFrom::Start(8 * mid as u64)) {
-            Err(ioe) => {
-                return Err(format!(
-                    "error while searching pass/sorted file at {} ({})",
-                    8 * mid,
-                    ioe
-                ));
-            }
-            Ok(c) => {
-                if c == this {
-                    return Ok(c);
-                } else if c < this {
-                    lower = mid + 1;
-                } else
-                /* c >  canon */
-                {
-                    upper = mid;
-                }
-            }
-        }
-    }
-    Err(String::from("NOT FOUND"))
+    CIO::binary_file_search(this, file, low, high).map(|r| r.0)
 }
 
 /// One pass of in-memory analysis.
@@ -1829,6 +1807,103 @@ pub fn gen(sig: String) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+pub fn scan_loosers(
+    wsig: Signature,
+    rmode: RelationMode,
+    winners: &mut Vec<CPos>,
+    um_writer: &mut BufWriter<File>,
+    db: &mut CPosDirect,
+) -> Result<(), String> {
+    let fsig = match rmode {
+        Canonic(cs, _) => cs,
+        NonCanonic(us, _) => us.mk_canonic(),
+        Both(cs, _, _, _) => cs,
+    };
+    let mut rmv = Vec::with_capacity(2);
+
+    match rmode {
+        can @ Canonic(_, _) => rmv.push(can),
+        non @ NonCanonic(_, _) => rmv.push(non),
+        Both(cs, ca, us, ua) => {
+            rmv.push(Canonic(cs, ca));
+            rmv.push(NonCanonic(us, ua));
+        }
+    };
+
+    let path = mk_egtb_path(fsig, "egtb");
+    let rdr = CPosReader::new(&path)?;
+    let n_items = cpos_file_size(&path)?;
+    let mut n = 0;
+    let mut found = 0;
+    for cpos in rdr {
+        n += 1;
+        if n_items > 0 && (n % (512 * 1024) == 0 || n == n_items) {
+            eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", n * 1000 / n_items);
+        }
+        for &relation in &rmv {
+            // When we have a canonic CPos and a Move that, when applied, will result in a MATE (or CANNOT_AVOID_MATE) position.
+            // 1. check if we know this position already
+            // 2. if this isn't so, update it in the database with appropriate state set
+            // 3. write the move to the "um" file.
+            let mut bookkeeping = |canm: CPos, mv: Move| -> Result<(), String> {
+                let (c, u) = db.lookup(canm)?;
+                if c.state(mv.player()) == UNKNOWN {
+                    let mpos = c.mpos_from_mv(mv);
+                    let canm = c.with_state_for(mv.player(), CAN_MATE);
+                    db.update(canm, u)?;
+                    mpos.write_seq(um_writer).map_err(|ioe| {
+                        format!(
+                            "unexpected error ({}) while writing to {}",
+                            ioe,
+                            mk_egtb_path(wsig, "um")
+                        )
+                    })?;
+                    winners.push(canm);
+                    found += 1;
+                }
+                Ok(())
+            };
+            match relation {
+                Canonic(sig, Capture(player, piece))
+                    if cpos.state(player) == MATE || cpos.state(player) == CANNOT_AVOID_MATE =>
+                {
+                    assert!(sig == fsig);
+                    // piece of player gets captured, hence we need to look at player's state
+                    // and must find a move of the opposite player from a wsig-position that captures piece
+                    for (mv, canm) in cpos
+                        .reverse_move_iterator(player)
+                        .filter(|&mv| mv.may_capture())
+                        .map(|mv| (mv, cpos.unapply(mv, piece)))
+                        .filter(|mp| mp.1.valid(player.opponent()) && mp.1.signature() == wsig)
+                    {
+                        bookkeeping(canm, mv)?;
+                    }
+                }
+                Canonic(sig, Promote(player, piece))
+                    if cpos.state(player.opponent()) == MATE
+                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE =>
+                {
+                    // player's piece gets promoted, hence it's opponents move
+                    assert!(sig == fsig);
+                    for (mv, canm) in cpos
+                        .reverse_move_iterator(player.opponent())
+                        .filter(|&mv| {
+                            mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
+                        })
+                        .map(|mv| (mv, cpos.unapply(mv, EMPTY)))
+                        .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
+                    {
+                        bookkeeping(canm, mv)?;
+                    }
+                }
+                Both(_, _, _, _) => {}
+                _otherwise => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 enum Sink<'a> {
