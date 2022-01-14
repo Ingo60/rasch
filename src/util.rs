@@ -48,7 +48,7 @@ pub const SIZE_CPOS: usize = 8;
 /// - close google and vscode during runs :)
 const SIZE_CACHE_ENTRY_AVG: usize = 72 * 6; // 71 elements at 6 bytes
 
-/// Computes number of CPos possible to allocate^ when `reserved` bytes are not to be used.
+/// Computes number of CPos possible to allocate when `reserved` bytes are not to be used.
 pub fn compute_vector_entries(reserved: usize) -> usize {
     let mut info = sysinfo::System::new();
     info.refresh_memory();
