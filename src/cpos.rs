@@ -1556,14 +1556,14 @@ impl CPos {
     pub fn read(file: &mut File) -> Result<CPos, std::io::Error> {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        Ok(CPos { bits: u64::from_be_bytes(buf) })
+        Ok(CPos { bits: u64::from_ne_bytes(buf) })
     }
 
     /// read a CPos at the current position from a buffered reader
     pub fn read_seq(file: &mut BufReader<File>) -> Result<CPos, std::io::Error> {
         let mut buf = [0u8; 8];
         file.read_exact(&mut buf)?;
-        Ok(CPos { bits: u64::from_be_bytes(buf) })
+        Ok(CPos { bits: u64::from_ne_bytes(buf) })
     }
 
     /// like `read_seq`, but maps Err(UnexpectedEOF) to OK(None) and
@@ -1571,7 +1571,7 @@ impl CPos {
     pub fn read_seq_with_eof(file: &mut BufReader<File>) -> Result<Option<CPos>, std::io::Error> {
         let mut buf = [0u8; 8];
         match file.read_exact(&mut buf) {
-            Ok(_) => Ok(Some(CPos { bits: u64::from_be_bytes(buf) })),
+            Ok(_) => Ok(Some(CPos { bits: u64::from_ne_bytes(buf) })),
             Err(x) if x.kind() == UnexpectedEof => Ok(None),
             Err(other) => Err(other),
         }
@@ -1585,13 +1585,13 @@ impl CPos {
 
     /// write a CPos at the current file position
     pub fn write(&self, file: &mut File) -> Result<(), std::io::Error> {
-        let buf = self.bits.to_be_bytes();
+        let buf = self.bits.to_ne_bytes();
         file.write_all(&buf)
     }
 
     /// write a CPos all sequentially
     pub fn write_seq(&self, file: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
-        let buf = self.bits.to_be_bytes();
+        let buf = self.bits.to_ne_bytes();
         file.write_all(&buf)
     }
 

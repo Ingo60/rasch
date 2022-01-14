@@ -1,6 +1,7 @@
 //! Move generation for CPos
 //!
 
+use core::slice;
 use std::collections::HashSet;
 
 use super::basic::{CPosState, Move, Piece, Player};
@@ -672,6 +673,18 @@ pub fn test2(sig: &str) -> Result<(), String> {
     let relatives = signature.get_relatives();
     for r in relatives {
         println!("{:?}", r);
+    }
+    let long = 0x0102_0304_0506_0708u64;
+    let ptr = &long as *const u64;
+    unsafe {
+        let slice = slice::from_raw_parts(ptr.cast::<u8>(), 8);
+        assert_eq!(long.to_ne_bytes().as_slice(), slice);
+        let p_u8 = &slice[0] as *const u8;
+        let p_long = p_u8.cast::<u64>();
+        println!(
+            "long: 0x{:016x}  bytes: {:?}  and back 0x{:016x}",
+            long, slice, *p_long
+        );
     }
     Ok(())
 }
