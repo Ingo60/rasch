@@ -1070,6 +1070,21 @@ impl CPos {
         }
     }
 
+    /// Change the player at index. The piece itself will not change!
+    /// Note that a WHITE EMPTY is a no go
+    ///
+    /// When the index is not 0,1,2 or 3, an unchanged CPos will be returned.
+    pub fn change_player(&self, inx: u64, p: Player) -> CPos {
+        let mask = if p == WHITE { 8 } else { 0 };
+        match inx {
+            0 => CPos { bits: (self.bits & !(8 << CPos::CODE1_SHIFT)) | (mask << CPos::CODE1_SHIFT) },
+            1 => CPos { bits: (self.bits & !(8 << CPos::CODE2_SHIFT)) | (mask << CPos::CODE2_SHIFT) },
+            2 => CPos { bits: (self.bits & !(8 << CPos::CODE3_SHIFT)) | (mask << CPos::CODE3_SHIFT) },
+            3 => CPos { bits: (self.bits & !(8 << CPos::CODE4_SHIFT)) | (mask << CPos::CODE4_SHIFT) },
+            _ => CPos { bits: self.bits },
+        }
+    }
+
     /// piece CPos::index for player and move
     pub fn piece_index_by_mv(&self, mv: Move) -> u64 {
         if self.piece_at(0) != EMPTY && self.player_at(0) == mv.player() && self.field_at(0) == mv.from() {
@@ -1194,7 +1209,10 @@ impl CPos {
         }
         if uncapture != EMPTY {
             let u = new.index_of_free();
-            new = new.change_piece(u, uncapture).move_piece(u, mv.to());
+            new = new
+                .change_piece(u, uncapture)
+                .change_player(u, mv.player().opponent())
+                .move_piece(u, mv.to());
         }
         new.ordered()
     }
@@ -1324,6 +1342,11 @@ impl CPos {
         }
     }
 
+    /// clear the S, V and H bits
+    pub fn clear_trans(&self) -> CPos {
+        CPos { bits: self.bits & !CPos::TRANS_BITS }
+    }
+
     #[inline]
     fn switch_black_and_white(&self) -> CPos {
         let mut bits = self.bits;
@@ -1348,6 +1371,15 @@ impl CPos {
                     | ((bits & CPos::WHITE_KING_BITS)<<6)     // move the white king
                     ;
         CPos { bits: bits ^ CPos::S_BIT }
+    }
+
+    /// Make a canonical CPos un-canonic by switching black and white, mirroring horizontally if needed and flipping the flags
+    pub fn un_canonical(&self, sig: Signature) -> CPos {
+        if sig.has_pawns() {
+            self.switch_black_and_white().mirror_h().flipped_flags()
+        } else {
+            self.switch_black_and_white().flipped_flags()
+        }
     }
 
     /// Make a canonical CPos for lookup in the DB
@@ -1697,6 +1729,18 @@ impl CPos {
         Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
     }
 
+    pub fn mpos_player(&self) -> Player {
+        if (self.bits & CPos::WHITE_BIT) != 0 {
+            WHITE
+        } else {
+            BLACK
+        }
+    }
+
+    pub fn mpos_to_cpos(&self) -> CPos {
+        CPos { bits: (self.bits & !CPos::WHITE_BIT) & CPos::COMP_BITS }
+    }
+
     /// Find a move associated with a **canonic** `CPos`.
     /// - it is an error if the status of the selected player is not `CAN_MATE`
     /// - it is an error if the move is not found.
@@ -1760,25 +1804,28 @@ impl CPos {
     pub fn mpos_debug(&self) -> String {
         let inx = (self.bits & CPos::PIECE_INDEX_BITS) >> CPos::PIECE_INDEX_SHIFT;
         let to = Field::from((self.bits & CPos::TARGET_BITS) >> CPos::TARGET_SHIFT);
+        let kingmv = (self.bits & CPos::KING_MOVE_BIT) != 0;
         format!(
             "{} {} {} {}  {}{} {}  {}{} {}  {}{} {}  {}{} {}  BK/WK {}/{}",
             if (self.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK },
-            if (self.bits & CPos::KING_MOVE_BIT) != 0 {
+            if kingmv {
                 "KING".to_string()
             } else {
-                format!("P{}  ", 1 + inx)
+                format!("P{}={}", 1 + inx, self.piece_at(inx))
             },
-            if self.piece_at(inx) == PAWN && (to.rank() == 1 || to.rank() == 8) {
-                "promote to ".to_string()
-                    + match (self.bits & CPos::PROMOTE_TO_BITS) >> CPos::PROMOTE_TO_SHIFT {
-                        0 => "knight",
-                        1 => "bishop",
-                        2 => "rook",
-                        3 => "queen",
+            if self.piece_at(inx) == PAWN && !kingmv && (to.rank() == 1 || to.rank() == 8) {
+                format!(
+                    "→{}",
+                    match (self.bits & CPos::PROMOTE_TO_BITS) >> CPos::PROMOTE_TO_SHIFT {
+                        0 => "K",
+                        1 => "B",
+                        2 => "R",
+                        3 => "Q",
                         _ => "rustc, be happy",
                     }
+                )
             } else {
-                "-".to_string()
+                " -".to_string()
             },
             to,
             self.player_at(3),
