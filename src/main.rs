@@ -136,11 +136,27 @@ fn main() {
                 eprintln!("error: {}", s);
             }
         }
-    } else if argv[1].starts_with("check") && argv.len() >= 3 {
+    } else if argv[1] == "check-old" && argv.len() >= 3 {
         match E::check_moves(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
+            }
+        }
+    } else if argv[1] == "check" && argv.len() >= 3 {
+        match E::check_mmap(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1);
+            }
+        }
+    } else if argv[1] == "test-loosers" && argv.len() >= 4 {
+        match E::test_scan_loosers(&argv[2], &argv[3]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1);
             }
         }
     } else if argv[1].starts_with("play") && argv.len() == 3 {
