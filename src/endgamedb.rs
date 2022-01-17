@@ -1418,6 +1418,8 @@ pub fn stats(sig: String) -> Result<(), String> {
     let mut sorted = true;
     let mut duplic = false;
     let mut moves_wrong = false;
+    let mut cad_both = 0usize;
+    let mut cad_example = c0;
     loop {
         match CPos::read_seq(&mut rdr) {
             Err(x) if x.kind() == UnexpectedEof => break,
@@ -1433,6 +1435,11 @@ pub fn stats(sig: String) -> Result<(), String> {
                 sorted = sorted && last <= c;
                 duplic = duplic || last == c;
                 last = c;
+
+                if c.state(BLACK) == CANNOT_AVOID_DRAW && c.state(WHITE) == CANNOT_AVOID_DRAW {
+                    cad_both += 1;
+                    cad_example = c;
+                }
                 total += 1;
             }
         }
@@ -1455,6 +1462,14 @@ pub fn stats(sig: String) -> Result<(), String> {
                 encodeFEN(&bexamples[i].uncompressed(BLACK))
             );
         }
+    }
+    if cad_both > 0 {
+        eprintln!(
+            "{:>12} both  positions with status {:<20} for example {}",
+            formatted_sz(cad_both),
+            format!("{:?}", CANNOT_AVOID_DRAW),
+            encodeFEN(&cad_example.uncompressed(BLACK))
+        );
     }
     eprintln!("{:>12} positions total", formatted_sz(total));
     if wkinds[CAN_MATE as usize] + bkinds[CAN_MATE as usize] != nmoves as usize {
