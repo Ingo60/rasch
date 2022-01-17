@@ -323,7 +323,7 @@ fn split_step(
                 eprintln!("    sorting chunk ... ");
                 posa.sort_unstable();
                 eprintln!("    ... sorting done.");
-                to_disk(c_name, &mut posa.iter().copied())
+                to_disk(c_name, &mut posa.iter().copied(), |c| c.bits.to_ne_bytes())
             })
         };
 
@@ -429,7 +429,7 @@ pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), 
                 Ok(mbox)
             })
         })
-        .and_then(|mut m: CPosIterator| to_disk(&sorted, &mut m))
+        .and_then(|mut m: CPosIterator| to_disk(&sorted, &mut m, |c| c.bits.to_ne_bytes()))
         .and_then(|_| {
             chunks.iter().fold(Ok(()), |_, s| {
                 remove_file(Path::new(s)).map_err(|ioe| format!("couldn't remove temp file {} ({})", s, ioe))
