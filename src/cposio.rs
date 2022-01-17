@@ -119,7 +119,11 @@ impl Iterator for CPosVector {
 pub type CPosIterator = Box<dyn Iterator<Item = CPos>>;
 
 /// flush the contents of an `CPos` yielding Iterator to the disk
-pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize, String> {
+pub fn to_disk<T, F>(path: &str, iter: &mut dyn Iterator<Item = T>, to_bytes: F) -> Result<usize, String>
+where
+    T: Sized + Copy,
+    F: Fn(T) -> [u8; 8],
+{
     let file = File::create(path).map_err(|ioe| format!("Can't create file {} ({})", path, ioe))?;
     let mut bufw = BufWriter::with_capacity(BUFSZ + BUFSZ / 2, file);
     eprint!("    writing to {} ... ", path);
@@ -127,7 +131,9 @@ pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize
     while match iter.next() {
         None => false,
         Some(cp) => {
-            cp.write_seq(&mut bufw)
+            let bytes = to_bytes(cp);
+            // cp.write_seq(&mut bufw)
+            bufw.write_all(&bytes)
                 .map_err(|ioe| format!("unexpected error ({}) while writing to {}", ioe, path))?;
             true
         }
@@ -140,7 +146,7 @@ pub fn to_disk(path: &str, iter: &mut dyn Iterator<Item = CPos>) -> Result<usize
             ioe, path
         )
     })?;
-    eprintln!("done, {} positions written to {}", formatted_sz(written), path);
+    eprintln!("done, {} items written to {}", formatted_sz(written), path);
     Ok(written)
 }
 
@@ -261,6 +267,16 @@ pub fn cpos_rw_map(path: &str) -> Result<(MmapMut, &mut [CPos]), String> {
         .open(path)
         .map_err(|e| format!("Can't read/write {} ({})", path, e))?;
     let mut map = unsafe { MmapMut::map_mut(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+    let start = &mut map[0] as *mut u8;
+    let array = unsafe { slice::from_raw_parts_mut(start.cast::<CPos>(), map.len() / 8) };
+    Ok((map, array))
+}
+
+/// Map the given path as read-only CPos slice into memory.
+///
+/// **Note**: when the returned map goes out of scope, the slice will become unusable!
+pub fn cpos_anon_map(n_pos: &usize) -> Result<(MmapMut, &mut [CPos]), String> {
+    let mut map = /*unsafe*/ { MmapMut::map_anon(n_pos * 8) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
     let start = &mut map[0] as *mut u8;
     let array = unsafe { slice::from_raw_parts_mut(start.cast::<CPos>(), map.len() / 8) };
     Ok((map, array))
