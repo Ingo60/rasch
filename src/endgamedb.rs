@@ -1602,12 +1602,15 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             ScanForMate => {
                 eprint!(
-                    "{}  Pass {:2} - find mates and direct winners    0% ",
+                    "{}  Pass {:2} - find mates, stalemates and direct winners    0% ",
                     signature, pass
                 );
-                winners.clear();
-                um_writer = cpos_create_writer(&um_path)?;
-                scan_mates(signature, true, &mut winners, &mut um_writer, db)?;
+                um_writer = if Path::new(&um_path).is_file() {
+                    cpos_append_writer(&um_path)
+                } else {
+                    cpos_create_writer(&um_path)
+                }?;
+                scan_mates(signature, &mut um_writer, db)?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -1950,13 +1953,12 @@ pub fn scan_loosers(
 
 pub fn scan_mates(
     signature: Signature,
-    mateonly: bool,
-    winners: &mut Vec<usize>,
     um_writer: &mut BufWriter<File>,
     db: &mut [CPos],
 ) -> Result<(), String> {
     let mut found = 0usize;
     let mut mates = 0usize;
+    let mut stalemates = 0usize;
     let n_items = db.len();
 
     for n in 0..n_items {
@@ -1991,34 +1993,23 @@ pub fn scan_mates(
                             )
                         })?;
                         found += 1;
-                        winners.push(u * 2 + umv.player() as usize);
                     }
                     Ok(())
                 };
             // this match looks a bit clumsy
             match cpos.state(player) {
-                UNKNOWN if !mateonly && cpos.state(player.opponent()) != INVALID_POS => {
+                UNKNOWN if cpos.state(player.opponent()) != INVALID_POS => {
                     if let None = cpos
                         .move_iterator(player)
                         .filter(|&mv| cpos.apply(mv).valid(player.opponent()))
                         .next()
                     {
                         // found STALEMATE
-                        mates += 1;
+                        stalemates += 1;
                         db[n] = cpos.with_state_for(player, STALEMATE);
-                        // find all moves from same signature (no captures, no promotions) that come here
-                        // they all CAN_DRAW
-                        for (ppos, mv) in cpos
-                            .reverse_move_iterator(player)
-                            .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                            .map(|mv| (cpos.unapply(mv, EMPTY), mv))
-                            .filter(|(c, _)| c.valid(player.opponent()) && c.signature() == signature)
-                        {
-                            bookkeeping(ppos, mv, CAN_DRAW, db)?;
-                        }
                     }
                 }
-                INVALID_POS if mateonly && cpos.state(player.opponent()) == UNKNOWN => {
+                INVALID_POS if cpos.state(player.opponent()) == UNKNOWN => {
                     let player = player.opponent(); // actually, the player whose state is UNKNOWN interests us
                     if let None = cpos
                         .move_iterator(player)
@@ -2045,17 +2036,10 @@ pub fn scan_mates(
         }
     }
     eprintln!("done.");
-    if mates + found > 0 {
-        eprintln!(
-            "    Found {} {:?} positions.",
-            formatted_sz(mates),
-            if mateonly { MATE } else { STALEMATE }
-        );
-        eprintln!(
-            "    Found {} new {:?} positions.",
-            formatted_sz(found),
-            if mateonly { CAN_MATE } else { CAN_DRAW }
-        );
+    if mates + found + stalemates > 0 {
+        eprintln!("    Found {} MATE positions.", formatted_sz(mates),);
+        eprintln!("    Found {} STALEMATE positions.", formatted_sz(stalemates),);
+        eprintln!("    Found {} new CAN_MATE positions.", formatted_sz(found),);
     }
     Ok(())
 }
