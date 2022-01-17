@@ -550,8 +550,10 @@ fn make_egtb(
         } else if cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
             cpos = cpos.with_state_for(BLACK, CANNOT_AVOID_DRAW);
         }
+        let superfluous = cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) == UNKNOWN
+            || cpos.state(WHITE) == CANNOT_AVOID_DRAW && cpos.state(BLACK) == CANNOT_AVOID_DRAW;
         // filter superfluous
-        if cpos.state(WHITE) != UNKNOWN || cpos.state(BLACK) != UNKNOWN {
+        if !superfluous {
             cpos.write_seq(writer)
                 .map_err(|ioe| format!("error writing {}th position to {} ({})", i + 1, path, ioe))?;
             npos += 1;
@@ -1507,7 +1509,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
     let mut pass = 0;
     let mut winners: Vec<usize> = Vec::with_capacity(CHUNK / 8);
-    let mut restart = false;
+    let restart = false;
     let mut um_writer = cpos_append_writer("/dev/null")?;
     let (mut map, mut db) = cpos_anon_map(&1)?;
     let preds = signature.get_relatives();
@@ -1567,11 +1569,14 @@ pub fn gen(sig: &str) -> Result<(), String> {
             SortedPresent => {
                 eprintln!("{}  Pass {:2} - continuing with {}", signature, pass, sorted_path);
                 std::mem::drop(map);
-                let (xmap, xdb) = cpos_rw_map(&sorted_path)?;
-                map = xmap;
-                db = xdb;
-                let n_items = db.len();
-                restart = Path::new(&um_path).is_file();
+                // from this point on, the map is connected to the sorted file
+                {
+                    let (xmap, xdb) = cpos_rw_map(&sorted_path)?;
+                    map = xmap;
+                    db = xdb;
+                }
+                // let n_items = db.len();
+                // restart = Path::new(&um_path).is_file();
 
                 state = if restart {
                     todo!();
