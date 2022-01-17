@@ -146,7 +146,7 @@ where
             ioe, path
         )
     })?;
-    eprintln!("done, {} items written to {}", formatted_sz(written), path);
+    eprintln!("done, {} items written.", formatted_sz(written));
     Ok(written)
 }
 
