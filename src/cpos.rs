@@ -1260,6 +1260,38 @@ impl CPos {
     /// The move must have been computed for a `Position` that corresponds to this `CPos`,
     /// or else it will all be garbage.
     pub fn mpos_from_mv(&self, mv: Move) -> CPos {
+        // check sanity
+        if mv.piece() == KING && mv.from() != self.players_king(mv.player()) {
+            panic!(
+                "\nmpos_from_mv bad king move\n\
+                mv {:?} {:?} {:?} {} {}    \
+                self {:?}",
+                mv.player(),
+                mv.piece(),
+                mv.promote(),
+                mv.from(),
+                mv.to(),
+                self
+            );
+        }
+        let inx = self.piece_index_by_mv(mv) & 3;
+        if mv.piece() != KING
+            && (self.piece_at(inx) != mv.piece()
+                || self.player_at(inx) != mv.player()
+                || self.field_at(inx) != mv.from())
+        {
+            panic!(
+                "\nmpos_from_mv bad piece move\n\
+                mv {:?} {:?} {:?} {} {}    \
+                self {:?}",
+                mv.player(),
+                mv.piece(),
+                mv.promote(),
+                mv.from(),
+                mv.to(),
+                self
+            );
+        }
         CPos {
             bits: (self.bits & CPos::COMP_BITS)
                 | if mv.player() == WHITE { CPos::WHITE_BIT } else { 0 }
@@ -1417,6 +1449,7 @@ impl CPos {
             this = this.mirror_h();
             debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
         }
+        /*
         // now we need to sort out the positions where the black king is smaller than the white one
         if sig.is_symmetric() && !has_pawns && this.white_king() > this.black_king() {
             this = this.switch_black_and_white();
@@ -1429,6 +1462,7 @@ impl CPos {
             // After mirror_v, it is thus in the lower left quarter.
             debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
         }
+        */
         if this.canonic_was_mirrored() {
             this.ordered()
         } else {
