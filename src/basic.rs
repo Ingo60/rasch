@@ -216,7 +216,7 @@ impl Piece {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[repr(transparent)]
 pub struct Move {
-    mv: u32,
+    pub mv: u32,
 }
 
 pub const NO_MOVE: Move = Move { mv: 0xffff_ffff };

@@ -76,6 +76,8 @@ fn main() {
                 std::process::exit(1)
             }
         }
+    } else if argv[1] == "debug" && argv.len() > 2 {
+        E::debug(&argv[2..]);
     } else if argv[1] == "test1" && argv.len() >= 3 {
         match CM::test1(&argv[2]) {
             Ok(_) => {}
