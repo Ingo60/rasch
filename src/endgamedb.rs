@@ -106,8 +106,6 @@
 //! equals the number of CAN_MATE positions found.
 //!
 
-use crate::cposio::to_disk;
-
 use super::{
     basic::{CPosState, Move, Piece, Player, PlayerPiece},
     cpos::{Alienation, CPos, EgtbMap, Mirrorable, RelationMode, Signature},
@@ -178,6 +176,8 @@ enum MakeState {
     EgtbFromSorted,
     ScanForMate,
     ScanAliens,
+    ScanUM(usize),
+    InterruptedUM,
 }
 
 use MakeState::*;
@@ -233,13 +233,14 @@ pub fn make(sig: &str) -> Result<(), String> {
         // eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
         match state {
             EgtbPresent => {
+                eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
                 positions.clear();
                 positions.shrink_to_fit();
                 cache.clear();
                 cache.shrink_to_fit();
                 cache_max = 0;
                 um_writer = cpos_append_writer("/dev/null")?;
-                state = make_moves(signature, pass, &um_path, &moves_path)?;
+                state = make_moves(signature, &um_path, &moves_path)?;
             }
             StartUp => {
                 positions.clear();
@@ -515,7 +516,7 @@ pub fn make(sig: &str) -> Result<(), String> {
                     &pass_path,
                 )?;
             }
-            ScanForMate | ScanAliens |  // not here
+            ScanForMate | ScanAliens |  ScanUM(_) | InterruptedUM | // not here
             Done => {} // required for completeness
         }
     }
@@ -902,13 +903,7 @@ fn analyze_in_memory(
 /// Sort the um file, if present.
 ///
 /// results in `Done`
-fn make_moves(
-    signature: Signature,
-    pass: usize,
-    um_path: &str,
-    moves_path: &str,
-) -> Result<MakeState, String> {
-    eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
+fn make_moves(signature: Signature, um_path: &str, moves_path: &str) -> Result<MakeState, String> {
     let um_exists = Path::new(um_path).is_file();
     let moves_exists = Path::new(moves_path).is_file();
     if um_exists {
@@ -976,9 +971,11 @@ fn make_positions(
         let pos1 = POSITION_NULL.place(WHITE, KING, P::bit(wk));
         // place the black king
         for bk in BitSet::all() {
+            /*
             if signature.is_symmetric() && !signature.has_pawns() && bk < wk {
                 continue;
             }
+            */
             if pos1.isEmpty(bk) {
                 let pos2 = pos1.place(BLACK, KING, P::bit(bk));
                 if pos2.valid() {
@@ -1032,9 +1029,11 @@ fn make_unsorted(signature: Signature, pass: usize, unsorted_path: &str) -> Resu
         let pos1 = POSITION_NULL.place(WHITE, KING, P::bit(wk));
         // place the black king
         for bk in BitSet::all() {
+            /*
             if signature.is_symmetric() && !signature.has_pawns() && bk < wk {
                 continue;
             }
+            */
             if pos1.isEmpty(bk) {
                 let pos2 = pos1.place(BLACK, KING, P::bit(bk));
                 if pos2.valid() {
@@ -1048,7 +1047,7 @@ fn make_unsorted(signature: Signature, pass: usize, unsorted_path: &str) -> Resu
 
     {
         let npos = cpos_file_size(unsorted_path)?;
-        eprintln!("{} written to {}", formatted_sz(npos), unsorted_path);
+        eprintln!("{} written.", formatted_sz(npos));
         Ok(UnsortedPresent)
     }
 }
@@ -1205,7 +1204,7 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
     let mut dupl = false;
     let mut unrelated = false;
     let mut invalid = false;
-    let mut badmoves = false;
+    let mut badmoves = 0usize;
     let rdr = CPosReader::new(&path)?;
     let n_pos = cpos_file_size(&path)?;
     let mut curr_pos = 0;
@@ -1236,11 +1235,17 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
         if pos.valid() {
             let mvs = pos.moves();
             let xmv = cpos.mv_from_mpos(mpos);
-            badmoves = badmoves
-                || match mvs.iter().copied().find(|x| *x == xmv) {
-                    Some(_mv) => false,
-                    None => true,
-                };
+            badmoves = match mvs.iter().copied().find(|x| *x == xmv) {
+                Some(_mv) => badmoves,
+                None => {
+                    if badmoves == 0 {
+                        eprintln!("\nmove {}  impossible in position {}", xmv, encodeFEN(&pos));
+                        eprintln!("cpos 0x{:016x} {:?}", cpos.bits, cpos);
+                        eprintln!("mpos 0x{:016x} {}", mpos.bits, mpos.mpos_debug());
+                    }
+                    badmoves + 1
+                }
+            };
         }
     }
     eprintln!("\x08\x08\x08\x08\x08\x08 done.");
@@ -1268,17 +1273,18 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
             path
         );
     }
-    if badmoves {
+    if badmoves > 0 {
         eprintln!(
-            "{} moves file {} has invalid/unknown moves.",
+            "{} moves file {} has {} bad/unknown moves.",
             signature.display(),
-            path
+            path,
+            badmoves
         );
     }
 
     std::mem::drop(epositions.0);
 
-    if sorted && !dupl && !unrelated && !invalid && !badmoves {
+    if sorted && !dupl && !unrelated && !invalid && badmoves == 0 {
         Ok(())
     } else {
         Err(format!("moves file {} is corrupt", path))
@@ -1518,14 +1524,12 @@ pub fn gen(sig: &str) -> Result<(), String> {
     let sorted_path = mk_egtb_path(signature, "sorted");
     let unsorted_path = mk_egtb_path(signature, "unsorted");
     let um_path = mk_egtb_path(signature, "um");
-    let mc_path = mk_egtb_path(signature, "mc");
-    let winners_path = mk_egtb_path(signature, "winners");
+    let restart_path = mk_egtb_path(signature, "restart");
     let moves_path = mk_egtb_path(signature, "moves");
 
     let mut pass = 0;
-    let mut winners: Vec<usize> = Vec::with_capacity(CHUNK / 8);
-    let restart = false;
     let mut um_writer = cpos_append_writer("/dev/null")?;
+    let mut um_reader = cpos_open_reader("/dev/null")?;
     let (mut map, mut db) = cpos_anon_map(&1)?;
     let preds = signature.get_relatives();
     let mut relatives = preds.iter().copied();
@@ -1541,8 +1545,6 @@ pub fn gen(sig: &str) -> Result<(), String> {
         SortedPresent
     } else if Path::new(&unsorted_path).is_file() {
         UnsortedPresent
-    } else if Path::new(&mc_path).is_file() {
-        McPresent
     } else {
         StartUp
     };
@@ -1558,9 +1560,12 @@ pub fn gen(sig: &str) -> Result<(), String> {
         // eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
         match state {
             EgtbPresent => {
+                eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
                 std::mem::drop(um_writer);
+                std::mem::drop(um_reader);
                 um_writer = cpos_append_writer("/dev/null")?;
-                state = make_moves(signature, pass, &um_path, &moves_path)?;
+                um_reader = cpos_open_reader("/dev/null")?;
+                state = make_moves(signature, &um_path, &moves_path)?;
             }
 
             StartUp => {
@@ -1585,16 +1590,27 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 eprintln!("{}  Pass {:2} - continuing with {}", signature, pass, sorted_path);
                 std::mem::drop(map);
                 // from this point on, the map is connected to the sorted file
+                // and um_writer writes to the um file
                 {
                     let (xmap, xdb) = cpos_rw_map(&sorted_path)?;
                     map = xmap;
                     db = xdb;
+
+                    um_writer = if Path::new(&um_path).is_file() {
+                        cpos_append_writer(&um_path)
+                    } else {
+                        cpos_create_writer(&um_path)
+                    }?;
                 }
-                // let n_items = db.len();
-                // restart = Path::new(&um_path).is_file();
+
+                // check for restart file
+                let restart = Path::new(&restart_path).is_file();
 
                 state = if restart {
-                    todo!();
+                    let mut rdr = cpos_open_reader(&restart_path)?;
+                    let xpos = CPos::read_seq(&mut rdr)
+                        .map_err(|e| format!("error reading {} ({})", restart_path, e))?;
+                    ScanUM(xpos.bits as usize)
                 } else {
                     ScanForMate
                 };
@@ -1605,11 +1621,6 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     "{}  Pass {:2} - find mates, stalemates and direct winners    0% ",
                     signature, pass
                 );
-                um_writer = if Path::new(&um_path).is_file() {
-                    cpos_append_writer(&um_path)
-                } else {
-                    cpos_create_writer(&um_path)
-                }?;
                 scan_mates(signature, &mut um_writer, db)?;
                 um_writer
                     .flush()
@@ -1619,15 +1630,38 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             ScanAliens => match relatives.next() {
                 None => {
-                    eprint!("{}  Pass {:2} - saving winners ", signature, pass);
-                    to_disk(&winners_path, &mut winners.iter().copied(), |u| u.to_ne_bytes())?;
-                    todo!();
+                    eprint!("{}  Pass {:2} - setting checkpoint ", signature, pass);
+                    set_checkpoint(&restart_path, 0)?;
+                    state = ScanUM(0);
                 }
                 Some(rm) => {
                     eprint!("{}  Pass {:2} - scan {:?} loosers    0‰ ", signature, pass, rm);
-                    scan_loosers(signature, rm, &mut winners, &mut um_writer, db)?;
+                    scan_loosers(signature, rm, &mut um_writer, db)?;
+                    um_writer
+                        .flush()
+                        .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
                 }
             },
+            ScanUM(at) => {
+                eprint!("{}  Pass {:2} - retrograde analysis    0‰ ", signature, pass);
+                um_reader = cpos_open_reader(&um_path)?;
+                um_reader
+                    .seek(SeekFrom::Start(at as u64 * 8))
+                    .map_err(|e| format!("Can't seek {} to index {} ({})", um_path, at, e))?;
+                let r = scan_um(signature, &mut um_reader, &mut um_writer, db)?;
+                map.flush()
+                    .and_then(|_| um_writer.flush())
+                    .map_err(|e| format!("Can't sync {} and {} ({})", sorted_path, um_path, e))?;
+                state = if r { InterruptedUM } else { WriteEgtb }
+            }
+            InterruptedUM => {
+                eprint!("{}  Pass {:2} - setting checkpoint ", signature, pass);
+                let off = um_reader
+                    .stream_position()
+                    .map_err(|e| format!("Can't seek {} ({})", um_path, e))?;
+                set_checkpoint(&restart_path, off as usize / 8)?;
+                return Err("terminated via Ctrl-C".to_string());
+            }
 
             Done => {} // required for completeness
             AnalyzeBuffer(_)
@@ -1649,10 +1683,23 @@ pub fn gen(sig: &str) -> Result<(), String> {
     map.flush()
         .map_err(|e| format!("error syncing {} ({})", sorted_path, e))?;
     std::mem::drop(map);
-    for p in [mc_path, um_path, unsorted_path, sorted_path, winners_path] {
+    std::mem::drop(um_writer);
+    std::mem::drop(um_reader);
+    for p in [um_path, unsorted_path, sorted_path, restart_path] {
         remove_file(p).unwrap_or_default();
     }
     eprintln!("{}  complete", signature);
+    Ok(())
+}
+
+/// Remember the reading position in long words of the um-file
+fn set_checkpoint(path: &str, at: usize) -> Result<(), String> {
+    let mut bufw = cpos_create_writer(path)?;
+    CPos { bits: at as u64 }
+        .write_seq(&mut bufw)
+        .and_then(|_| bufw.flush())
+        .map_err(|e| format!("cannot write {} ({})", path, e))?;
+    eprintln!("at {}", at);
     Ok(())
 }
 
@@ -1667,7 +1714,7 @@ pub fn test_scan_loosers(wsig: &str, asig: &str) -> Result<(), String> {
         })
     }
     .ok_or(format!("{} is not a predecessor of {}", asignature, wsignature))?;
-    let mut winners = Vec::new();
+    // let mut winners = Vec::new();
     let path_moves2 = mk_egtb_path(wsignature, "moves2");
     let mut um_writer = cpos_create_writer(&path_moves2)?;
     // let db = cpos_rw_map(&mk_egtb_path(wsignature, "sorted"));
@@ -1676,27 +1723,27 @@ pub fn test_scan_loosers(wsig: &str, asig: &str) -> Result<(), String> {
     assert_eq!(s, UnsortedVec);
     dbvec.sort_unstable();
     eprint!("{}  Pass  2 - scan {:?} loosers    0‰ ", wsignature, rm);
-    scan_loosers(wsignature, rm, &mut winners, &mut um_writer, &mut dbvec)
+    scan_loosers(wsignature, rm, &mut um_writer, &mut dbvec)
         .and_then(|_| um_writer.flush().map_err(|_e| "flush".to_string()))?;
     std::mem::drop(um_writer);
-    /*
+
     let rdr = CPosReader::new(&path_moves2)?;
     let mut ehash: EgtbMap = HashMap::new();
     let mut mhash: EgtbMap = HashMap::new();
     // find the same move in original moves file
+
     for mpos2 in rdr {
         match mpos2.mpos_to_cpos().find_canonic(wsignature, &mut ehash) {
             Ok(canon) => match canon.find_canonic_move(wsignature, mpos2.mpos_player(), &mut mhash) {
-                Ok(_mpos) => {
-
+                Ok(mpos) => {
                     // This happens all the time, for example with promotions to queen vs to rook, etc.
 
-                    /* if mpos2.bits != mpos.bits {
+                    if mpos2.bits != mpos.bits {
                         eprintln!("mpos2: {}", mpos2.mpos_debug());
                         eprintln!("mpos:  {}", mpos.mpos_debug());
                         return Err("mpos2 found but bits differ".to_string());
                         // fill details later
-                    } */
+                    }
                 }
                 Err(s) => {
                     eprintln!("mpos2: 0x{:016x}  {}", mpos2.bits, mpos2.mpos_debug());
@@ -1709,14 +1756,73 @@ pub fn test_scan_loosers(wsig: &str, asig: &str) -> Result<(), String> {
             }
         }
     }
-    */
+
     Ok(())
+}
+
+/// Check if canonic position `can` has only `player` moves that lead to alien successors that CAN_MATE.
+/// If this is so, mark `can` as CANNOT_AVOID_MATE and all it's predecessors, if any, as CAN_MATE.
+fn check_alien_looser(
+    signature: Signature,
+    can: CPos,
+    player: Player,
+    db: &mut [CPos],
+    e_hash: &mut EgtbMap,
+) -> Result<bool, String> {
+    let no = Ok(false);
+    if can.state(player) == UNKNOWN {
+        for succ in can
+            .move_iterator(player)
+            .map(|mv| can.apply(mv))
+            .filter(|succ| succ.valid(player.opponent()))
+        {
+            let succ2 = succ.mk_canonical();
+            if succ2.signature() == signature {
+                return no;
+            }
+            let succ = succ2.find_canonic(succ2.signature(), e_hash).map(|s| {
+                if succ2.canonic_has_bw_switched() {
+                    s.flipped_flags()
+                } else {
+                    s
+                }
+            })?;
+            if succ.state(player.opponent()) != CAN_MATE {
+                return no;
+            }
+        }
+        // we know there has been at least 1 move, otherwise it would be stalemate/mate
+        let u = db
+            .binary_search(&can)
+            .map_err(|_| format!("canonic {:?} not found", can))?;
+        db[u] = db[u].with_state_for(player, CANNOT_AVOID_MATE);
+        Ok(true)
+    } else {
+        no
+    }
 }
 
 /// Scan an EGTB whose signature is a predecessor of some canonic signature `wsig`.
 /// Find the positions with MATE and CANNOT_AVOID_MATE status and check whether
 /// they could have originated in `wsig` positions. If so, mark such positions as CAN_MATE
 /// and write the corresponding move.
+///
+/// In addition, we could reach positions with CAN_MATE status for some player.
+/// If such a position has a predecessor
+/// in the `wsig` realm, and if this predecessor has only alien successors who are all CAN_MATE,
+/// then the predecessor is CANNOT_AVOID_MATE (and, consequently, all of **his** predecessors are CAN_MATE).
+///
+/// Why do we need to check for alien successors only? Because we will find such a CANNOT_AVOID_MATE anyway,
+/// when it has a CAN_MATE successor in the `wsig` realm. OTOH, if, for example, there is only one move
+/// to esacpe check and this move leads to another realm (where the result is CAN_MATE for the opponent), we
+/// would not detect it:
+///
+/// Example: wQ h7, wQ f8, BK/WK h8/d4  fen: 5Q1k/7Q/8/8/3K4/8/8/8 b - - 0 1
+/// In KQ-K, we can find 5Q2/7k/8/8/3K4/8/8/8 w - - 0 2 that gives rise to this position by un-capturing
+/// a white queen on h7 and moving the black king to h8 (interestingly, this position cannot be reached
+/// with forward moves).
+///
+/// There is only one move for black, namely Kxh7. Of course, white can still mate with a single queen.
 ///
 /// Arguments:
 ///
@@ -1728,7 +1834,6 @@ pub fn test_scan_loosers(wsig: &str, asig: &str) -> Result<(), String> {
 pub fn scan_loosers(
     wsig: Signature,
     rmode: RelationMode,
-    winners: &mut Vec<usize>,
     um_writer: &mut BufWriter<File>,
     db: &mut [CPos],
 ) -> Result<(), String> {
@@ -1748,6 +1853,8 @@ pub fn scan_loosers(
         }
     };
 
+    let mut e_hash: EgtbMap = HashMap::new();
+
     let path = mk_egtb_path(fsig, "egtb");
     let rdr = CPosReader::new(&path)?;
     let n_items = cpos_file_size(&path)?;
@@ -1755,7 +1862,10 @@ pub fn scan_loosers(
     let mut found = 0;
     for cpos in rdr {
         n += 1;
-        if n_items > 0 && (n % (512 * 1024) == 0 || n == n_items) {
+        if n_items > 0 && (n % (128 * 1024) == 0 || n == n_items) {
+            if sigint_received.load(atomic::Ordering::SeqCst) {
+                return Err("terminated processing, restart will repeat".to_string());
+            }
             eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", n * 1000 / n_items);
         }
         for &relation in &rmv {
@@ -1763,7 +1873,7 @@ pub fn scan_loosers(
             // 1. check if we know this position already
             // 2. if this isn't so, update it in the database with appropriate state set
             // 3. write the move to the "um" file.
-            let mut bookkeeping = |canm: CPos, umv: Move| -> Result<(), String> {
+            let mut bookkeeping = |canm: CPos, umv: Move, db: &mut [CPos]| -> Result<(), String> {
                 assert_eq!(canm.signature(), wsig);
                 let canonic = canm.clear_trans().canonical(wsig);
                 let u = db.binary_search(&canonic).map_err(|_| {
@@ -1776,6 +1886,7 @@ pub fn scan_loosers(
                 })?;
                 let c = db[u];
                 if c.state(umv.player()) == UNKNOWN {
+                    // let smv = if
                     let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
                     let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
                     let mpos = c.mpos_from_mv(mv);
@@ -1788,19 +1899,25 @@ pub fn scan_loosers(
                             mk_egtb_path(wsig, "um")
                         )
                     })?;
-                    winners.push(2 * u + umv.player() as usize);
                     found += 1;
                 }
                 Ok(())
             };
-            if cpos.bits & CPos::COMP_BITS == 0x0_0000_0027_18e8 {
-                eprintln!("\nfound cannot avoid mate 0x{:016x}  {:?}", cpos.bits, cpos);
-            }
+
+            /* if cpos.bits & CPos::COMP_BITS == 0x0037dddb {
+                eprintln!("\nfound it 0x{:016x}  {:?}", cpos.bits, cpos);
+            } */
+
             match relation {
                 Canonic(sig, Capture(player, piece))
-                    if cpos.state(player) == MATE || cpos.state(player) == CANNOT_AVOID_MATE =>
+                    if cpos.state(player) == MATE
+                        || cpos.state(player) == CANNOT_AVOID_MATE
+                        || cpos.state(player) == CAN_MATE =>
                 {
                     assert!(sig == fsig);
+                    /* if cpos.bits == 0x630000000037dddb {
+                        eprintln!("###############");
+                    } */
                     // piece of player gets captured, hence we need to look at player's state
                     // and must find a move of the opposite player from a wsig-position that captures piece
                     for (mv, canm) in cpos
@@ -1811,89 +1928,165 @@ pub fn scan_loosers(
                         .map(|mv| (mv, cpos.unapply(mv, piece)))
                         .filter(|(_, c)| c.valid(player.opponent()) && c.signature() == wsig)
                     {
-                        bookkeeping(canm, mv)?;
+                        if cpos.state(player) == CAN_MATE {
+                            let canm = db
+                                .binary_search(&canm.canonical(wsig))
+                                .map(|u| db[u])
+                                .map_err(|_| format!("not found {:?}", canm))?;
+                            let is_cam = check_alien_looser(wsig, canm, player.opponent(), db, &mut e_hash)?;
+                            if is_cam {
+                                // set all predecessors CAN_MATE
+                                for (pred, mv) in canm
+                                    .reverse_move_iterator(player.opponent())
+                                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                                    .map(|mv| (canm.unapply(mv, EMPTY), mv))
+                                    .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
+                                {
+                                    bookkeeping(pred, mv, db)?;
+                                }
+                            }
+                        } else {
+                            bookkeeping(canm, mv, db)?;
+                        }
                     }
                 }
                 Canonic(sig, Promote(player, piece))
                     if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE =>
+                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
+                        || cpos.state(player.opponent()) == CAN_MATE =>
                 {
                     // player's piece gets promoted, hence it's opponents move
                     assert!(sig == fsig);
-                    for (mv, canm) in cpos
-                        .reverse_move_iterator(player.opponent())
-                        .filter(|&mv| {
-                            mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
-                        })
-                        .map(|mv| (mv, cpos.unapply(mv, EMPTY)))
-                        .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                    {
-                        bookkeeping(canm, mv)?;
+
+                    // Whenever we have no pawns we must also try the horizontally mirrored position.
+                    // Example: looking for KP-K positions that lead to KR-K (Canonic(Promote(WHITE, ROOK)))
+                    // Any positions where the white ROOK is on the 8th rank and the white KING is in the upper half
+                    // cannot be found, as they are not canonic. Hence, the promotion of the white pawn is missed.
+
+                    let poss = if fsig.has_pawns() { vec![cpos] } else { vec![cpos, cpos.mirror_h()] };
+                    for xpos in poss.iter().copied() {
+                        for (mv, canm) in xpos
+                            .reverse_move_iterator(player.opponent())
+                            .filter(|&mv| {
+                                mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
+                            })
+                            .map(|mv| (mv, xpos.unapply(mv, EMPTY)))
+                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
+                        {
+                            if cpos.state(player.opponent()) == CAN_MATE {
+                                let canm = db
+                                    .binary_search(&canm.canonical(wsig))
+                                    .map(|u| db[u])
+                                    .map_err(|_| format!("not found {:?}", canm))?;
+                                let is_cam = check_alien_looser(wsig, canm, player, db, &mut e_hash)?;
+                                if is_cam {
+                                    // set all predecessors CAN_MATE
+                                    for (pred, mv) in canm
+                                        .reverse_move_iterator(player.opponent())
+                                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                                        .map(|mv| (canm.unapply(mv, EMPTY), mv))
+                                        .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
+                                    {
+                                        bookkeeping(pred, mv, db)?;
+                                    }
+                                }
+                            } else {
+                                bookkeeping(canm, mv, db)?;
+                            }
+                        }
                     }
                 }
                 Canonic(sig, PromoteAndCapture(player, piece, captured))
                     if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE =>
+                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
+                        || cpos.state(player.opponent()) == CAN_MATE =>
                 {
                     // as before, player's piece gets promoted, hence it's opponents move
                     assert!(sig == fsig);
-                    for (mv, canm) in cpos
-                        .reverse_move_iterator(player.opponent())
-                        .filter(|&mv| mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece)
-                        .map(|mv| (mv, cpos.unapply(mv, captured)))
-                        .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                    {
-                        bookkeeping(canm, mv)?;
+                    let poss = if fsig.has_pawns() { vec![cpos] } else { vec![cpos, cpos.mirror_h()] };
+                    for xpos in poss.iter().copied() {
+                        for (mv, canm) in xpos
+                            .reverse_move_iterator(player.opponent())
+                            .filter(|&mv| {
+                                mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece
+                            })
+                            .map(|mv| (mv, xpos.unapply(mv, captured)))
+                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
+                        {
+                            if cpos.state(player.opponent()) == CAN_MATE {
+                                let canm = db
+                                    .binary_search(&canm.canonical(wsig))
+                                    .map(|u| db[u])
+                                    .map_err(|_| format!("not found {:?}", canm))?;
+                                let is_cam = check_alien_looser(wsig, canm, player, db, &mut e_hash)?;
+                                if is_cam {
+                                    // set all predecessors CAN_MATE
+                                    for (pred, mv) in canm
+                                        .reverse_move_iterator(player.opponent())
+                                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                                        .map(|mv| (canm.unapply(mv, EMPTY), mv))
+                                        .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
+                                    {
+                                        bookkeeping(pred, mv, db)?;
+                                    }
+                                }
+                            } else {
+                                bookkeeping(canm, mv, db)?;
+                            }
+                        }
                     }
                 }
                 Canonic(_, _) => {}
                 NonCanonic(sig, Capture(player, piece))
                     if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE =>
+                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
+                        || cpos.state(player.opponent()) == CAN_MATE =>
                 {
                     // Example:
-                    // working sig is KQ-KP
-                    // file signature is KP-K
-                    // and we have: NonCanonic(K-KP, Capture(WHITE, QUEEN))
-                    // → we're looking for a move where a black piece has just captured a white queen (with a pawn, for example)
-                    // → thus it is WHITE's move
+                    // working sig is KQ-KQ
+                    // file signature is KQ-K
+                    // and we have: NonCanonic(K-KQ, Capture(WHITE, QUEEN))
+                    // → we're looking for a move where a black piece has just captured a white queen (with a queen, for example)
+                    // → thus it is WHITE's move and we need a BLACK move
                     // → and the status for WHITE who is left with just a KING is CANNOT_AVOID_MATE
-                    // However, because the KP-K cpos is canonic, the colours (and pawns) are opposed.
+                    // However, because the KQ-K cpos is canonic, we had to look for the black flags above.
                     // → we make the position un_canonical, to find a black move that captures the white queen.
-                    // → the resulting position we make canonical again to find the correct can-mate pos
-                    // → the move must be transformed according to the SVH switches in the resulting canonical position
+
                     assert_eq!(sig, fsig.opposite());
                     assert_eq!(cpos.signature(), fsig);
-                    let upos = cpos.un_canonical(fsig).clear_trans();
-                    assert_eq!(upos.signature(), sig);
-                    if cpos.bits & CPos::COMP_BITS == 0x0_0000_0027_18e8 {
-                        eprintln!("goal: {:?}", relation);
-                        eprintln!("upos {}  0x{:016x}  {:?}", upos.signature(), upos.bits, upos);
-                    }
+                    let upos = cpos.un_canonical(fsig).clear_trans(); // e.g. paint the white Q black
+                    let passive = player;
+                    let active = player.opponent();
+                    assert_eq!(upos.signature(), sig); // K-KQ
+
                     for (mv, canm) in upos
-                        .reverse_move_iterator(player)
+                        .reverse_move_iterator(passive)
                         .filter(|&mv| {
-                            if cpos.bits & CPos::COMP_BITS == 0x0_0000_0027_18e8 {
-                                eprintln!("filter1: {}  may capture: {}", mv, mv.may_capture());
-                            }
                             mv.may_capture() && (piece != PAWN || mv.to().rank() != 1 && mv.to().rank() != 8)
                         })
                         .map(|mv| (mv, upos.unapply(mv, piece)))
-                        .filter(|(mv, c)| {
-                            if cpos.bits & CPos::COMP_BITS == 0x0_0000_0027_18e8 {
-                                eprintln!(
-                                    "filter2: before {}  {} valid({:?})={} {:?}",
-                                    mv,
-                                    c.signature(),
-                                    player.opponent(),
-                                    c.valid(player.opponent()),
-                                    c
-                                );
-                            }
-                            c.valid(player.opponent()) && c.signature() == wsig
-                        })
+                        .filter(|(_mv, c)| c.valid(active) && c.signature() == wsig)
                     {
-                        bookkeeping(canm, mv)?;
+                        if cpos.state(player.opponent()) == CAN_MATE {
+                            let canm = db
+                                .binary_search(&canm.canonical(wsig))
+                                .map(|u| db[u])
+                                .map_err(|_| format!("not found {:?}", canm))?;
+                            let is_cam = check_alien_looser(wsig, canm, active, db, &mut e_hash)?;
+                            if is_cam {
+                                // set all predecessors CAN_MATE
+                                for (pred, mv) in canm
+                                    .reverse_move_iterator(active)
+                                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                                    .map(|mv| (canm.unapply(mv, EMPTY), mv))
+                                    .filter(|(c, _)| c.valid(passive) && c.signature() == wsig)
+                                {
+                                    bookkeeping(pred, mv, db)?;
+                                }
+                            }
+                        } else {
+                            bookkeeping(canm, mv, db)?;
+                        }
                     }
                 }
                 NonCanonic(sig, Promote(player, piece)) => {
@@ -1905,15 +2098,18 @@ pub fn scan_loosers(
                         assert_eq!(cpos.signature(), fsig);
                         let upos = cpos.un_canonical(fsig).clear_trans();
                         assert_eq!(upos.signature(), sig); // KR-KQ
-                        for (mv, canm) in upos
-                            .reverse_move_iterator(player.opponent())
-                            .filter(|&mv| {
-                                mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
-                            })
-                            .map(|mv| (mv, upos.unapply(mv, EMPTY)))
-                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                        {
-                            bookkeeping(canm, mv)?;
+                        let poss = if fsig.has_pawns() { vec![upos] } else { vec![upos, upos.mirror_h()] };
+                        for upos in poss.iter().copied() {
+                            for (mv, canm) in upos
+                                .reverse_move_iterator(player.opponent())
+                                .filter(|&mv| {
+                                    mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
+                                })
+                                .map(|mv| (mv, upos.unapply(mv, EMPTY)))
+                                .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
+                            {
+                                bookkeeping(canm, mv, db)?;
+                            }
                         }
                     }
                 }
@@ -1927,15 +2123,18 @@ pub fn scan_loosers(
                         assert_eq!(cpos.signature(), fsig);
                         let upos = cpos.un_canonical(fsig).clear_trans();
                         assert_eq!(upos.signature(), sig); // KR-KQ
-                        for (mv, canm) in upos
-                            .reverse_move_iterator(player.opponent())
-                            .filter(|&mv| {
-                                mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece
-                            })
-                            .map(|mv| (mv, upos.unapply(mv, captured)))
-                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                        {
-                            bookkeeping(canm, mv)?;
+                        let poss = if fsig.has_pawns() { vec![upos] } else { vec![upos, upos.mirror_h()] };
+                        for upos in poss.iter().copied() {
+                            for (mv, canm) in upos
+                                .reverse_move_iterator(player.opponent())
+                                .filter(|&mv| {
+                                    mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece
+                                })
+                                .map(|mv| (mv, upos.unapply(mv, captured)))
+                                .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
+                            {
+                                bookkeeping(canm, mv, db)?;
+                            }
                         }
                     }
                 }
@@ -1963,6 +2162,9 @@ pub fn scan_mates(
 
     for n in 0..n_items {
         if n_items > 0 && (n % (512 * 1024) == 0 || (n + 1) == n_items) {
+            if sigint_received.load(atomic::Ordering::SeqCst) {
+                return Err("terminated processing, restart will repeat".to_string());
+            }
             eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", (n + 1) * 1000 / n_items);
         }
         let cpos = db[n];
@@ -2042,6 +2244,153 @@ pub fn scan_mates(
         eprintln!("    Found {} new CAN_MATE positions.", formatted_sz(found),);
     }
     Ok(())
+}
+
+/// Read the UM file and write new moves to the end until reading hits EOF when no new moves can be found.
+///
+/// Returns Ok(true) if interrupted, otherwise Ok(false)
+fn scan_um(
+    signature: Signature,
+    reader: &mut BufReader<File>,
+    writer: &mut BufWriter<File>,
+    db: &mut [CPos],
+) -> Result<bool, String> {
+    let mut e_hash: EgtbMap = HashMap::new();
+    let um_path = mk_egtb_path(signature, "um");
+    let mut r_pos = reader
+        .stream_position()
+        .map_err(|e| format!("seek reader {} ({})", um_path, e))? as usize
+        / 8;
+
+    let mut n_winner = 0usize;
+    let mut n_looser = 0usize;
+    loop {
+        // make sure the reader can "see" the changes that happened
+        let w_pos = writer
+            .flush()
+            .and_then(|_| writer.stream_position())
+            .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
+            / 8;
+
+        match CPos::read_seq(reader) {
+            Err(some) if some.kind() == UnexpectedEof => break,
+            Err(other) => Err(format!("read error on {} ({})", um_path, other))?,
+            Ok(mpos) => {
+                r_pos += 1;
+                if w_pos > 0 && (r_pos % (128 * 1024) == 0 || r_pos == w_pos) {
+                    if sigint_received.load(atomic::Ordering::SeqCst) {
+                        eprintln!("\x08\x08 canceled.");
+                        return Ok(true);
+                    }
+                    eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", r_pos * 1000 / w_pos);
+                }
+                let cpos = mpos.mpos_to_cpos();
+                let player = mpos.mpos_player();
+                // loop over potential loosers
+                for (lpos, lmv) in cpos
+                    .reverse_move_iterator(player)
+                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                    .map(|mv| (cpos.unapply(mv, EMPTY), mv))
+                    .filter(|(c, _mv)| c.valid(player.opponent()) && c.signature() == signature)
+                {
+                    let can_looser = lpos.clear_trans().canonical(signature);
+                    let u = db.binary_search(&can_looser).map_err(|_| {
+                        eprintln!("\npotentially loosing cpos not found");
+                        eprintln!("  missing pos {:?}", can_looser);
+                        eprintln!("  non canonic {:?}", lpos);
+                        eprintln!("  moving      {}", lmv);
+                        eprintln!("  reaching    {:?}", cpos);
+                        "NOT FOUND".to_string()
+                    })?;
+                    // is this position unknown yet?
+                    if db[u].state(player.opponent()) == UNKNOWN {
+                        // make it an CANNOT_AVOID_MATE if all moves reach CAN_MATE
+                        let lpos = db[u];
+                        let mut all_children_can_mate = true;
+                        for (wpos, wmv) in lpos
+                            .move_iterator(player.opponent())
+                            .map(|mv| (lpos.apply(mv), mv))
+                            .filter(|(c, _mv)| c.valid(player))
+                        {
+                            // this could be an alien move
+                            let wsig = wpos.signature();
+                            let canon = wpos.canonical(wsig);
+                            let chsig = canon.signature();
+                            let rp = if wsig != signature {
+                                // alien
+                                canon.find_canonic(chsig, &mut e_hash).map(|r| {
+                                    if canon.canonic_has_bw_switched() {
+                                        r.flipped_flags()
+                                    } else {
+                                        r
+                                    }
+                                })?
+                            } else {
+                                let v = db.binary_search(&canon).map_err(|_| {
+                                    eprintln!("\npotentially winning cpos not found");
+                                    eprintln!("  missing pos {:?}", canon);
+                                    eprintln!("  non canonic {:?}", wpos);
+                                    eprintln!("  moving      {}", wmv);
+                                    eprintln!("  reaching    {:?}", lpos);
+                                    "NOT FOUND".to_string()
+                                })?;
+                                if canon.canonic_has_bw_switched() {
+                                    db[v].flipped_flags()
+                                } else {
+                                    db[v]
+                                }
+                            };
+                            all_children_can_mate = all_children_can_mate && rp.state(player) == CAN_MATE;
+                            if !all_children_can_mate {
+                                break;
+                            } // first non can-mate is enough
+                        }
+                        if all_children_can_mate {
+                            db[u] = lpos.with_state_for(player.opponent(), CANNOT_AVOID_MATE);
+                            n_looser += 1;
+                            // this may also give rise to new can mates
+                            for (canm, umv) in lpos
+                                .reverse_move_iterator(player.opponent())
+                                .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                                .map(|mv| (lpos.unapply(mv, EMPTY), mv))
+                                .filter(|(c, _mv)| c.valid(player) && c.signature() == signature)
+                            {
+                                let canonic = canm.clear_trans().canonical(signature);
+                                let v = db.binary_search(&canonic).map_err(|_| {
+                                    eprintln!("\nwinning position not found");
+                                    eprintln!("  missing pos {:?}", canonic);
+                                    eprintln!("  before move {}", umv);
+                                    eprintln!("  reaching    {:?}", db[u]);
+                                    "NOT FOUND".to_string()
+                                })?;
+                                let c = db[v];
+                                if c.state(umv.player()) == UNKNOWN {
+                                    let hmv =
+                                        if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
+                                    let mv =
+                                        if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+                                    let mpos = c.mpos_from_mv(mv);
+                                    db[v] = c.with_state_for(mv.player(), CAN_MATE);
+                                    mpos.write_seq(writer).map_err(|ioe| {
+                                        format!("unexpected error ({}) while writing to {}", ioe, um_path)
+                                    })?;
+                                    n_winner += 1;
+                                    // w_pos += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("done.");
+    eprintln!("    Found {:>12} new CAN_MATE positions.", formatted_sz(n_winner));
+    eprintln!(
+        "    Found {:>12} new CANNOT_AVOID_MATE positions.",
+        formatted_sz(n_looser),
+    );
+    Ok(false)
 }
 
 enum Sink<'a> {
@@ -2239,4 +2588,45 @@ fn expected_positions(signature: Signature) -> usize {
             signature.black_queens() as u64,
         );
     vecmax as usize
+}
+
+pub fn debug(args: &[String]) {
+    let mut w = 0;
+
+    while w < args.len() {
+        match args[w].as_str() {
+            "mv" | "move" => {
+                let u: u32 = u32::from_str_radix(args[w + 1].as_str(), 10).unwrap_or_default();
+                let mv = Move { mv: u };
+                eprintln!(
+                    "move {:?} {:?} {:?} {}{}",
+                    mv.player(),
+                    mv.piece(),
+                    mv.promote(),
+                    mv.from(),
+                    mv.to()
+                );
+                w += 2;
+            }
+            "cpos" => {
+                let cpos = CPos { bits: u64::from_str_radix(args[w + 1].as_str(), 10).unwrap_or_default() };
+                eprintln!("cpos  {}  0x{:016x}  {:?}", cpos.signature(), cpos.bits, cpos);
+                w += 2;
+            }
+            "mpos" => {
+                let mpos = CPos { bits: u64::from_str_radix(args[w + 1].as_str(), 10).unwrap_or_default() };
+                eprintln!(
+                    "cpos  {}  0x{:016x}  {}",
+                    mpos.signature(),
+                    mpos.bits,
+                    mpos.mpos_debug()
+                );
+                w += 2;
+            }
+            bad => {
+                eprintln!("`{}` not supported", bad);
+                w += 1;
+            }
+        }
+    }
 }
