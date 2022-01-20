@@ -174,7 +174,7 @@ enum MakeState {
     BufferDone(bool),
     InterruptedBuffer(usize),
     EgtbFromSorted,
-    ScanForMate,
+    ScanForMate(usize),
     ScanAliens,
     ScanUM(usize),
     InterruptedUM,
@@ -516,7 +516,7 @@ pub fn make(sig: &str) -> Result<(), String> {
                     &pass_path,
                 )?;
             }
-            ScanForMate | ScanAliens |  ScanUM(_) | InterruptedUM | // not here
+            ScanForMate(_) | ScanAliens |  ScanUM(_) | InterruptedUM | // not here
             Done => {} // required for completeness
         }
     }
@@ -1533,6 +1533,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
     let (mut map, mut db) = cpos_anon_map(&1)?;
     let preds = signature.get_relatives();
     let mut relatives = preds.iter().copied();
+    let mut ehash: EgtbMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
     let mut state = if Path::new(&egtb_path).is_file() {
@@ -1569,6 +1570,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
             }
 
             StartUp => {
+                remove_file(&moves_path).unwrap_or_default();
                 state = make_unsorted(signature, pass, &unsorted_path)?;
             }
 
@@ -1581,6 +1583,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             UnsortedPresent => {
                 eprintln!("{}  Pass {:2} - sorting {}", signature, pass, unsorted_path);
+                remove_file(&moves_path).unwrap_or_default();
                 um_writer = cpos_append_writer("/dev/null")?;
                 state = sort_from_to(signature, &unsorted_path, &sorted_path).map(|_| SortedPresent)?;
                 remove_file(&um_path).unwrap_or_default();
@@ -1588,6 +1591,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             SortedPresent => {
                 eprintln!("{}  Pass {:2} - continuing with {}", signature, pass, sorted_path);
+                remove_file(&moves_path).unwrap_or_default();
                 std::mem::drop(map);
                 // from this point on, the map is connected to the sorted file
                 // and um_writer writes to the um file
@@ -1608,30 +1612,61 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
                 state = if restart {
                     let mut rdr = cpos_open_reader(&restart_path)?;
+                    let pat = CPos::read_seq(&mut rdr)
+                        .map_err(|e| format!("error reading {} ({})", restart_path, e))?;
                     let xpos = CPos::read_seq(&mut rdr)
                         .map_err(|e| format!("error reading {} ({})", restart_path, e))?;
-                    ScanUM(xpos.bits as usize)
+                    eprintln!(
+                        "    Restarting {} at {}",
+                        if pat.bits as usize == RESTART_MATES {
+                            "mate analysis"
+                        } else if pat.bits as usize == RESTART_UM {
+                            "retrograde analysis"
+                        } else {
+                            "nothing"
+                        },
+                        xpos.bits
+                    );
+                    if pat.bits as usize == RESTART_MATES {
+                        ScanForMate(xpos.bits as usize)
+                    } else if pat.bits as usize == RESTART_UM {
+                        ScanUM(xpos.bits as usize)
+                    } else {
+                        return Err("invalid restart file".to_string());
+                    }
                 } else {
-                    ScanForMate
+                    ScanForMate(0)
                 };
             }
 
-            ScanForMate => {
+            ScanForMate(at) => {
                 eprint!(
-                    "{}  Pass {:2} - find mates, stalemates and direct winners    0% ",
-                    signature, pass
+                    "{}  Pass {:2} - find mates, stalemates, direct winners & alien loosers    0‰ {} ",
+                    signature,
+                    pass,
+                    fmt_human(db.len(), 0)
                 );
-                scan_mates(signature, &mut um_writer, db)?;
+                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash)?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
-                state = ScanAliens;
+                eprint!("    setting checkpoint ");
+                match result {
+                    None => {
+                        set_checkpoint(&restart_path, RESTART_UM, 0)?;
+                        state = ScanUM(0);
+                    }
+                    Some(u) => {
+                        set_checkpoint(&restart_path, RESTART_MATES, u)?;
+                        return Err("terminated via Ctrl-C".to_string());
+                    }
+                }
             }
 
             ScanAliens => match relatives.next() {
                 None => {
                     eprint!("{}  Pass {:2} - setting checkpoint ", signature, pass);
-                    set_checkpoint(&restart_path, 0)?;
+                    set_checkpoint(&restart_path, RESTART_UM, 0)?;
                     state = ScanUM(0);
                 }
                 Some(rm) => {
@@ -1643,15 +1678,17 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 }
             },
             ScanUM(at) => {
-                eprint!("{}  Pass {:2} - retrograde analysis    0‰ ", signature, pass);
+                eprint!("{}  Pass {:2} - retrograde analysis    0‰    0 ", signature, pass);
                 um_reader = cpos_open_reader(&um_path)?;
                 um_reader
                     .seek(SeekFrom::Start(at as u64 * 8))
                     .map_err(|e| format!("Can't seek {} to index {} ({})", um_path, at, e))?;
-                let r = scan_um(signature, &mut um_reader, &mut um_writer, db)?;
+                let r = scan_um(signature, &mut um_reader, &mut um_writer, db, &mut ehash)?;
+                eprint!("    Flushing {} and {} ... ", sorted_path, um_path);
                 map.flush()
                     .and_then(|_| um_writer.flush())
                     .map_err(|e| format!("Can't sync {} and {} ({})", sorted_path, um_path, e))?;
+                eprintln!("done.");
                 state = if r { InterruptedUM } else { WriteEgtb }
             }
             InterruptedUM => {
@@ -1659,11 +1696,13 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 let off = um_reader
                     .stream_position()
                     .map_err(|e| format!("Can't seek {} ({})", um_path, e))?;
-                set_checkpoint(&restart_path, off as usize / 8)?;
+                set_checkpoint(&restart_path, RESTART_UM, off as usize / 8)?;
                 return Err("terminated via Ctrl-C".to_string());
             }
 
-            Done => {} // required for completeness
+            Done => {
+                state = ScanAliens; // silence rustc warning
+            } // required for completeness
             AnalyzeBuffer(_)
             | McPresent
             | InterruptedBuffer(_)
@@ -1692,14 +1731,18 @@ pub fn gen(sig: &str) -> Result<(), String> {
     Ok(())
 }
 
+const RESTART_MATES: usize = 0xBADDEED;
+const RESTART_UM: usize = 0xDEADBEEF;
+
 /// Remember the reading position in long words of the um-file
-fn set_checkpoint(path: &str, at: usize) -> Result<(), String> {
+fn set_checkpoint(path: &str, pattern: usize, at: usize) -> Result<(), String> {
     let mut bufw = cpos_create_writer(path)?;
-    CPos { bits: at as u64 }
+    CPos { bits: pattern as u64 }
         .write_seq(&mut bufw)
+        .and_then(|_| CPos { bits: at as u64 }.write_seq(&mut bufw))
         .and_then(|_| bufw.flush())
         .map_err(|e| format!("cannot write {} ({})", path, e))?;
-    eprintln!("at {}", at);
+    eprintln!("at {:x} {}", pattern, at);
     Ok(())
 }
 
@@ -1862,7 +1905,7 @@ pub fn scan_loosers(
     let mut found = 0;
     for cpos in rdr {
         n += 1;
-        if n_items > 0 && (n % (128 * 1024) == 0 || n == n_items) {
+        if n_items > 0 && (n % (64 * 1024) == 0 || n == n_items) {
             if sigint_received.load(atomic::Ordering::SeqCst) {
                 return Err("terminated processing, restart will repeat".to_string());
             }
@@ -2150,6 +2193,154 @@ pub fn scan_loosers(
     Ok(())
 }
 
+/// assert_eq!(signature, can.signature())
+fn register_winner(
+    signature: Signature,
+    can: CPos,
+    umv: Move,
+    writer: &mut BufWriter<File>,
+    db: &mut [CPos],
+) -> Result<usize, String> {
+    let canonic = can.canonical(signature);
+    let v = db.binary_search(&canonic).map_err(|_| {
+        eprintln!("\nwinning position not found");
+        eprintln!("  missing pos {:?}", can);
+        eprintln!("  canonic pos {:?}", canonic);
+        eprintln!("  before move {}", umv);
+        eprintln!("  reaching    {:?}", can.apply(umv));
+        "NOT FOUND".to_string()
+    })?;
+    let c = db[v];
+    if c.state(umv.player()) == UNKNOWN {
+        let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
+        let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+        let mpos = c.mpos_from_mv(mv);
+        db[v] = c.with_state_for(mv.player(), CAN_MATE);
+        mpos.write_seq(writer).map_err(|ioe| {
+            format!(
+                "unexpected error ({}) while writing to {}",
+                ioe,
+                mk_egtb_path(signature, "um")
+            )
+        })?;
+        Ok(1)
+    } else {
+        Ok(0)
+    }
+}
+
+fn scan_mates_aliens(
+    signature: Signature,
+    at: usize,
+    um_writer: &mut BufWriter<File>,
+    db: &mut [CPos],
+    hash: &mut EgtbMap,
+) -> Result<Option<usize>, String> {
+    let mut wins = 0usize;
+    let mut loos = 0usize;
+    let mut mates = 0usize;
+    let mut stalemates = 0usize;
+    let n_items = db.len();
+
+    for n in at..n_items {
+        if n_items > 0 && (n % (128 * 1024) == 0 || (n + 1) == n_items) {
+            if sigint_received.load(atomic::Ordering::SeqCst) {
+                eprintln!("\x08\x08 canceled.");
+                return Ok(Some(n));
+            }
+            eprint!(
+                "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08{:4}‰ {} ",
+                (n + 1) * 1000 / n_items,
+                fmt_human(n_items, n + 1)
+            );
+        }
+        'next_player: for player in [BLACK, WHITE] {
+            let cp = db[n];
+            if cp.bits & CPos::COMP_BITS == 0x0d0849011 {
+                eprint!("!");
+            }
+            if cp.state(player) == UNKNOWN {
+                let mut all_successors_can_mate = true;
+                let mut no_moves = true;
+                for (mv, succ) in cp
+                    .move_iterator(player)
+                    .map(|mv| (mv, cp.apply(mv)))
+                    .filter(|(_, c)| c.valid(player.opponent()))
+                {
+                    no_moves = false;
+                    // is this one of our positions?
+                    // if so, let this position remain UNKNOWN
+                    // and let the work be done by retrograde analysis
+                    if succ.signature().mk_canonic() == signature {
+                        all_successors_can_mate = false;
+                        continue /* next move */;
+                    }
+                    // it's an alien
+                    let succ = succ.find(hash).map(|x| {
+                        if x.canonic_has_bw_switched() {
+                            x.flipped_flags()
+                        } else {
+                            x
+                        }
+                    })?;
+                    match succ.state(player.opponent()) {
+                        MATE | CANNOT_AVOID_MATE => {
+                            let mpos = cp.mpos_from_mv(mv);
+                            db[n] = cp.with_state_for(player, CAN_MATE);
+                            mpos.write_seq(um_writer).map_err(|ioe| {
+                                format!("unexpected error ({}) while writing to {}.um", ioe, signature)
+                            })?;
+                            wins += 1;
+                            continue 'next_player;
+                        }
+                        CAN_MATE => continue, /* with next move */
+                        STALEMATE | UNKNOWN | CANNOT_AVOID_DRAW | CAN_DRAW | INVALID_POS => {
+                            all_successors_can_mate = false;
+                        }
+                    }
+                }
+                if no_moves && cp.state(player.opponent()) != INVALID_POS {
+                    // it's STALEMATE
+                    stalemates += 1;
+                    db[n] = cp.with_state_for(player, STALEMATE);
+                } else if all_successors_can_mate {
+                    // || (no_moves && cp.state(player.opponent()) == INVALID_POS)
+                    // it's not STALEMATE, but either MATE or all successors are alien and can mate!
+                    if no_moves && cp.state(player.opponent()) == INVALID_POS {
+                        mates += 1;
+                        db[n] = cp.with_state_for(player, MATE);
+                    } else {
+                        loos += 1;
+                        db[n] = cp.with_state_for(player, CANNOT_AVOID_MATE);
+                    }
+                    // find all moves from same signature (no captures, no promotions) that come here
+                    // they all CAN_MATE
+                    for (pred, mv) in cp
+                        .reverse_move_iterator(player)
+                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+                        .map(|mv| (cp.unapply(mv, EMPTY), mv))
+                        .filter(|(c, _)| c.valid(player.opponent()) && c.signature() == signature)
+                    {
+                        let found = register_winner(signature, pred, mv, um_writer, db)?;
+                        wins += found;
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("done.");
+    if wins + mates + loos + stalemates > 0 {
+        eprintln!("    Found {} MATE positions.", formatted_sz(mates),);
+        eprintln!("    Found {} STALEMATE positions.", formatted_sz(stalemates),);
+        eprintln!("    Found {} new CAN_MATE positions.", formatted_sz(wins));
+        eprintln!(
+            "    Found {} new CANNOT_AVOID_MATE positions.",
+            formatted_sz(loos)
+        );
+    }
+    Ok(None)
+}
 pub fn scan_mates(
     signature: Signature,
     um_writer: &mut BufWriter<File>,
@@ -2254,8 +2445,8 @@ fn scan_um(
     reader: &mut BufReader<File>,
     writer: &mut BufWriter<File>,
     db: &mut [CPos],
+    e_hash: &mut EgtbMap,
 ) -> Result<bool, String> {
-    let mut e_hash: EgtbMap = HashMap::new();
     let um_path = mk_egtb_path(signature, "um");
     let mut r_pos = reader
         .stream_position()
@@ -2264,6 +2455,7 @@ fn scan_um(
 
     let mut n_winner = 0usize;
     let mut n_looser = 0usize;
+
     loop {
         // make sure the reader can "see" the changes that happened
         let w_pos = writer
@@ -2282,7 +2474,11 @@ fn scan_um(
                         eprintln!("\x08\x08 canceled.");
                         return Ok(true);
                     }
-                    eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", r_pos * 1000 / w_pos);
+                    eprint!(
+                        "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08{:4}‰ {} ",
+                        r_pos * 1000 / w_pos,
+                        fmt_human(w_pos, r_pos)
+                    );
                 }
                 let cpos = mpos.mpos_to_cpos();
                 let player = mpos.mpos_player();
@@ -2318,7 +2514,7 @@ fn scan_um(
                             let chsig = canon.signature();
                             let rp = if wsig != signature {
                                 // alien
-                                canon.find_canonic(chsig, &mut e_hash).map(|r| {
+                                canon.find_canonic(chsig, e_hash).map(|r| {
                                     if canon.canonic_has_bw_switched() {
                                         r.flipped_flags()
                                     } else {
@@ -2590,6 +2786,8 @@ fn expected_positions(signature: Signature) -> usize {
     vecmax as usize
 }
 
+/// command line: rasch debug mv 12345 cpos 67543 mpos  99928763
+/// (as the vscode debugger displays only raw decimal values)
 pub fn debug(args: &[String]) {
     let mut w = 0;
 
@@ -2628,5 +2826,141 @@ pub fn debug(args: &[String]) {
                 w += 1;
             }
         }
+    }
+}
+
+/// command line: rasch diff *sig* *path*
+///
+/// Makes a diff for *sig*.egtb in EGTB directory and the file given in *path*
+///
+pub fn diff(sig: &str, path2: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let path1 = mk_egtb_path(signature, "egtb");
+    let (_map1, left) = cpos_ro_map(&path1)?;
+    let (_map2, right) = cpos_ro_map(path2)?;
+    let mut v = 0usize;
+    let mut w = 0usize;
+    let mut diffs = 0usize;
+    let mut dlines = 0;
+    let deplorable = |cp: CPos| {
+        (cp.state(BLACK) == CANNOT_AVOID_DRAW || cp.state(BLACK) == CAN_DRAW)
+            && (cp.state(WHITE) == CANNOT_AVOID_DRAW || cp.state(WHITE) == CAN_DRAW)
+    };
+    let fen = |c: CPos| encodeFEN(&c.uncompressed(if c.state(WHITE) == INVALID_POS { BLACK } else { WHITE }));
+
+    println!("{} left: {}, right: {}", signature, left.len(), right.len());
+    while v < left.len() && w < right.len() {
+        if left[v] < right[w] && deplorable(left[v]) {
+            v += 1;
+        } else if left[v] > right[w] && deplorable(right[w]) {
+            w += 1;
+        } else if left[v] < right[w] {
+            let miss0 = v;
+            while v < left.len() && left[v] < right[w] {
+                v += 1;
+            }
+            if dlines < 12 {
+                println!(
+                    "<  0x{:>016x}  {:?}  {}",
+                    left[miss0].bits,
+                    left[miss0],
+                    fen(left[miss0])
+                );
+                dlines += 1;
+                if miss0 + 1 < v - 1 {
+                    println!("……… ({} further positions missing right)", (v - 1) - (miss0 + 1));
+                    dlines += 1;
+                }
+                if miss0 + 1 < v {
+                    println!(
+                        "<  0x{:>016x}  {:?}  {}",
+                        left[v - 1].bits,
+                        left[v - 1],
+                        fen(left[v - 1])
+                    );
+                    dlines += 1;
+                }
+            }
+            diffs += v - miss0;
+        } else if left[v] > right[w] {
+            let miss0 = w;
+            while w < right.len() && left[v] > right[w] {
+                w += 1;
+            }
+            if dlines < 12 {
+                println!(
+                    ">  0x{:>016x}  {:?}  {}",
+                    right[miss0].bits,
+                    right[miss0],
+                    fen(right[miss0]),
+                );
+                dlines += 1;
+                if miss0 + 1 < w - 1 {
+                    println!("……… ({} further positions missing left)", (w - 1) - (miss0 + 1));
+                    dlines += 1;
+                }
+                if miss0 + 1 < w {
+                    println!(
+                        ">  0x{:>016x}  {:?}  {}",
+                        right[w - 1].bits & CPos::COMP_BITS,
+                        right[w - 1],
+                        fen(right[w - 1])
+                    );
+                    dlines += 1;
+                }
+            }
+            diffs += w - miss0;
+        } else {
+            let mut cp1 = left[v];
+            let mut cp2 = right[w];
+            for player in [BLACK, WHITE] {
+                if cp1.state(player) == CAN_DRAW {
+                    cp1 = cp1.with_state_for(player, CANNOT_AVOID_DRAW);
+                }
+                if cp2.state(player) == CAN_DRAW {
+                    cp2 = cp2.with_state_for(player, CANNOT_AVOID_DRAW);
+                }
+            }
+            if cp1.bits != cp2.bits {
+                if dlines < 12 {
+                    println!(
+                        "≠  0x{:>016x}  {:?}  ≠≠≠  0x{:>02x}  {:?}/{:?}  {}",
+                        cp1.bits,
+                        cp1,
+                        cp2.bits >> 56,
+                        cp2.state(BLACK),
+                        cp2.state(WHITE),
+                        fen(cp2)
+                    );
+                    dlines += 1;
+                }
+                diffs += 1;
+            }
+            v += 1;
+            w += 1;
+        }
+    }
+    if v < left.len() {
+        println!("{} additional positions left", left.len() - v);
+        while v < left.len() {
+            if !deplorable(left[v]) {
+                diffs += 1;
+            }
+            v += 1;
+        }
+    }
+    if w < right.len() {
+        println!("{} additional positions right", right.len() - w);
+        while w < right.len() {
+            if !deplorable(right[w]) {
+                diffs += 1;
+            }
+            w += 1;
+        }
+    }
+    if diffs > 0 {
+        Err(format!("{} has {} differences", signature, diffs))
+    } else {
+        Ok(())
     }
 }
