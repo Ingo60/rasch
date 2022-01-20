@@ -533,7 +533,7 @@ pub fn make(sig: &str) -> Result<(), String> {
 ///
 /// Result is `EgtbPresent`
 fn make_egtb(
-    items: &mut dyn Iterator<Item = CPos>,
+    items: &mut impl Iterator<Item = CPos>,
     n_items: usize,
     writer: &mut BufWriter<File>,
     path: &str,
@@ -545,6 +545,47 @@ fn make_egtb(
             eprint!("\x08\x08\x08\x08\x08{:3}% ", (i + 1) * 100 / n_items);
         }
         i += 1;
+        // make states sane
+        if cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
+            cpos = cpos.with_state_for(WHITE, CANNOT_AVOID_DRAW);
+        } else if cpos.state(WHITE) != UNKNOWN && cpos.state(BLACK) == UNKNOWN {
+            cpos = cpos.with_state_for(BLACK, CANNOT_AVOID_DRAW);
+        }
+        let superfluous = cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) == UNKNOWN
+            || cpos.state(WHITE) == CANNOT_AVOID_DRAW && cpos.state(BLACK) == CANNOT_AVOID_DRAW;
+        // filter superfluous
+        if !superfluous {
+            cpos.write_seq(writer)
+                .map_err(|ioe| format!("error writing {}th position to {} ({})", i + 1, path, ioe))?;
+            npos += 1;
+        }
+    }
+    writer
+        .flush()
+        .map_err(|x| format!("couldn't flush buffer for {} ({})", path, x))?;
+    eprintln!("done, {} positions written.", formatted_sz(npos),);
+    Ok(EgtbPresent)
+}
+
+/// Write and flush mmapped positions to EGTB file,
+/// filtering the positions that are not completely unknown and replacing UNKNOWN with CANNOT_AVOID_DRAW in
+/// those positions where UNKNOWN appears for one player only.
+///
+/// Result is `EgtbPresent`
+fn fast_egtb(
+    items: &[CPos],
+    n_items: usize,
+    writer: &mut BufWriter<File>,
+    path: &str,
+) -> Result<MakeState, String> {
+    let mut npos = 0;
+    // let mut i = 0;
+    for i in 0..items.len() {
+        let mut cpos = items[i];
+        if i % 1_000_000 == 0 || i + 1 == n_items {
+            eprint!("\x08\x08\x08\x08\x08{:3}% ", (i + 1) * 100 / n_items);
+        }
+
         // make states sane
         if cpos.state(WHITE) == UNKNOWN && cpos.state(BLACK) != UNKNOWN {
             cpos = cpos.with_state_for(WHITE, CANNOT_AVOID_DRAW);
@@ -1578,7 +1619,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 eprint!("{}  Pass {:2} - writing {}   0% ", signature, pass, egtb_path);
                 let mut writer = cpos_create_writer(&egtb_path)?;
                 let max_items = db.len();
-                state = make_egtb(&mut db.iter().copied(), max_items, &mut writer, &egtb_path)?;
+                state = fast_egtb(db, max_items, &mut writer, &egtb_path)?;
             }
 
             UnsortedPresent => {
