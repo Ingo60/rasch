@@ -175,9 +175,7 @@ enum MakeState {
     InterruptedBuffer(usize),
     EgtbFromSorted,
     ScanForMate(usize),
-    ScanAliens,
     ScanUM(usize),
-    InterruptedUM,
 }
 
 use MakeState::*;
@@ -516,7 +514,7 @@ pub fn make(sig: &str) -> Result<(), String> {
                     &pass_path,
                 )?;
             }
-            ScanForMate(_) | ScanAliens |  ScanUM(_) | InterruptedUM | // not here
+            ScanForMate(_) |  ScanUM(_) | // not here
             Done => {} // required for completeness
         }
     }
@@ -1570,10 +1568,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
     let mut pass = 0;
     let mut um_writer = cpos_append_writer("/dev/null")?;
-    let mut um_reader = cpos_open_reader("/dev/null")?;
     let (mut map, mut db) = cpos_anon_map(&1)?;
-    let preds = signature.get_relatives();
-    let mut relatives = preds.iter().copied();
     let mut ehash: EgtbMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
@@ -1604,9 +1599,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
             EgtbPresent => {
                 eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
                 std::mem::drop(um_writer);
-                std::mem::drop(um_reader);
                 um_writer = cpos_append_writer("/dev/null")?;
-                um_reader = cpos_open_reader("/dev/null")?;
                 state = make_moves(signature, &um_path, &moves_path)?;
             }
 
@@ -1673,7 +1666,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     } else if pat.bits as usize == RESTART_UM {
                         ScanUM(xpos.bits as usize)
                     } else {
-                        return Err("invalid restart file".to_string());
+                        return Err("there is garbage in the restart file".to_string());
                     }
                 } else {
                     ScanForMate(0)
@@ -1698,29 +1691,16 @@ pub fn gen(sig: &str) -> Result<(), String> {
                         state = ScanUM(0);
                     }
                     Some(u) => {
+                        eprint!(" for restart ");
                         set_checkpoint(&restart_path, RESTART_MATES, u)?;
                         return Err("terminated via Ctrl-C".to_string());
                     }
                 }
             }
 
-            ScanAliens => match relatives.next() {
-                None => {
-                    eprint!("{}  Pass {:2} - setting checkpoint ", signature, pass);
-                    set_checkpoint(&restart_path, RESTART_UM, 0)?;
-                    state = ScanUM(0);
-                }
-                Some(rm) => {
-                    eprint!("{}  Pass {:2} - scan {:?} loosers    0‰ ", signature, pass, rm);
-                    scan_loosers(signature, rm, &mut um_writer, db)?;
-                    um_writer
-                        .flush()
-                        .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
-                }
-            },
             ScanUM(at) => {
                 eprint!("{}  Pass {:2} - retrograde analysis    0‰    0 ", signature, pass);
-                um_reader = cpos_open_reader(&um_path)?;
+                let mut um_reader = cpos_open_reader(&um_path)?;
                 um_reader
                     .seek(SeekFrom::Start(at as u64 * 8))
                     .map_err(|e| format!("Can't seek {} to index {} ({})", um_path, at, e))?;
@@ -1730,20 +1710,18 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     .and_then(|_| um_writer.flush())
                     .map_err(|e| format!("Can't sync {} and {} ({})", sorted_path, um_path, e))?;
                 eprintln!("done.");
-                state = if r { InterruptedUM } else { WriteEgtb }
-            }
-            InterruptedUM => {
-                eprint!("{}  Pass {:2} - setting checkpoint ", signature, pass);
-                let off = um_reader
-                    .stream_position()
-                    .map_err(|e| format!("Can't seek {} ({})", um_path, e))?;
-                set_checkpoint(&restart_path, RESTART_UM, off as usize / 8)?;
-                return Err("terminated via Ctrl-C".to_string());
+                state = match r {
+                    Some(u) => {
+                        eprint!("    setting checkpoint for restart ");
+                        set_checkpoint(&restart_path, RESTART_UM, u)?;
+                        return Err("terminated via Ctrl-C".to_string());
+                    }
+                    None => WriteEgtb,
+                }
             }
 
-            Done => {
-                state = ScanAliens; // silence rustc warning
-            } // required for completeness
+            Done => {} // required for completeness
+
             AnalyzeBuffer(_)
             | McPresent
             | InterruptedBuffer(_)
@@ -1764,7 +1742,6 @@ pub fn gen(sig: &str) -> Result<(), String> {
         .map_err(|e| format!("error syncing {} ({})", sorted_path, e))?;
     std::mem::drop(map);
     std::mem::drop(um_writer);
-    std::mem::drop(um_reader);
     for p in [um_path, unsorted_path, sorted_path, restart_path] {
         remove_file(p).unwrap_or_default();
     }
@@ -2382,112 +2359,17 @@ fn scan_mates_aliens(
     }
     Ok(None)
 }
-pub fn scan_mates(
-    signature: Signature,
-    um_writer: &mut BufWriter<File>,
-    db: &mut [CPos],
-) -> Result<(), String> {
-    let mut found = 0usize;
-    let mut mates = 0usize;
-    let mut stalemates = 0usize;
-    let n_items = db.len();
-
-    for n in 0..n_items {
-        if n_items > 0 && (n % (512 * 1024) == 0 || (n + 1) == n_items) {
-            if sigint_received.load(atomic::Ordering::SeqCst) {
-                return Err("terminated processing, restart will repeat".to_string());
-            }
-            eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", (n + 1) * 1000 / n_items);
-        }
-        let cpos = db[n];
-        for player in [BLACK, WHITE] {
-            let mut bookkeeping =
-                |can: CPos, umv: Move, st: CPosState, db: &mut [CPos]| -> Result<(), String> {
-                    assert_eq!(can.signature(), signature);
-                    let canonic = can.clear_trans().canonical(signature);
-                    let u = db.binary_search(&canonic).map_err(|_| {
-                        eprintln!("\nCPos not found");
-                        eprintln!("  missing pos {:?}", canonic);
-                        eprintln!("  before move {}", umv);
-                        eprintln!("  reaching    {:?}", canonic.apply(umv));
-                        "NOT FOUND".to_string()
-                    })?;
-                    let c = db[u];
-                    if c.state(umv.player()) == UNKNOWN {
-                        let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
-                        let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
-                        let mpos = c.mpos_from_mv(mv);
-                        let canm = c.with_state_for(mv.player(), st);
-                        db[u] = canm;
-                        mpos.write_seq(um_writer).map_err(|ioe| {
-                            format!(
-                                "unexpected error ({}) while writing to {}",
-                                ioe,
-                                mk_egtb_path(signature, "um")
-                            )
-                        })?;
-                        found += 1;
-                    }
-                    Ok(())
-                };
-            // this match looks a bit clumsy
-            match cpos.state(player) {
-                UNKNOWN if cpos.state(player.opponent()) != INVALID_POS => {
-                    if let None = cpos
-                        .move_iterator(player)
-                        .filter(|&mv| cpos.apply(mv).valid(player.opponent()))
-                        .next()
-                    {
-                        // found STALEMATE
-                        stalemates += 1;
-                        db[n] = cpos.with_state_for(player, STALEMATE);
-                    }
-                }
-                INVALID_POS if cpos.state(player.opponent()) == UNKNOWN => {
-                    let player = player.opponent(); // actually, the player whose state is UNKNOWN interests us
-                    if let None = cpos
-                        .move_iterator(player)
-                        .filter(|&mv| cpos.apply(mv).valid(player.opponent()))
-                        .next()
-                    {
-                        // found MATE
-                        mates += 1;
-                        db[n] = cpos.with_state_for(player, MATE);
-                        // find all moves from same signature (no captures, no promotions) that come here
-                        // they all CAN_MATE
-                        for (ppos, mv) in cpos
-                            .reverse_move_iterator(player)
-                            .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                            .map(|mv| (cpos.unapply(mv, EMPTY), mv))
-                            .filter(|(c, _)| c.valid(player.opponent()) && c.signature() == signature)
-                        {
-                            bookkeeping(ppos, mv, CAN_MATE, db)?;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    eprintln!("done.");
-    if mates + found + stalemates > 0 {
-        eprintln!("    Found {} MATE positions.", formatted_sz(mates),);
-        eprintln!("    Found {} STALEMATE positions.", formatted_sz(stalemates),);
-        eprintln!("    Found {} new CAN_MATE positions.", formatted_sz(found),);
-    }
-    Ok(())
-}
 
 /// Read the UM file and write new moves to the end until reading hits EOF when no new moves can be found.
 ///
-/// Returns Ok(true) if interrupted, otherwise Ok(false)
+/// Returns Ok(Some(position)) if interrupted, otherwise Ok(None)
 fn scan_um(
     signature: Signature,
     reader: &mut BufReader<File>,
     writer: &mut BufWriter<File>,
     db: &mut [CPos],
     e_hash: &mut EgtbMap,
-) -> Result<bool, String> {
+) -> Result<Option<usize>, String> {
     let um_path = mk_egtb_path(signature, "um");
     let mut r_pos = reader
         .stream_position()
@@ -2510,15 +2392,15 @@ fn scan_um(
             Err(other) => Err(format!("read error on {} ({})", um_path, other))?,
             Ok(mpos) => {
                 r_pos += 1;
-                if w_pos > 0 && (r_pos % (128 * 1024) == 0 || r_pos == w_pos) {
+                if w_pos > 0 && (r_pos % (128 * 1024) == 0 || r_pos + 1 == w_pos) {
                     if sigint_received.load(atomic::Ordering::SeqCst) {
                         eprintln!("\x08\x08 canceled.");
-                        return Ok(true);
+                        return Ok(Some(r_pos));
                     }
                     eprint!(
                         "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08{:4}‰ {} ",
-                        r_pos * 1000 / w_pos,
-                        fmt_human(w_pos, r_pos)
+                        (r_pos + 1) * 1000 / w_pos,
+                        fmt_human(w_pos, r_pos + 1)
                     );
                 }
                 let cpos = mpos.mpos_to_cpos();
@@ -2627,7 +2509,7 @@ fn scan_um(
         "    Found {:>12} new CANNOT_AVOID_MATE positions.",
         formatted_sz(n_looser),
     );
-    Ok(false)
+    Ok(None)
 }
 
 enum Sink<'a> {
