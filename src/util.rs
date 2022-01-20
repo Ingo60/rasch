@@ -36,6 +36,35 @@ fn formatu64(u: u64, result: &mut String) {
     result.push_str(&b);
 }
 
+/// Formats the number of remaining items in short, human readable form.
+///
+/// e.g. fmt_human(15000, 1000) = " 14k"
+pub fn fmt_human(w: usize, r: usize) -> String {
+    if w >= r {
+        let mut d = w - r;
+        let mut suffix = "";
+        if d > 9999 {
+            d /= 1000;
+            suffix = "k"
+        };
+        if d > 999 {
+            d /= 1000;
+            suffix = "m"
+        };
+        if d > 999 {
+            d /= 1000;
+            suffix = "g"
+        };
+        if suffix == "" {
+            format!("{:>4}", d)
+        } else {
+            format!("{:>3}{}", d, suffix)
+        }
+    } else {
+        "????".to_string()
+    }
+}
+
 /// How much memory we may allocate for the compressed positions vector and the position hash map
 pub const MAX_USE_MEMORY_PERCENT: usize = 75;
 
