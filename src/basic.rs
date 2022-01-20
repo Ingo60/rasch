@@ -6,7 +6,7 @@
 
 use super::fieldset::Field;
 use super::position::Position;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 pub use Piece::*;
 pub use Player::*;
 
@@ -428,7 +428,7 @@ pub fn showMovesSAN(moves: &[Move], start: Position) -> String {
 /// In addition, this is reported for positions not found in a database search.
 /// - CANNOT_AVOID_MATE is givon to positions where all moves lead to CAN_MATE.
 ///
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CPosState {
     /// not yet analyzed (this must map from and to u0!)
     UNKNOWN,
@@ -485,6 +485,22 @@ impl From<u64> for CPosState {
             7 => INVALID_POS,
             _ => UNKNOWN, // to make rustc happy
         }
+    }
+}
+
+impl Debug for CPosState {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let s = match self {
+            MATE => "MATE",
+            STALEMATE => "STAL",
+            CANNOT_AVOID_DRAW => "DRAW",
+            CAN_DRAW => "DRWS",
+            CAN_MATE => "WINS",
+            CANNOT_AVOID_MATE => "LOOS",
+            INVALID_POS => "INVP",
+            UNKNOWN => "UNKN",
+        };
+        write!(f, "{}", s)
     }
 }
 
