@@ -5,14 +5,16 @@
 //! as they can be reduced to canonic ones by simply changing the colour of the pieces
 //! and mirroring the board horizontally if pawns are in the game.
 
+use memmap2::Mmap;
 use std::{
     cmp::Ordering,
     collections::HashMap,
     fmt,
     fmt::{Display, Formatter},
-    fs::File,
+    fs::{File, OpenOptions},
     hash::{Hash, Hasher},
     io::{BufReader, ErrorKind::UnexpectedEof, Read, Seek, SeekFrom, Write},
+    slice,
 };
 
 use super::{
@@ -1711,6 +1713,30 @@ impl CPos {
                 CPos { bits: 0 }.with_state(INVALID_POS, INVALID_POS)
             };
             hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
+        }
+        Ok(())
+    }
+
+    pub fn egtb_mmap<'a>(
+        canonsig: Signature,
+        ext: &str,
+        hash: &'a mut HashMap<Signature, Box<(Mmap, &[CPos])>>,
+    ) -> Result<(), String> {
+        if !hash.contains_key(&canonsig) {
+            let path = mk_egtb_path(canonsig, ext);
+            let mm = {
+                let path: &str = &path;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .open(path)
+                    .map_err(|e| format!("Can't read {} ({})", path, e))?;
+                let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+                // let start = &map[0] as *const u8;
+                // let s = map.as_ptr();
+                let array = unsafe { slice::from_raw_parts(map.as_ptr().cast::<CPos>(), map.len() / 8) };
+                (map, array)
+            };
+            hash.insert(canonsig, Box::new(mm));
         }
         Ok(())
     }
