@@ -52,7 +52,7 @@ pub fn piece_sources(piece: Piece, player: Player, to: Field) -> BitSet {
 ///
 /// ```
 /// if cpos.valid(player) {
-///     for mv in cpos.move_iterator() {
+///     for mv in cpos.move_iterator(player) {
 ///         if cpos.apply(mv).valid(player.opponent()) {
 ///             // the mv was valid
 ///         }
