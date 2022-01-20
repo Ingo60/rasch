@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export EGTB=./egtb
+export EGTB=./egtb-test
 # export EGTBTEMP=./egtbtemp
 set -e
 
