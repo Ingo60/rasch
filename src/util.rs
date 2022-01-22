@@ -66,7 +66,7 @@ pub fn fmt_human(w: usize, r: usize) -> String {
 }
 
 /// How much memory we may allocate for the compressed positions vector and the position hash map
-pub const MAX_USE_MEMORY_PERCENT: usize = 75;
+pub const MAX_USE_MEMORY_PERCENT: usize = 50;
 
 /// Size of a CPos
 pub const SIZE_CPOS: usize = 8;

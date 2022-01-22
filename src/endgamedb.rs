@@ -108,7 +108,7 @@
 
 use super::{
     basic::{CPosState, Move, Piece, Player, PlayerPiece},
-    cpos::{Alienation, CPos, EgtbMap, Mirrorable, RelationMode, Signature},
+    cpos::{CPos, EgtbMap, Mirrorable, Signature},
     cposio::{
         cpos_anon_map, cpos_append_writer, cpos_create_writer, cpos_file_size, cpos_open_reader, cpos_ro_map,
         cpos_rw_map, mk_egtb_path, read_a_chunk, CPosReader,
@@ -121,11 +121,9 @@ use super::cposio as CIO;
 use super::fieldset::*;
 use super::position as P;
 
-use Alienation::*;
 use CPosState::*;
 use Piece::*;
 use Player::*;
-use RelationMode::*;
 
 use super::position::Position;
 use super::util::*;
@@ -1556,6 +1554,8 @@ pub fn alloc_working_memory(vec: &Vec<CPos>, hash: &mut Cache) -> Result<usize, 
     Ok(hsize)
 }
 
+const DEBUG_POSITION: CPos = CPos { bits: 0x0048_d274_a630 };
+
 /// mmap backed generation
 pub fn gen(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
@@ -1764,453 +1764,6 @@ fn set_checkpoint(path: &str, pattern: usize, at: usize) -> Result<(), String> {
     Ok(())
 }
 
-pub fn test_scan_loosers(wsig: &str, asig: &str) -> Result<(), String> {
-    let wsignature = Signature::new_from_str_canonic(wsig)?;
-    let asignature = Signature::new_from_str_canonic(asig)?;
-    let rm = {
-        wsignature.get_relatives().iter().copied().find(|&r| match r {
-            Canonic(s, _) => s == asignature,
-            NonCanonic(s, _) => s == asignature.opposite(),
-            Both(s, _, _, _) => s == asignature,
-        })
-    }
-    .ok_or(format!("{} is not a predecessor of {}", asignature, wsignature))?;
-    // let mut winners = Vec::new();
-    let path_moves2 = mk_egtb_path(wsignature, "moves2");
-    let mut um_writer = cpos_create_writer(&path_moves2)?;
-    // let db = cpos_rw_map(&mk_egtb_path(wsignature, "sorted"));
-    let mut dbvec = Vec::with_capacity(0);
-    let s = make_positions(wsignature, 1, &mk_egtb_path(wsignature, "unsorted"), &mut dbvec)?;
-    assert_eq!(s, UnsortedVec);
-    dbvec.sort_unstable();
-    eprint!("{}  Pass  2 - scan {:?} loosers    0‰ ", wsignature, rm);
-    scan_loosers(wsignature, rm, &mut um_writer, &mut dbvec)
-        .and_then(|_| um_writer.flush().map_err(|_e| "flush".to_string()))?;
-    std::mem::drop(um_writer);
-
-    let rdr = CPosReader::new(&path_moves2)?;
-    let mut ehash: EgtbMap = HashMap::new();
-    let mut mhash: EgtbMap = HashMap::new();
-    // find the same move in original moves file
-
-    for mpos2 in rdr {
-        match mpos2.mpos_to_cpos().find_canonic(wsignature, &mut ehash) {
-            Ok(canon) => match canon.find_canonic_move(wsignature, mpos2.mpos_player(), &mut mhash) {
-                Ok(mpos) => {
-                    // This happens all the time, for example with promotions to queen vs to rook, etc.
-
-                    if mpos2.bits != mpos.bits {
-                        eprintln!("mpos2: {}", mpos2.mpos_debug());
-                        eprintln!("mpos:  {}", mpos.mpos_debug());
-                        return Err("mpos2 found but bits differ".to_string());
-                        // fill details later
-                    }
-                }
-                Err(s) => {
-                    eprintln!("mpos2: 0x{:016x}  {}", mpos2.bits, mpos2.mpos_debug());
-                    eprintln!("canon: 0x{:016x}  {:?}", canon.bits, canon);
-                    return Err(s);
-                }
-            },
-            Err(s) => {
-                eprintln!("find_canonic: {}", s);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Check if canonic position `can` has only `player` moves that lead to alien successors that CAN_MATE.
-/// If this is so, mark `can` as CANNOT_AVOID_MATE and all it's predecessors, if any, as CAN_MATE.
-fn check_alien_looser(
-    signature: Signature,
-    can: CPos,
-    player: Player,
-    db: &mut [CPos],
-    e_hash: &mut EgtbMap,
-) -> Result<bool, String> {
-    let no = Ok(false);
-    if can.state(player) == UNKNOWN {
-        for succ in can
-            .move_iterator(player)
-            .map(|mv| can.apply(mv))
-            .filter(|succ| succ.valid(player.opponent()))
-        {
-            let succ2 = succ.mk_canonical();
-            if succ2.signature() == signature {
-                return no;
-            }
-            let succ = succ2.find_canonic(succ2.signature(), e_hash).map(|s| {
-                if succ2.canonic_has_bw_switched() {
-                    s.flipped_flags()
-                } else {
-                    s
-                }
-            })?;
-            if succ.state(player.opponent()) != CAN_MATE {
-                return no;
-            }
-        }
-        // we know there has been at least 1 move, otherwise it would be stalemate/mate
-        let u = db
-            .binary_search(&can)
-            .map_err(|_| format!("canonic {:?} not found", can))?;
-        db[u] = db[u].with_state_for(player, CANNOT_AVOID_MATE);
-        Ok(true)
-    } else {
-        no
-    }
-}
-
-/// Scan an EGTB whose signature is a predecessor of some canonic signature `wsig`.
-/// Find the positions with MATE and CANNOT_AVOID_MATE status and check whether
-/// they could have originated in `wsig` positions. If so, mark such positions as CAN_MATE
-/// and write the corresponding move.
-///
-/// In addition, we could reach positions with CAN_MATE status for some player.
-/// If such a position has a predecessor
-/// in the `wsig` realm, and if this predecessor has only alien successors who are all CAN_MATE,
-/// then the predecessor is CANNOT_AVOID_MATE (and, consequently, all of **his** predecessors are CAN_MATE).
-///
-/// Why do we need to check for alien successors only? Because we will find such a CANNOT_AVOID_MATE anyway,
-/// when it has a CAN_MATE successor in the `wsig` realm. OTOH, if, for example, there is only one move
-/// to esacpe check and this move leads to another realm (where the result is CAN_MATE for the opponent), we
-/// would not detect it:
-///
-/// Example: wQ h7, wQ f8, BK/WK h8/d4  fen: 5Q1k/7Q/8/8/3K4/8/8/8 b - - 0 1
-/// In KQ-K, we can find 5Q2/7k/8/8/3K4/8/8/8 w - - 0 2 that gives rise to this position by un-capturing
-/// a white queen on h7 and moving the black king to h8 (interestingly, this position cannot be reached
-/// with forward moves).
-///
-/// There is only one move for black, namely Kxh7. Of course, white can still mate with a single queen.
-///
-/// Arguments:
-///
-/// 1. canonic signature of positions we want to find wsig: Signature,
-/// 2. the relation of `wsig` to the signature whose loosers we check rmode: RelationMode,
-/// 3. found winning positions winners: &mut Vec<CPos>,
-/// 4. the moves for the winning positions um_writer: &mut BufWriter<File>,
-/// 5. sorted wsig-positions db: &mut [CPos],
-pub fn scan_loosers(
-    wsig: Signature,
-    rmode: RelationMode,
-    um_writer: &mut BufWriter<File>,
-    db: &mut [CPos],
-) -> Result<(), String> {
-    let fsig = match rmode {
-        Canonic(cs, _) => cs,
-        NonCanonic(us, _) => us.mk_canonic(),
-        Both(cs, _, _, _) => cs,
-    };
-    let mut rmv = Vec::with_capacity(2);
-
-    match rmode {
-        can @ Canonic(_, _) => rmv.push(can),
-        non @ NonCanonic(_, _) => rmv.push(non),
-        Both(cs, ca, us, ua) => {
-            rmv.push(Canonic(cs, ca));
-            rmv.push(NonCanonic(us, ua));
-        }
-    };
-
-    let mut e_hash: EgtbMap = HashMap::new();
-
-    let path = mk_egtb_path(fsig, "egtb");
-    let rdr = CPosReader::new(&path)?;
-    let n_items = cpos_file_size(&path)?;
-    let mut n = 0;
-    let mut found = 0;
-    for cpos in rdr {
-        n += 1;
-        if n_items > 0 && (n % (64 * 1024) == 0 || n == n_items) {
-            if sigint_received.load(atomic::Ordering::SeqCst) {
-                return Err("terminated processing, restart will repeat".to_string());
-            }
-            eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", n * 1000 / n_items);
-        }
-        for &relation in &rmv {
-            // When we have a canonic CPos and a Move that, when applied, will result in a MATE (or CANNOT_AVOID_MATE) position.
-            // 1. check if we know this position already
-            // 2. if this isn't so, update it in the database with appropriate state set
-            // 3. write the move to the "um" file.
-            let mut bookkeeping = |canm: CPos, umv: Move, db: &mut [CPos]| -> Result<(), String> {
-                assert_eq!(canm.signature(), wsig);
-                let canonic = canm.clear_trans().canonical(wsig);
-                let u = db.binary_search(&canonic).map_err(|_| {
-                    eprintln!("\nCPos not found");
-                    eprintln!("  in relation {:?}", relation);
-                    eprintln!("  missing pos {:?}", canonic);
-                    eprintln!("  before move {}", umv);
-                    eprintln!("  reaching    {:?}", canonic.apply(umv));
-                    "NOT FOUND".to_string()
-                })?;
-                let c = db[u];
-                if c.state(umv.player()) == UNKNOWN {
-                    // let smv = if
-                    let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
-                    let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
-                    let mpos = c.mpos_from_mv(mv);
-                    let canm = c.with_state_for(mv.player(), CAN_MATE);
-                    db[u] = canm;
-                    mpos.write_seq(um_writer).map_err(|ioe| {
-                        format!(
-                            "unexpected error ({}) while writing to {}",
-                            ioe,
-                            mk_egtb_path(wsig, "um")
-                        )
-                    })?;
-                    found += 1;
-                }
-                Ok(())
-            };
-
-            /* if cpos.bits & CPos::COMP_BITS == 0x0037dddb {
-                eprintln!("\nfound it 0x{:016x}  {:?}", cpos.bits, cpos);
-            } */
-
-            match relation {
-                Canonic(sig, Capture(player, piece))
-                    if cpos.state(player) == MATE
-                        || cpos.state(player) == CANNOT_AVOID_MATE
-                        || cpos.state(player) == CAN_MATE =>
-                {
-                    assert!(sig == fsig);
-                    /* if cpos.bits == 0x630000000037dddb {
-                        eprintln!("###############");
-                    } */
-                    // piece of player gets captured, hence we need to look at player's state
-                    // and must find a move of the opposite player from a wsig-position that captures piece
-                    for (mv, canm) in cpos
-                        .reverse_move_iterator(player)
-                        .filter(|&mv| {
-                            mv.may_capture() && (piece != PAWN || mv.to().rank() != 1 && mv.to().rank() != 8)
-                        })
-                        .map(|mv| (mv, cpos.unapply(mv, piece)))
-                        .filter(|(_, c)| c.valid(player.opponent()) && c.signature() == wsig)
-                    {
-                        if cpos.state(player) == CAN_MATE {
-                            let canm = db
-                                .binary_search(&canm.canonical(wsig))
-                                .map(|u| db[u])
-                                .map_err(|_| format!("not found {:?}", canm))?;
-                            let is_cam = check_alien_looser(wsig, canm, player.opponent(), db, &mut e_hash)?;
-                            if is_cam {
-                                // set all predecessors CAN_MATE
-                                for (pred, mv) in canm
-                                    .reverse_move_iterator(player.opponent())
-                                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                                    .map(|mv| (canm.unapply(mv, EMPTY), mv))
-                                    .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
-                                {
-                                    bookkeeping(pred, mv, db)?;
-                                }
-                            }
-                        } else {
-                            bookkeeping(canm, mv, db)?;
-                        }
-                    }
-                }
-                Canonic(sig, Promote(player, piece))
-                    if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
-                        || cpos.state(player.opponent()) == CAN_MATE =>
-                {
-                    // player's piece gets promoted, hence it's opponents move
-                    assert!(sig == fsig);
-
-                    // Whenever we have no pawns we must also try the horizontally mirrored position.
-                    // Example: looking for KP-K positions that lead to KR-K (Canonic(Promote(WHITE, ROOK)))
-                    // Any positions where the white ROOK is on the 8th rank and the white KING is in the upper half
-                    // cannot be found, as they are not canonic. Hence, the promotion of the white pawn is missed.
-
-                    let poss = if fsig.has_pawns() { vec![cpos] } else { vec![cpos, cpos.mirror_h()] };
-                    for xpos in poss.iter().copied() {
-                        for (mv, canm) in xpos
-                            .reverse_move_iterator(player.opponent())
-                            .filter(|&mv| {
-                                mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
-                            })
-                            .map(|mv| (mv, xpos.unapply(mv, EMPTY)))
-                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                        {
-                            if cpos.state(player.opponent()) == CAN_MATE {
-                                let canm = db
-                                    .binary_search(&canm.canonical(wsig))
-                                    .map(|u| db[u])
-                                    .map_err(|_| format!("not found {:?}", canm))?;
-                                let is_cam = check_alien_looser(wsig, canm, player, db, &mut e_hash)?;
-                                if is_cam {
-                                    // set all predecessors CAN_MATE
-                                    for (pred, mv) in canm
-                                        .reverse_move_iterator(player.opponent())
-                                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                                        .map(|mv| (canm.unapply(mv, EMPTY), mv))
-                                        .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
-                                    {
-                                        bookkeeping(pred, mv, db)?;
-                                    }
-                                }
-                            } else {
-                                bookkeeping(canm, mv, db)?;
-                            }
-                        }
-                    }
-                }
-                Canonic(sig, PromoteAndCapture(player, piece, captured))
-                    if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
-                        || cpos.state(player.opponent()) == CAN_MATE =>
-                {
-                    // as before, player's piece gets promoted, hence it's opponents move
-                    assert!(sig == fsig);
-                    let poss = if fsig.has_pawns() { vec![cpos] } else { vec![cpos, cpos.mirror_h()] };
-                    for xpos in poss.iter().copied() {
-                        for (mv, canm) in xpos
-                            .reverse_move_iterator(player.opponent())
-                            .filter(|&mv| {
-                                mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece
-                            })
-                            .map(|mv| (mv, xpos.unapply(mv, captured)))
-                            .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                        {
-                            if cpos.state(player.opponent()) == CAN_MATE {
-                                let canm = db
-                                    .binary_search(&canm.canonical(wsig))
-                                    .map(|u| db[u])
-                                    .map_err(|_| format!("not found {:?}", canm))?;
-                                let is_cam = check_alien_looser(wsig, canm, player, db, &mut e_hash)?;
-                                if is_cam {
-                                    // set all predecessors CAN_MATE
-                                    for (pred, mv) in canm
-                                        .reverse_move_iterator(player.opponent())
-                                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                                        .map(|mv| (canm.unapply(mv, EMPTY), mv))
-                                        .filter(|(c, _)| c.valid(player) && c.signature() == wsig)
-                                    {
-                                        bookkeeping(pred, mv, db)?;
-                                    }
-                                }
-                            } else {
-                                bookkeeping(canm, mv, db)?;
-                            }
-                        }
-                    }
-                }
-                Canonic(_, _) => {}
-                NonCanonic(sig, Capture(player, piece))
-                    if cpos.state(player.opponent()) == MATE
-                        || cpos.state(player.opponent()) == CANNOT_AVOID_MATE
-                        || cpos.state(player.opponent()) == CAN_MATE =>
-                {
-                    // Example:
-                    // working sig is KQ-KQ
-                    // file signature is KQ-K
-                    // and we have: NonCanonic(K-KQ, Capture(WHITE, QUEEN))
-                    // → we're looking for a move where a black piece has just captured a white queen (with a queen, for example)
-                    // → thus it is WHITE's move and we need a BLACK move
-                    // → and the status for WHITE who is left with just a KING is CANNOT_AVOID_MATE
-                    // However, because the KQ-K cpos is canonic, we had to look for the black flags above.
-                    // → we make the position un_canonical, to find a black move that captures the white queen.
-
-                    assert_eq!(sig, fsig.opposite());
-                    assert_eq!(cpos.signature(), fsig);
-                    let upos = cpos.un_canonical(fsig).clear_trans(); // e.g. paint the white Q black
-                    let passive = player;
-                    let active = player.opponent();
-                    assert_eq!(upos.signature(), sig); // K-KQ
-
-                    for (mv, canm) in upos
-                        .reverse_move_iterator(passive)
-                        .filter(|&mv| {
-                            mv.may_capture() && (piece != PAWN || mv.to().rank() != 1 && mv.to().rank() != 8)
-                        })
-                        .map(|mv| (mv, upos.unapply(mv, piece)))
-                        .filter(|(_mv, c)| c.valid(active) && c.signature() == wsig)
-                    {
-                        if cpos.state(player.opponent()) == CAN_MATE {
-                            let canm = db
-                                .binary_search(&canm.canonical(wsig))
-                                .map(|u| db[u])
-                                .map_err(|_| format!("not found {:?}", canm))?;
-                            let is_cam = check_alien_looser(wsig, canm, active, db, &mut e_hash)?;
-                            if is_cam {
-                                // set all predecessors CAN_MATE
-                                for (pred, mv) in canm
-                                    .reverse_move_iterator(active)
-                                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                                    .map(|mv| (canm.unapply(mv, EMPTY), mv))
-                                    .filter(|(c, _)| c.valid(passive) && c.signature() == wsig)
-                                {
-                                    bookkeeping(pred, mv, db)?;
-                                }
-                            }
-                        } else {
-                            bookkeeping(canm, mv, db)?;
-                        }
-                    }
-                }
-                NonCanonic(sig, Promote(player, piece)) => {
-                    if cpos.state(player) == MATE || cpos.state(player) == CANNOT_AVOID_MATE {
-                        // wsig KR-KP, NonCanonic(KR-KQ, Promote(BLACK, QUEEN)), fsig: KQ-KR
-                        // In the cpos, which is canonioc KQ-KR  we can only find WHITE moves that could have resulted in a WHITE queen,
-                        // hence it is BLACK's move
-                        assert_eq!(sig, fsig.opposite());
-                        assert_eq!(cpos.signature(), fsig);
-                        let upos = cpos.un_canonical(fsig).clear_trans();
-                        assert_eq!(upos.signature(), sig); // KR-KQ
-                        let poss = if fsig.has_pawns() { vec![upos] } else { vec![upos, upos.mirror_h()] };
-                        for upos in poss.iter().copied() {
-                            for (mv, canm) in upos
-                                .reverse_move_iterator(player.opponent())
-                                .filter(|&mv| {
-                                    mv.is_non_capture_pawn_mv() && mv.is_promotion() && mv.promote() == piece
-                                })
-                                .map(|mv| (mv, upos.unapply(mv, EMPTY)))
-                                .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                            {
-                                bookkeeping(canm, mv, db)?;
-                            }
-                        }
-                    }
-                }
-                NonCanonic(sig, PromoteAndCapture(player, piece, captured)) => {
-                    if cpos.state(player) == MATE || cpos.state(player) == CANNOT_AVOID_MATE {
-                        // wsig KR-KP, NonCanonic(KR-KQ, Promote(BLACK, QUEEN)), fsig: KQ-KR
-                        // In the cpos, which is canonioc KQ-KR  we can only find WHITE moves that could have resulted in a WHITE queen,
-                        // hence it is BLACK's move
-                        // but in the un-canonic counterpart, it is player's move that we're looking for, hence opponent's to move
-                        assert_eq!(sig, fsig.opposite());
-                        assert_eq!(cpos.signature(), fsig);
-                        let upos = cpos.un_canonical(fsig).clear_trans();
-                        assert_eq!(upos.signature(), sig); // KR-KQ
-                        let poss = if fsig.has_pawns() { vec![upos] } else { vec![upos, upos.mirror_h()] };
-                        for upos in poss.iter().copied() {
-                            for (mv, canm) in upos
-                                .reverse_move_iterator(player.opponent())
-                                .filter(|&mv| {
-                                    mv.is_capture_by_pawn() && mv.is_promotion() && mv.promote() == piece
-                                })
-                                .map(|mv| (mv, upos.unapply(mv, captured)))
-                                .filter(|(_, c)| c.valid(player) && c.signature() == wsig)
-                            {
-                                bookkeeping(canm, mv, db)?;
-                            }
-                        }
-                    }
-                }
-                NonCanonic(_, _) => {}
-                _otherwise => {
-                    // mustn't happen
-                    todo!()
-                }
-            }
-        }
-    }
-    eprintln!(" found {}", formatted_sz(found));
-    Ok(())
-}
-
 /// assert_eq!(signature, can.signature())
 fn register_winner(
     signature: Signature,
@@ -2229,10 +1782,13 @@ fn register_winner(
         "NOT FOUND".to_string()
     })?;
     let c = db[v];
-    if c.state(umv.player()) == UNKNOWN {
-        let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
-        let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
-        let mpos = c.mpos_from_mv(mv);
+    let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
+    let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+    let mpos = c.mpos_from_mv(mv);
+    if c.state(mv.player()) == UNKNOWN {
+        if c == DEBUG_POSITION {
+            eprint!("!register_new_winner!");
+        }
         db[v] = c.with_state_for(mv.player(), CAN_MATE);
         mpos.write_seq(writer).map_err(|ioe| {
             format!(
@@ -2274,8 +1830,8 @@ fn scan_mates_aliens(
         }
         'next_player: for player in [BLACK, WHITE] {
             let cp = db[n];
-            if cp.bits & CPos::COMP_BITS == 0x0d0849011 {
-                eprint!("!");
+            if cp == DEBUG_POSITION {
+                eprint!("!scan_mates_aliens");
             }
             if cp.state(player) == UNKNOWN {
                 let mut all_successors_can_mate = true;
@@ -2404,6 +1960,9 @@ fn scan_um(
                     );
                 }
                 let cpos = mpos.mpos_to_cpos();
+                if cpos == DEBUG_POSITION {
+                    eprint!("!scan_um_winner!");
+                }
                 let player = mpos.mpos_player();
                 // loop over potential loosers
                 for (lpos, lmv) in cpos
@@ -2413,6 +1972,9 @@ fn scan_um(
                     .filter(|(c, _mv)| c.valid(player.opponent()) && c.signature() == signature)
                 {
                     let can_looser = lpos.clear_trans().canonical(signature);
+                    if can_looser == DEBUG_POSITION {
+                        eprint!("!scan_um_looser!");
+                    }
                     let u = db.binary_search(&can_looser).map_err(|_| {
                         eprintln!("\npotentially loosing cpos not found");
                         eprintln!("  missing pos {:?}", can_looser);
@@ -2475,6 +2037,9 @@ fn scan_um(
                                 .filter(|(c, _mv)| c.valid(player) && c.signature() == signature)
                             {
                                 let canonic = canm.clear_trans().canonical(signature);
+                                if canonic == DEBUG_POSITION {
+                                    eprint!("!scan_um_new_winner!");
+                                }
                                 let v = db.binary_search(&canonic).map_err(|_| {
                                     eprintln!("\nwinning position not found");
                                     eprintln!("  missing pos {:?}", canonic);
@@ -2756,7 +2321,7 @@ pub fn debug(args: &[String]) {
 ///
 /// Makes a diff for *sig*.egtb in EGTB directory and the file given in *path*
 ///
-pub fn diff(sig: &str, path2: &str) -> Result<(), String> {
+pub fn egtb_diff(sig: &str, path2: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let path1 = mk_egtb_path(signature, "egtb");
     let (_map1, left) = cpos_ro_map(&path1)?;
@@ -2886,4 +2451,121 @@ pub fn diff(sig: &str, path2: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// There is a lot of time used for binary searching.
+/// The nature of the algorithm implies that (for mmap-ped arrys) many different pages might be read.
+/// The idea is that we guess an index from the numerical value of the CPos that might at least hit the correct page
+/// in one go.
+/// (A page is 4096 bytes or 512 CPos)
+/// If we can't establish that we did hit the correct page, we have at least an upper/lower bound.
+/// We can then try to guess the complementary bound and fall back to binary search of a sub-slice.
+
+/// The ratio between the difference of the numerical values of 2 CPos stored in a range and the number of actual items
+/// in this range varies but is mostly something between 7000 and 13000
+const ratio_low: usize = 7000;
+const ratio_high: usize = 13000;
+
+/// We fall back to binary search, hopefully with a sane range
+pub fn faster_search(db: &[CPos], cp: &CPos) -> Result<usize, usize> {
+    if db.len() == 0 {
+        return Err(0);
+    }
+    let nmax = db.len();
+    let usz = |cpos: CPos| (cpos.bits & CPos::COMP_BITS) as usize;
+    let n = usz(*cp);
+    let z = usz(db[0]);
+    let r = n - z; // value relative to zero
+    let g_low = nmax.min((r / ratio_high) & !0x1ff); // clearing the lowest 9 bits gives us an index at a page boundary
+    let g_high = nmax.min((r / ratio_low) | 0x1ff); // the last index for some page
+
+    let x = usz(db[g_low]);
+    let y = usz(db[g_high - 1]);
+    if x <= n && n < y {
+        // hit
+        db[g_low..g_high].binary_search(cp).map(|x| x + g_low)
+    } else if y < n {
+        // use g_high as a lower bound
+        db[g_high..nmax].binary_search(cp).map(|x| x + g_high)
+    } else if x < n {
+        db[g_low..nmax].binary_search(cp).map(|x| x + g_low)
+    } else {
+        // use guess as upper bound
+        db[0..g_low].binary_search(cp)
+    }
+}
+
+pub fn test_fast(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let egtb = mk_egtb_path(signature, "egtb");
+    let movs = mk_egtb_path(signature, "moves");
+    let (_map1, db) = cpos_ro_map(&egtb)?;
+    let (_map2, mdb) = cpos_ro_map(&movs)?;
+    println!("searching {} positions", mdb.len());
+    let mut r = 0;
+    for n in 0..mdb.len() {
+        r ^= faster_search(db, &mdb[n].mpos_to_cpos())
+            .map_err(|_| format!("faster_search failed for {:#016x} {:?}", mdb[n].bits, mdb[n],))?;
+    }
+    println!("r={}", r);
+    Ok(())
+}
+
+pub fn test_slow(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let egtb = mk_egtb_path(signature, "egtb");
+    let movs = mk_egtb_path(signature, "moves");
+    let (_map1, db) = cpos_ro_map(&egtb)?;
+    let (_map2, mdb) = cpos_ro_map(&movs)?;
+    println!("searching {} positions", mdb.len());
+    let r = 0;
+    for n in 0..mdb.len() {
+        assert_eq!(
+            db.binary_search(&mdb[n].mpos_to_cpos())
+                .map_err(|_| format!("slow_search failed for {:#016x} {:?}", mdb[n].bits, mdb[n],))?,
+            faster_search(db, &mdb[n].mpos_to_cpos())
+                .map_err(|_| format!("slow_search failed for {:#016x} {:?}", mdb[n].bits, mdb[n],))?
+        );
+    }
+    println!("r={}", r);
+    Ok(())
+}
+
+/// command line: rasch statistics sig
+pub fn statistics(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let path = mk_egtb_path(signature, "egtb");
+    let (_map, db) = cpos_ro_map(&path)?;
+
+    let items = db.len();
+
+    if items < 2 {
+        return Err("schlechter Scherz".to_string());
+    }
+
+    let pdiff = |db: &[CPos], low: usize, high: usize| {
+        let items = high - low;
+        let cpos0 = db[low].bits & CPos::COMP_BITS;
+        let cposZ = db[high - 1].bits & CPos::COMP_BITS;
+        let diff = cposZ - cpos0;
+        println!(
+            "{:12}-{:12} are {:12} items, from {:#013x}-{:#013x}, diff is {:12}, items/diff = {:.3}",
+            low,
+            high,
+            items,
+            cpos0,
+            cposZ,
+            diff,
+            diff / items as u64
+        );
+    };
+
+    const pagesize: usize = 1024 * 1024;
+    let mut page = 0;
+    while page < items {
+        pdiff(db, page, items.min(page + pagesize));
+        page += pagesize;
+    }
+    pdiff(db, 0, items);
+    Ok(())
 }

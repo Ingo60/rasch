@@ -79,8 +79,32 @@ fn main() {
     } else if argv[1] == "debug" && argv.len() > 2 {
         E::debug(&argv[2..]);
     } else if argv[1] == "diff" && argv.len() >= 4 {
-        match E::diff(&argv[2], &argv[3]) {
+        match E::egtb_diff(&argv[2], &argv[3]) {
             Ok(_) => (),
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1] == "statistics" && argv.len() >= 3 {
+        match E::statistics(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1] == "test-fast" && argv.len() >= 3 {
+        match E::test_fast(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
+    } else if argv[1] == "test-slow" && argv.len() >= 3 {
+        match E::test_slow(&argv[2]) {
+            Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
                 std::process::exit(1)
@@ -153,14 +177,6 @@ fn main() {
         }
     } else if argv[1] == "check" && argv.len() >= 3 {
         match E::check_mmap(&argv[2]) {
-            Ok(_) => {}
-            Err(s) => {
-                eprintln!("error: {}", s);
-                std::process::exit(1);
-            }
-        }
-    } else if argv[1] == "test-loosers" && argv.len() >= 4 {
-        match E::test_scan_loosers(&argv[2], &argv[3]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
