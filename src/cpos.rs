@@ -32,6 +32,7 @@ use Piece::*;
 use Player::*;
 
 pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
+pub type EgtbMMap<'a> = HashMap<Signature, (Mmap, &'a [CPos])>;
 
 /// Signature of a CPos
 ///
@@ -1682,7 +1683,7 @@ impl CPos {
     ///
     /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
     /// already opened files, but a real difference is seen with many thousand lookups only.
-    pub fn find(&self, hash: &mut EgtbMap) -> Result<CPos, String> {
+    pub fn find(&self, hash: &mut EgtbMMap) -> Result<CPos, String> {
         let selfsig = self.signature();
         let canon = self.canonical(selfsig);
         canon
@@ -1717,11 +1718,7 @@ impl CPos {
         Ok(())
     }
 
-    pub fn egtb_mmap<'a>(
-        canonsig: Signature,
-        ext: &str,
-        hash: &'a mut HashMap<Signature, Box<(Mmap, &[CPos])>>,
-    ) -> Result<(), String> {
+    pub fn egtb_mmap<'a>(canonsig: Signature, ext: &str, hash: &'a mut EgtbMMap) -> Result<(), String> {
         if !hash.contains_key(&canonsig) {
             let path = mk_egtb_path(canonsig, ext);
             let mm = {
@@ -1736,57 +1733,61 @@ impl CPos {
                 let array = unsafe { slice::from_raw_parts(map.as_ptr().cast::<CPos>(), map.len() / 8) };
                 (map, array)
             };
-            hash.insert(canonsig, Box::new(mm));
+            hash.insert(canonsig, mm);
         }
         Ok(())
     }
 
     /// A variant of `find` where the searched `CPos` is guaranteed canonical.
-    pub fn find_canonic(self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
-        CPos::egtb_open(canonsig, "egtb", hash)?;
+    pub fn find_canonic(&self, canonsig: Signature, hash: &mut EgtbMMap) -> Result<CPos, String> {
+        CPos::egtb_mmap(canonsig, "egtb", hash)?;
 
         // the unwrap is justified because of the insert() above
         // we don't want hash.entry(canonsig).or_insert(...) because this would open the file every time
         // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
         // of errors upwards.
         let blubb = hash.get_mut(&canonsig).unwrap();
-
-        let maxpos = blubb.1;
-        let mid_cpos = blubb.2;
-        let mut upper = maxpos;
-
-        let mut lower = 0;
-        while lower < upper {
-            let mid = lower + (upper - lower) / 2;
-            match if mid == maxpos / 2 {
-                Ok(mid_cpos)
-            } else {
-                CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
-            } {
-                Err(ioe) => {
-                    let path = mk_egtb_path(canonsig, "egtb");
-                    return Err(format!(
-                        "error reading EGTB file {} at {} ({})",
-                        path,
-                        8 * mid,
-                        ioe
-                    ));
-                }
-                Ok(c) => {
-                    if c == self {
-                        return Ok(c);
-                    } else if c < self {
-                        lower = mid + 1;
-                    } else
-                    /* c >  canon */
-                    {
-                        upper = mid;
-                    }
-                }
-            }
+        match blubb.1.binary_search(self) {
+            Ok(u) => Ok(blubb.1[u]),
+            Err(_) => Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW)),
         }
-        // pretend we found a DRAW
-        Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
+
+        // let maxpos = blubb.1;
+        // let mid_cpos = blubb.2;
+        // let mut upper = maxpos;
+
+        // let mut lower = 0;
+        // while lower < upper {
+        //     let mid = lower + (upper - lower) / 2;
+        //     match if mid == maxpos / 2 {
+        //         Ok(mid_cpos)
+        //     } else {
+        //         CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
+        //     } {
+        //         Err(ioe) => {
+        //             let path = mk_egtb_path(canonsig, "egtb");
+        //             return Err(format!(
+        //                 "error reading EGTB file {} at {} ({})",
+        //                 path,
+        //                 8 * mid,
+        //                 ioe
+        //             ));
+        //         }
+        //         Ok(c) => {
+        //             if c == self {
+        //                 return Ok(c);
+        //             } else if c < self {
+        //                 lower = mid + 1;
+        //             } else
+        //             /* c >  canon */
+        //             {
+        //                 upper = mid;
+        //             }
+        //         }
+        //     }
+        // }
+        // // pretend we found a DRAW
+        // Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
     }
 
     pub fn mpos_player(&self) -> Player {

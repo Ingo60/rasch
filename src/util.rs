@@ -36,30 +36,48 @@ fn formatu64(u: u64, result: &mut String) {
     result.push_str(&b);
 }
 
+///    formatted_h(998, "") -> " 998"
+///    formatted_h(1002, "K") -> "1.0K"
+///    formatted_h(9999, "K") -> "9.9K"
+///    formatted_h(19999, "K") -> "19M"
+pub fn formatted_h(n: usize, unit: char) -> String {
+	let next_unit = |c| match c {
+		'K' => 'M',
+		'M' => 'G',
+		'G' => 'T',
+		'T' => 'P',
+		'P' => '?',
+		'?' => '¿',
+		_   => 'K',
+	};
+	if next_unit(unit) == 'K' {
+		if n > 9999 {
+			let h = n / 1000;
+			if h < 100 {
+				format!("{}.{}K", h / 10, h % 10)
+			}
+			else { formatted_h(n / 1000, 'K') }
+		}
+		else {
+			format!("{:>4}", n)
+		}
+	}
+	else if n > 999 {
+		let h = n / 100;
+		if h < 100 {
+			format!("{}.{}{}", h / 10, h % 10, next_unit(unit))
+		}
+		else { formatted_h(n / 1000, next_unit(unit)) }
+	} else {
+		format!("{:>3}{}", n, unit)
+	}
+}
 /// Formats the number of remaining items in short, human readable form.
 ///
 /// e.g. fmt_human(15000, 1000) = " 14k"
 pub fn fmt_human(w: usize, r: usize) -> String {
     if w >= r {
-        let mut d = w - r;
-        let mut suffix = "";
-        if d > 9999 {
-            d /= 1000;
-            suffix = "k"
-        };
-        if d > 999 {
-            d /= 1000;
-            suffix = "m"
-        };
-        if d > 999 {
-            d /= 1000;
-            suffix = "g"
-        };
-        if suffix == "" {
-            format!("{:>4}", d)
-        } else {
-            format!("{:>3}{}", d, suffix)
-        }
+		formatted_h(w-r, '1')
     } else {
         "????".to_string()
     }

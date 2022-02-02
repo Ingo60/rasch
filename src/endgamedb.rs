@@ -108,10 +108,10 @@
 
 use super::{
     basic::{CPosState, Move, Piece, Player, PlayerPiece},
-    cpos::{CPos, EgtbMap, Mirrorable, Signature},
+    cpos::{CPos, EgtbMMap, EgtbMap, Mirrorable, Signature},
     cposio::{
         cpos_anon_map, cpos_append_writer, cpos_create_writer, cpos_file_size, cpos_open_reader, cpos_ro_map,
-        cpos_rw_map, mk_egtb_path, read_a_chunk, CPosReader,
+        cpos_rw_map, mk_egtb_path, mk_temp_path, read_a_chunk, CPosReader,
     },
     fen::{decodeFEN, encodeFEN},
     sortegtb::sort_from_to,
@@ -193,7 +193,7 @@ pub fn make(sig: &str) -> Result<(), String> {
     let mut positions: Vec<CPos> = Vec::with_capacity(0);
     let mut cache: Cache = HashMap::with_capacity(0);
     let mut cache_max = 0usize;
-    let mut egtb_map: EgtbMap = HashMap::new();
+    let mut egtb_map: EgtbMMap = HashMap::new();
     let mut restart = false;
     let mut last_disk_pass = true;
     // the following will be opened (and closed) by overwriting
@@ -647,7 +647,7 @@ fn analyze_on_disk(
     positions: &mut Vec<CPos>,
     cache: &mut Cache,
     cache_max: usize,
-    egtb_map: &mut EgtbMap,
+    egtb_map: &mut EgtbMMap,
     um_writer: &mut BufWriter<File>,
     pfile: &mut File,
     sfile: &mut File,
@@ -907,7 +907,7 @@ fn analyze_in_memory(
     positions: &mut Vec<CPos>,
     cache: &mut Cache,
     cache_max: usize,
-    egtb_map: &mut EgtbMap,
+    egtb_map: &mut EgtbMMap,
     um_writer: &mut BufWriter<File>,
 ) -> Result<MakeState, String> {
     let mut pfile = File::open("/dev/null").map_err(|e| format!("cannot read /dev/null ({})", e))?;
@@ -1113,7 +1113,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     } else {
         Err(String::from("position is no valid end game."))
     }?;
-    let mut ehash: EgtbMap = HashMap::new();
+    let mut ehash: EgtbMMap = HashMap::new();
     let mut mhash: EgtbMap = HashMap::new();
     let sig = cpos.signature();
     println!("# {} is canonic {}", sig, sig.is_canonic());
@@ -1338,7 +1338,7 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
 pub fn check_moves(arg: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(arg)?;
     let path = mk_egtb_path(signature, "moves");
-    let mut hash: EgtbMap = HashMap::new();
+    let mut hash: EgtbMMap = HashMap::new();
     let mut last = CPos { bits: 0 };
     let mut sorted = true;
     let mut dupl = false;
@@ -1562,14 +1562,14 @@ pub fn gen(sig: &str) -> Result<(), String> {
     let egtb_path = mk_egtb_path(signature, "egtb");
     let sorted_path = mk_egtb_path(signature, "sorted");
     let unsorted_path = mk_egtb_path(signature, "unsorted");
-    let um_path = mk_egtb_path(signature, "um");
+    let um_path = mk_temp_path(signature, "um");
     let restart_path = mk_egtb_path(signature, "restart");
     let moves_path = mk_egtb_path(signature, "moves");
 
     let mut pass = 0;
     let mut um_writer = cpos_append_writer("/dev/null")?;
     let (mut map, mut db) = cpos_anon_map(&1)?;
-    let mut ehash: EgtbMap = HashMap::new();
+    let mut ehash: EgtbMMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
     let mut state = if Path::new(&egtb_path).is_file() {
@@ -1592,7 +1592,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
     })
     .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
 
-    while state != Done {
+    while state != Done && state != WriteEgtb {
         pass += 1;
         // eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
         match state {
@@ -1613,6 +1613,10 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 let mut writer = cpos_create_writer(&egtb_path)?;
                 let max_items = db.len();
                 state = fast_egtb(db, max_items, &mut writer, &egtb_path)?;
+                std::mem::drop(map);
+                let (xmap, xdb) = cpos_anon_map(&1)?;
+                map = xmap;
+                db = xdb;
             }
 
             UnsortedPresent => {
@@ -1738,9 +1742,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
             }
         }
     }
-    map.flush()
-        .map_err(|e| format!("error syncing {} ({})", sorted_path, e))?;
-    std::mem::drop(map);
+
     std::mem::drop(um_writer);
     for p in [um_path, unsorted_path, sorted_path, restart_path] {
         remove_file(p).unwrap_or_default();
@@ -1794,7 +1796,7 @@ fn register_winner(
             format!(
                 "unexpected error ({}) while writing to {}",
                 ioe,
-                mk_egtb_path(signature, "um")
+                mk_temp_path(signature, "um")
             )
         })?;
         Ok(1)
@@ -1808,7 +1810,7 @@ fn scan_mates_aliens(
     at: usize,
     um_writer: &mut BufWriter<File>,
     db: &mut [CPos],
-    hash: &mut EgtbMap,
+    hash: &mut EgtbMMap,
 ) -> Result<Option<usize>, String> {
     let mut wins = 0usize;
     let mut loos = 0usize;
@@ -1924,9 +1926,9 @@ fn scan_um(
     reader: &mut BufReader<File>,
     writer: &mut BufWriter<File>,
     db: &mut [CPos],
-    e_hash: &mut EgtbMap,
+    e_hash: &mut EgtbMMap,
 ) -> Result<Option<usize>, String> {
-    let um_path = mk_egtb_path(signature, "um");
+    let um_path = mk_temp_path(signature, "um");
     let mut r_pos = reader
         .stream_position()
         .map_err(|e| format!("seek reader {} ({})", um_path, e))? as usize
@@ -1948,7 +1950,7 @@ fn scan_um(
             Err(other) => Err(format!("read error on {} ({})", um_path, other))?,
             Ok(mpos) => {
                 r_pos += 1;
-                if w_pos > 0 && (r_pos % (128 * 1024) == 0 || r_pos + 1 == w_pos) {
+                if w_pos > 0 && (r_pos % (16 * 1024) == 0 || r_pos + 1 == w_pos) {
                     if sigint_received.load(atomic::Ordering::SeqCst) {
                         eprintln!("\x08\x08 canceled.");
                         return Ok(Some(r_pos));

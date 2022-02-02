@@ -201,6 +201,16 @@ pub fn mk_egtb_path(s: Signature, ext: &str) -> String {
     )
 }
 
+/// Make a path name from a signature and an extension.
+pub fn mk_temp_path(s: Signature, ext: &str) -> String {
+    format!(
+        "{}/{}.{}",
+        env::var("EGTBTEMP").unwrap_or(String::from("./egtb")),
+        s.display(),
+        ext
+    )
+}
+
 /// Get the number of positions in a CPos file
 pub fn cpos_file_size(path: &str) -> Result<usize, String> {
     let m = metadata(Path::new(path)).map_err(|e| format!("can't stat {} ({})", path, e))?;

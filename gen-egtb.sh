@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export EGTB=./egtb
+export EGTBTEMP=./egtb-test
 TEST=./egtb-test
 set -e
 
@@ -14,7 +15,7 @@ do
         ./target/release/rasch gen $SIG
         if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
         then
-            ./target/release/rasch diff $SIG $TEST/$SIG.egtb
+            echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
         fi
     done
 done
@@ -29,7 +30,7 @@ do
             ./target/release/rasch gen $SIG
             if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
             then
-                ./target/release/rasch diff $SIG $TEST/$SIG.egtb
+                echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
             fi
         done
     done
@@ -47,7 +48,7 @@ do
                 ./target/release/rasch gen $SIG
                 if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
                 then
-                    ./target/release/rasch diff $SIG $TEST/$SIG.egtb
+                    echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
                 fi
             done
         done
@@ -63,12 +64,12 @@ do
         do
             for i in Q R B N P
             do
-                for SIG in  
+                for SIG in K$f$g$h$i-K K$f$g$h-K$i K$f$g-K$h$i  K$f-K$g$h$i K-K$f$g$h$i
                 do
-                    ./target/release/rasch gen $SIG K$f$g$h$i-K K$f$g$h-K$i K$f$g-K$h$i K$f-K$g$h$i K-K$f$g$h$i
+                    ./target/release/rasch gen $SIG 
                     if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
                     then
-                        ./target/release/rasch diff $SIG $TEST/$SIG.egtb
+                        echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
                     fi
                 done
                 
