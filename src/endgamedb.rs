@@ -1592,7 +1592,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
     })
     .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
 
-    while state != Done && state != WriteEgtb {
+    while state != Done {
         pass += 1;
         // eprintln!("{}  Pass {:2} {:?}", signature, pass, state);
         match state {
