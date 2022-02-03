@@ -1,6 +1,6 @@
 //! A `CPos` is a compressed representation of a `Position`.
 //! A `Signature` is the kind of an end game, for example "KQB-KNB".
-//! A canonic end game is one, where `WHITE` has the better pieces.
+//! A canonic end game is one where `WHITE` has the better pieces.
 //! The non-canonic ones are not worth extra storage space,
 //! as they can be reduced to canonic ones by simply changing the colour of the pieces
 //! and mirroring the board horizontally if pawns are in the game.
@@ -253,7 +253,7 @@ impl Signature {
         }
         Signature { white, black }
     }
-    pub fn from_vec(vec: &Vec<(Player, Piece)>) -> Signature {
+    pub fn from_vec(vec: &Vec<PlayerPiece>) -> Signature {
         let mut white = 0u32;
         let mut black = 0u32;
         for pp in vec {
@@ -415,7 +415,7 @@ impl Signature {
         &self,
         player: Player,
         map: &mut HashMap<Signature, Alienation>,
-        cap: &dyn Fn(Piece) -> Alienation,
+        cap: impl Fn(Piece) -> Alienation,
     ) {
         for (p, u) in [
             (QUEEN, Signature::QUEEN_SHIFT),
@@ -612,37 +612,46 @@ pub use RelationMode::*;
 /// - 5/13 - BLACK/WHITE QUEEN
 ///
 ///
-/// In order to identify equal positions, the pieces must occur from left to right in **ascending field order**.
-/// This is guaranteed when compressing a `Position`.
+/// In order to identify equal positions, the pieces (except kings, of course) occur in the same order as the signature string tells.
+/// For example, in KQB-KQN, the leftmost piece is a white queen, followed by a white bishop,
+/// followed by a black queen followed by a black knight.
 ///
-/// Care must be taken when reflecting a `CPos` to get the pieces in the correct order and to correct the move index, if any.
+/// When there are two or more pieces of the same color and quality, their field numbers must be in descending order.
 ///
-/// Not all u64 values make for a valid `CPos`. The following fatal errors will abort the program:
-/// - trying to compress a `Position` that is not a valid endgame as checked by `Position.validEndgame()`
-/// - trying to uncompress a `CPos` that contains a wrong piece code 8, 6 or 14
-/// - trying to uncompress a `CPos` where any two field numbers are equal.
+/// This is guaranteed when compressing a [Position].
+///
+/// Care must be taken when reflecting a [CPos] to get the pieces in the correct order and to correct the move index, if any.
+///
+/// Not all u64 values make for a valid [CPos]. The following fatal errors will abort the program:
+/// - trying to compress a [Position] that is not a valid endgame as checked by [Position::validEndgame]
+/// - trying to uncompress a [CPos] that contains a wrong piece code 8, 6 or 14
+/// - trying to uncompress a [CPos] where any two field numbers are equal.
 ///   That is, every piece and the kings must have their own unique fields.
-/// - trying to uncompress a `CPos` indicating a player to move for whom this position is invalid.
+/// - trying to uncompress a [CPos] indicating a player to move for whom this position is invalid.
 ///
 /// ### Bit layout
 ///
 /// ```text
 ///
 /// 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
-///                                                                         KK KKKK    field number of the white king
-///                                                                  kkkk kk           field number of the black king
-///                                                          fi eld1                   field number of 1st piece
-///                                                     co d1                          code of 1st piece
-///                                              fiel d2                               field number of 2nd piece
-///                                         cod2                                       code of 2nd piece
-///                                 fi eld3                                            field number of 3rd piece
-///                            co d3                                                   code of 3rd piece
-///                     fiel d4                                                        field number of 4th piece
-///                cod4                                                                code of 4th piece
-///           0shv                                                                     transformations (see below)
-///      0fff                                                                          flags and validity indicator for WHITE
-/// 0fff                                                                               flags and validity indicator for BLACK
+/// -FFF -fff -shv AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
 /// ```
+/// where
+/// - FFF the position state ([UNKNOWN], [MATE], [STALEMATE], [CAN_MATE], [CAN_DRAW], [CANNOT_AVOID_DRAW], [CANNOT_AVOID_MATE],
+/// [INVALID_POS]) for [WHITE]
+/// - fff the position state for [BLACK]
+/// - shv applied transformations relative to a non-canonic [CPos] (see below)
+/// - AAAA player and piece kind of piece A
+/// - BBBB player and piece kind of piece B
+/// - CCCC player and piece kind of piece C
+/// - DDDD player and piece kind of piece D
+/// - KKKKKK field of [WHITE] [KING]
+/// - kkkkkk field of [BLACK] [KING]
+/// - aaaaaa field of piece A
+/// - bbbbbb field of piece B
+/// - cccccc field of piece C
+/// - dddddd field of piece D
+///
 ///
 /// When a position is searched in an `egtb` file,
 /// it may have to be changed to a canonic one through certain transformations.
@@ -657,12 +666,20 @@ pub use RelationMode::*;
 /// ```
 ///
 /// with
-/// - `p` 0 for `BLACK` 1 for `WHITE`
+/// - `p` 0 for [BLACK] 1 for [WHITE]
 /// - `k` if set, the piece to move is the king of the player indicated with `p`
 /// - `xx` if `k` is 0 tells which piece to move (0 means 1st piece .. 3 means 4th piece)
 /// - `yy` if this move is a pawn promotion, indicates the piece promoted to:
 ///    0 for knight, 1 for bishop, 2 for rook and 3 for queen
 /// - `ffffff` field number of the target field
+///
+/// ## Mapping of [CPos] to ordinal offset
+///
+/// In a game without [PAWN], the [WHITE] [KING] can occupy the fields that are on files 1 .. 4 and ranks A .. D.
+/// This gives 16 possibilities.
+/// The [WHITE] [KING] cancels 4 possible positions for the [BLACK] [KING] when on [A1], it cancels 6 possible
+/// positions when on [B1], [C1], [D1], [A2], [A3] and [A4] and on the remaining 9 fields it cancels 9 possible
+/// positions. Thus we have 1*60 + 6*58 + 9*55 or 903 possible [KING] configurations.
 
 #[derive(Clone, Copy)]
 pub struct CPos {
