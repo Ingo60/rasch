@@ -128,6 +128,11 @@ For example: `whitePawnComeTo[E4] = {E2,E3,D3,F3}`
 static mut whitePawnComeTo: [u64; 64] = [0; 64];
 static mut blackPawnComeTo: [u64; 64] = [0; 64];
 
+/// Gives the ordinal number - 1 for a canonical king configuration
+/// For example, WK a1 BK a3 is the first hence it gets 0
+/// while WK d8 BK h8 is the last (of 1806) hence 1805
+static mut kingConf: [u16; 64 * 64] = [0xffff; 64 * 64];
+
 /**
      tell if we can go into a certain direction from some field
 */
@@ -334,6 +339,18 @@ unsafe fn genKing() {
         }
         from <<= 1;
     }
+    let mut goodconfs = 0;
+    for wk in 0..64 {
+        for bk in 0..64 {
+            if wk != bk && wk % 8 < 4 && kingTo[wk] & (1 << bk) == 0 {
+                kingConf[(wk << 6) + bk] = goodconfs;
+                goodconfs += 1;
+            } else {
+                kingConf[(wk << 6) + bk] = 0xffff;
+            }
+        }
+    }
+    assert_eq!(goodconfs, 1806);
 }
 
 /**
@@ -448,4 +465,9 @@ pub fn targetOfWhitePawns(to: Field) -> BitSet {
 /// The set of fields from where a black pawn can attack the field given in `to`.
 pub fn targetOfBlackPawns(to: Field) -> BitSet {
     unsafe { BitSet::from(blackPawnFrom[to as usize]) }
+}
+
+/// The ordinal number assigned to king configuration (wk, bk)
+pub fn kingConfig(wk: Field, bk: Field) -> usize {
+    unsafe { kingConf[((wk as usize) << 6) + (bk as usize)] as usize }
 }
