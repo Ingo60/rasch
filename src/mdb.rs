@@ -129,7 +129,7 @@ static mut whitePawnComeTo: [u64; 64] = [0; 64];
 static mut blackPawnComeTo: [u64; 64] = [0; 64];
 
 /// Gives the ordinal number - 1 for a canonical king configuration
-/// For example, WK a1 BK a3 is the first hence it gets 0
+/// For example, WK a1 BK c1 is the first hence it gets 0
 /// while WK d8 BK h8 is the last (of 1806) hence 1805
 static mut kingConf: [u16; 64 * 64] = [0xffff; 64 * 64];
 

@@ -18,38 +18,9 @@ pub enum Player {
     WHITE,
 }
 
-/*
-We can't to this because unstable library feature 'step_trait'
-impl Step for Player {
-    fn forward(start: Self, count: usize) -> Self {
-        Step::forward_checked(start, count).expect("overflow in `Step::forward`")
-    }
-
-    unsafe fn forward_unchecked(start: Self, count: usize) -> Self {
-        Step::forward(start, count)
-    }
-
-    fn backward(start: Self, count: usize) -> Self {
-        Step::backward_checked(start, count).expect("overflow in `Step::backward`")
-    }
-
-    unsafe fn backward_unchecked(start: Self, count: usize) -> Self {
-        Step::backward(start, count)
-    }
-
-    fn forward_checked(start: Self, count: usize) -> Option<Self> {
-        if start == BLACK { Some(WHITE) } else { None }
-    }
-
-    fn backward_checked(start: Self, count: usize) -> Option<Self> {
-        if start == WHITE { Some(BLACK) } else { None }
-    }
-}
-
-*/
-
 impl From<bool> for Player {
-    /// if true then it's WHITE, otherwise BLACK
+    #[inline]
+    /// if true then it's [WHITE], otherwise [BLACK]
     fn from(b: bool) -> Player {
         if b {
             WHITE
@@ -69,10 +40,7 @@ impl Player {
     /// the color of the opponent
     #[inline]
     pub fn opponent(self) -> Player {
-        match self {
-            Player::BLACK => Player::WHITE,
-            Player::WHITE => Player::BLACK,
-        }
+        if self == BLACK { WHITE } else { BLACK }
     }
 
     /// compute -1 or 1 without conditional branch
@@ -133,11 +101,34 @@ impl From<u32> for Piece {
     /// Will panic! if not in range 0..6
     ///
     /// ```
-    /// use rasch::position::Piece;
+    /// use rasch::basic::Piece;
     ///
     /// assert!((0..6).all(|u| Piece::from(u) as u32 == u));
     /// ```
     fn from(u: u32) -> Piece {
+        match u {
+            0 => EMPTY,
+            1 => PAWN,
+            2 => KNIGHT,
+            3 => BISHOP,
+            4 => ROOK,
+            5 => QUEEN,
+            6 => KING,
+            _ => panic!("can't cast {} to Piece", u),
+        }
+    }
+}
+
+impl From<u64> for Piece {
+    /// The inverse of `piece as u64`.
+    /// Will panic! if not in range 0..6
+    ///
+    /// ```
+    /// use rasch::basic::Piece;
+    ///
+    /// assert!((0..6).all(|u| Piece::from(u) as u64 == u));
+    /// ```
+    fn from(u: u64) -> Piece {
         match u {
             0 => EMPTY,
             1 => PAWN,

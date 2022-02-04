@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 //! A `CPos` is a compressed representation of a `Position`.
 //! A `Signature` is the kind of an end game, for example "KQB-KNB".
 //! A canonic end game is one where `WHITE` has the better pieces.
@@ -16,6 +17,8 @@ use std::{
     io::{BufReader, ErrorKind::UnexpectedEof, Read, Seek, SeekFrom, Write},
     slice,
 };
+
+use crate::position::PAWN_FIELDS;
 
 use super::{
     basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
@@ -112,144 +115,23 @@ impl Signature {
         }
     }
 
-    /// A canonic CPos will result in a canonic Signature, but not every CPos that has a canonic signature
-    /// is itself canonic (the white KING could not be in the LEFT_HALF, for instance)
-    pub const fn new(cpos: CPos) -> Signature {
+    /// A canonic [CPos] will result in a canonic [Signature], but not every [CPos] that has a canonic signature
+    /// is itself canonic (the white [KING] could not be in the left half, for instance) or the pieces
+    /// could be in a wrong order.
+    pub fn new(cpos: CPos) -> Signature {
         let mut white = 0u32;
         let mut black = 0u32;
-        // do this 4 times for each piece code
-        // (yes, this is how an unrolled loop looks)
-        match (cpos.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT {
-            1 | 7 => {
-                black += 1 /* << sigPawnShift */;
+
+        for u in 0..4 {
+            match cpos.www_at(u) {
+                WWW(_, KING, _) | WWW(_, EMPTY, _) => continue,
+                WWW(WHITE, piece, _) => {
+                    white += Signature::one(piece);
+                }
+                WWW(BLACK, piece, _) => {
+                    black += Signature::one(piece);
+                }
             }
-            9 | 15 => {
-                white += 1 /* << sigPawnShift */;
-            }
-            2 => {
-                black += 1 << Signature::KNIGHT_SHIFT;
-            }
-            3 => {
-                black += 1 << Signature::BISHOP_SHIFT;
-            }
-            4 => {
-                black += 1 << Signature::ROOK_SHIFT;
-            }
-            5 => {
-                black += 1 << Signature::QUEEN_SHIFT;
-            }
-            10 => {
-                white += 1 << Signature::KNIGHT_SHIFT;
-            }
-            11 => {
-                white += 1 << Signature::BISHOP_SHIFT;
-            }
-            12 => {
-                white += 1 << Signature::ROOK_SHIFT;
-            }
-            13 => {
-                white += 1 << Signature::QUEEN_SHIFT;
-            }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE2_BITS) >> CPos::CODE2_SHIFT {
-            1 | 7 => {
-                black += 1 /* << sigPawnShift */;
-            }
-            9 | 15 => {
-                white += 1 /* << sigPawnShift */;
-            }
-            2 => {
-                black += 1 << Signature::KNIGHT_SHIFT;
-            }
-            3 => {
-                black += 1 << Signature::BISHOP_SHIFT;
-            }
-            4 => {
-                black += 1 << Signature::ROOK_SHIFT;
-            }
-            5 => {
-                black += 1 << Signature::QUEEN_SHIFT;
-            }
-            10 => {
-                white += 1 << Signature::KNIGHT_SHIFT;
-            }
-            11 => {
-                white += 1 << Signature::BISHOP_SHIFT;
-            }
-            12 => {
-                white += 1 << Signature::ROOK_SHIFT;
-            }
-            13 => {
-                white += 1 << Signature::QUEEN_SHIFT;
-            }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE3_BITS) >> CPos::CODE3_SHIFT {
-            1 | 7 => {
-                black += 1 /* << sigPawnShift */;
-            }
-            9 | 15 => {
-                white += 1 /* << sigPawnShift */;
-            }
-            2 => {
-                black += 1 << Signature::KNIGHT_SHIFT;
-            }
-            3 => {
-                black += 1 << Signature::BISHOP_SHIFT;
-            }
-            4 => {
-                black += 1 << Signature::ROOK_SHIFT;
-            }
-            5 => {
-                black += 1 << Signature::QUEEN_SHIFT;
-            }
-            10 => {
-                white += 1 << Signature::KNIGHT_SHIFT;
-            }
-            11 => {
-                white += 1 << Signature::BISHOP_SHIFT;
-            }
-            12 => {
-                white += 1 << Signature::ROOK_SHIFT;
-            }
-            13 => {
-                white += 1 << Signature::QUEEN_SHIFT;
-            }
-            _ => {}
-        }
-        match (cpos.bits & CPos::CODE4_BITS) >> CPos::CODE4_SHIFT {
-            1 | 7 => {
-                black += 1 /* << sigPawnShift */;
-            }
-            9 | 15 => {
-                white += 1 /* << sigPawnShift */;
-            }
-            2 => {
-                black += 1 << Signature::KNIGHT_SHIFT;
-            }
-            3 => {
-                black += 1 << Signature::BISHOP_SHIFT;
-            }
-            4 => {
-                black += 1 << Signature::ROOK_SHIFT;
-            }
-            5 => {
-                black += 1 << Signature::QUEEN_SHIFT;
-            }
-            10 => {
-                white += 1 << Signature::KNIGHT_SHIFT;
-            }
-            11 => {
-                white += 1 << Signature::BISHOP_SHIFT;
-            }
-            12 => {
-                white += 1 << Signature::ROOK_SHIFT;
-            }
-            13 => {
-                white += 1 << Signature::QUEEN_SHIFT;
-            }
-            _ => {}
         }
         Signature { white, black }
     }
@@ -541,6 +423,79 @@ impl Signature {
         }
         result
     }
+
+    /// Construct first [CPos] of this signature
+    /// ```
+    /// use rasch::cpos::Signature;
+    /// use rasch::cpos::NibbleAddr;
+    /// use rasch::mdb::initStatic;
+    /// initStatic();
+    /// let sig = Signature::new_from_str_canonic("KQRPP-K").unwrap();
+    /// assert_eq!(sig.first().canonic_addr(), NibbleAddr(0));
+    /// ```
+    pub fn first(&self) -> CPos {
+        let v = self.to_vec();
+        let mut cpos = CPos { bits: 0 }.move_king(WHITE, A1).move_king(BLACK, C1);
+        let mut occupied = bit(A1) + bit(C1);
+        let mut inx = 0;
+        for (player, piece) in v {
+            let free = (if piece == PAWN { PAWN_FIELDS - occupied } else { !occupied }).bitIndex();
+            occupied = occupied + bit(free);
+            cpos = cpos
+                .change_player(inx, player)
+                .change_piece(inx, piece)
+                .move_piece(inx, free);
+            inx += 1;
+        }
+        cpos = cpos.ordered();
+
+        if cpos.canonic_addr() != NibbleAddr(0) {
+            panic!(
+                "{}    {:?}  expected NibbleAddr(0) found {:?}",
+                self,
+                cpos,
+                cpos.canonic_addr()
+            );
+        }
+
+        cpos
+    }
+
+    /// Construct last [CPos] of this signature
+    pub fn last(&self) -> CPos {
+        let v = self.to_vec();
+        let last_wk = if self.has_pawns() { D8 } else { D4 };
+        let mut cpos = CPos { bits: 0 }.move_king(WHITE, last_wk).move_king(BLACK, H8);
+        let mut occupied = bit(last_wk) + bit(H8);
+        let mut inx = 0;
+        let mut f = G8;
+        let mut pf = H7;
+        for (player, piece) in v {
+            if piece != PAWN {
+                while occupied.member(f) {
+                    f = Field::from(f as u8 - 1);
+                }
+                occupied = occupied + bit(f);
+                cpos = cpos
+                    .change_player(inx, player)
+                    .change_piece(inx, piece)
+                    .move_piece(inx, f);
+            } else {
+                while occupied.member(pf) {
+                    pf = Field::from(pf as u8 - 1);
+                }
+                occupied = occupied + bit(pf);
+                cpos = cpos
+                    .change_player(inx, player)
+                    .change_piece(inx, piece)
+                    .move_piece(inx, pf);
+            }
+            inx += 1;
+        }
+        let stw = if cpos.valid(WHITE) { UNKNOWN } else { INVALID_POS };
+        let stb = if cpos.valid(BLACK) { UNKNOWN } else { INVALID_POS };
+        cpos.ordered().with_state(stw, stb)
+    }
 }
 
 impl Display for Signature {
@@ -586,6 +541,60 @@ pub enum RelationMode {
     Both(Signature, Alienation, Signature, Alienation),
 }
 pub use RelationMode::*;
+
+/// **W**ho, **W**hat, **W**here
+///
+/// Triple of [Player], [Piece], [Field]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WWW(Player, Piece, Field);
+
+impl fmt::Debug for WWW {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}{}", self.0, self.1, self.2)
+    }
+}
+
+impl fmt::Display for WWW {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}{}", self.0, self.1, self.2)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NibbleAddr(pub usize);
+
+impl NibbleAddr {
+    /// Get a nibble from a byte array. If the address is even, the left half of the
+    /// byte is used, else the right half. The extracted information is returned in the
+    /// right 4 bits.
+    pub fn get_nibble(&self, array: &[u8]) -> u8 {
+        let NibbleAddr(naddr) = *self;
+        let baddr = naddr >> 1;
+        if naddr & 1 == 0 {
+            // even
+            array[baddr] >> 4
+        } else {
+            array[baddr] & 0x0f
+        }
+    }
+
+    /// Even nibbles go in the left 4 bits, odd nibbles in the right 4 bits
+    ///
+    /// The [nibble] passed as argument must have the information in its rightmost 4 bits.
+    pub fn set_nibble(&self, array: &mut [u8], nibble: u8) -> () {
+        let NibbleAddr(naddr) = *self;
+        let baddr = naddr >> 1;
+        let bits = if naddr & 1 == 0 { (nibble & 0x0f) << 4 } else { nibble & 0x0F };
+        let mask = if naddr & 1 == 0 { 0x0f } else { 0xf0 };
+        let byte = (array[baddr] & mask) | bits;
+        array[baddr] = byte;
+    }
+
+    /// tell how many bytes are needed for reading and writing to this address
+    pub fn bytes(&self) -> usize {
+        (self.0 >> 1) + 1
+    }
+}
 
 /// # Compressed position for the endgame tablebases.
 
@@ -637,8 +646,7 @@ pub use RelationMode::*;
 /// -FFF -fff -shv AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
 /// ```
 /// where
-/// - FFF the position state ([UNKNOWN], [MATE], [STALEMATE], [CAN_MATE], [CAN_DRAW], [CANNOT_AVOID_DRAW], [CANNOT_AVOID_MATE],
-/// [INVALID_POS]) for [WHITE]
+/// - FFF the position state ([DRAW], [LOSS], [WINS], [BAD]) for [WHITE]
 /// - fff the position state for [BLACK]
 /// - shv applied transformations relative to a non-canonic [CPos] (see below)
 /// - AAAA player and piece kind of piece A
@@ -673,26 +681,79 @@ pub use RelationMode::*;
 ///    0 for knight, 1 for bishop, 2 for rook and 3 for queen
 /// - `ffffff` field number of the target field
 ///
-/// ## Mapping of [CPos] to ordinal offset
+/// ## Mapping of [CPos] to ordinal offset and calculation of needed storag
 ///
+/// Given a canonical position, we calculate the address (offset in an array) where we keep the status
+/// of this and only this positon. No two canonical positions with the same signature must be mapped to
+/// the same address.
 /// In a game without [PAWN], the [WHITE] [KING] can occupy the fields that are on files 1 .. 4 and ranks A .. D.
 /// This gives 16 possibilities.
-/// The [WHITE] [KING] cancels 4 possible positions for the [BLACK] [KING] when on [A1], it cancels 6 possible
+///
+/// The [WHITE] [KING], once placed, cancels 4 possible positions for the [BLACK] [KING] when on [A1], it cancels 6 possible
 /// positions when on [B1], [C1], [D1], [A2], [A3] and [A4] and on the remaining 9 fields it cancels 9 possible
-/// positions. Thus we have 1*60 + 6*58 + 9*55 or 903 possible [KING] configurations.
+/// positions. Thus we have 1×60 + 6×58 + 9×55 or 903 possible [KING] configurations. In a game with [PAWN]s it will be
+/// twice as much. By way of a constant table we can compute the king configuration ordinal number in one step.
+///
+/// The subsequent pieces that are in play can occupy an easily computable number of fields. The first piece can occupy 62
+/// positions. The next one 61 and so forth. [PAWN]s make a difference, as they can only occupy 56 positions. We need to
+/// reserve 56 as all other pieces could stand on fields that cannot be occupied by a PAWN. However, the second [PAWN] will have
+/// only 55 ways to get placed, the 3rd 54 and the 4th 53.
+///
+/// Hence in a game without [PAWN]s we need to reserve 62×61×60×59 or *13,388,280* storage places for each king configuration.
+/// This totals to 12,089,616,840. But we need only 4 bit for each position (2 bit for [WHITE] and 2 for [BLACK]). Hence the
+/// biggest 6-piece table base will be less than 6GB in size.
+/// The worst case is a position with 1 [PAWN] and 3 non-[PAWN]s. The total is 1806×62×61×60×48 or 19671240960 or less than 10GB.
+///
+/// Here is, then, the formula to compute an address:
+///
+///      A = OrdK(wK, bK) × PieceMax(0..3) + P0 × PieceMax(1..3) + P1 × PieceMax(2..3) + P2 × PieceMax(3..3) + P3
+///
+/// where
+///
+/// - OrdK(wK, bK) the ordinal number of the [KING] configuration 0..902 (or 1805 with [PAWN]s)
+/// - PieceMax(i..j) product of PMax(i), PMax(i+1), ... PMax(j)
+/// - PMax(i) = 62-i or 1 if piece i is [EMPTY] or 48-p for [PAWN]s preceeded by p other [PAWN]s
+/// - Pi = field value where piece i stands - value of first possible field - number of occupied fields from the first possible field
+///   up to piece i' field
+///   0 if piece i is [EMPTY]
+///
+/// For example, in KQ-KP, the first possible position is: [WHITE] Ka1, Qb1, [BLACK] Kc1 a2
+/// - OrdK(wK, bK) = 0 (it is the first possible [KING] configuration)
+/// - PieceMax(0..3) = 62 × 48 × 1 × 1 = 2976
+/// - P0 = 1 (b1) - 0 (a1) - 1 (because a1 is occupied) = 0
+/// - PieceMax(1..3) = 48×1×1 = 48
+/// - P1 = 0 (a2) first/lowest possible field for a [PAWN]
+/// - P2 and P3 = 0, because [EMPTY]
+/// Hence all the terms evalluate to 0 and the address is zero.
+///
+/// Now the last possible position: [WHITE] Kd8, Qg8, [BLACK] Kh8, h7
+/// - OrdK(wk,bk) = 1805 (the last one)
+/// - The PieceMax values are constant as before
+/// - P0 = 62 (g8) - 0 (a1) - 2 (becasue d8 and h7 are occupied) = 60
+/// - P1 = 55 (h7) - 8 (a2) = 47
+/// - PieceMax(2..3) = 1
+///
+///     A = 1805 × 2976 + 60 × 48 + 47 = 5374607
+///     Number of entries:   1806*2976 = 5374656
+///
+/// (There is a bit of waste just for the possibility that P0 reaches its theoretical maximum 62 values)
+///
 
 #[derive(Clone, Copy)]
 pub struct CPos {
     pub bits: u64,
 }
 
+// 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
+// -FFF -fff -shv AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
+
 impl CPos {
     /// Mask the black flag bits in a CPos
-    pub const BLACK_STATUS_BITS: u64 = 0x7000_0000_0000_0000u64;
-    pub const BLACK_STATUS_SHIFT: u32 = CPos::BLACK_STATUS_BITS.trailing_zeros();
-    /// Mask the white flag bits in a CPos
-    pub const WHITE_STATUS_BITS: u64 = 0x0700_0000_0000_0000u64;
+    pub const WHITE_STATUS_BITS: u64 = 0x7000_0000_0000_0000u64;
     pub const WHITE_STATUS_SHIFT: u32 = CPos::WHITE_STATUS_BITS.trailing_zeros();
+    /// Mask the white flag bits in a CPos
+    pub const BLACK_STATUS_BITS: u64 = 0x0700_0000_0000_0000u64;
+    pub const BLACK_STATUS_SHIFT: u32 = CPos::BLACK_STATUS_BITS.trailing_zeros();
     /// Mask the flag bits in a CPos
     pub const STATUS_BITS: u64 = CPos::BLACK_STATUS_BITS | CPos::WHITE_STATUS_BITS;
     /// Shift for flag bits in CPos
@@ -724,35 +785,40 @@ impl CPos {
     /// Mask the bits that count in comparisions
     pub const COMP_BITS: u64 = !0x7ff0_0000_0000_0000;
     /// Mask the code for piece 4
-    pub const CODE4_BITS: u64 = CPos::CODE3_BITS << 10;
+    pub const CODE4_BITS: u64 = CPos::CODE3_BITS >> 4;
     /// Mask the code for piece 3
-    pub const CODE3_BITS: u64 = CPos::CODE2_BITS << 10;
+    pub const CODE3_BITS: u64 = CPos::CODE2_BITS >> 4;
     /// Mask the code for piece 2
-    pub const CODE2_BITS: u64 = CPos::CODE1_BITS << 10;
+    pub const CODE2_BITS: u64 = CPos::CODE1_BITS >> 4;
     /// Mask the code for piece 1
-    pub const CODE1_BITS: u64 = 0x0f << 18;
+    pub const CODE1_BITS: u64 = 0x0f << 48;
     /// shifts to get the numbers
     pub const CODE1_SHIFT: u32 = CPos::CODE1_BITS.trailing_zeros();
     pub const CODE2_SHIFT: u32 = CPos::CODE2_BITS.trailing_zeros();
     pub const CODE3_SHIFT: u32 = CPos::CODE3_BITS.trailing_zeros();
+    /// This should be 6*6 = 36
+    /// ```
+    /// use rasch::cpos::CPos;
+    /// assert_eq!(CPos::CODE4_SHIFT, 36)
+    /// ```
     pub const CODE4_SHIFT: u32 = CPos::CODE4_BITS.trailing_zeros();
     /// Mask the field number of piece 4
-    pub const FIELD4_BITS: u64 = CPos::FIELD3_BITS << 10;
-    pub const FIELD4_SHIFT: u32 = CPos::FIELD4_BITS.trailing_zeros();
+    pub const FIELD4_BITS: u64 = 0x3f;
+    pub const FIELD4_SHIFT: u32 = 0;
     /// Maskt the field number of piece 3
-    pub const FIELD3_BITS: u64 = CPos::FIELD2_BITS << 10;
+    pub const FIELD3_BITS: u64 = CPos::FIELD4_BITS << 6;
     pub const FIELD3_SHIFT: u32 = CPos::FIELD3_BITS.trailing_zeros();
     /// Maskt the field number of piece 2
-    pub const FIELD2_BITS: u64 = CPos::FIELD1_BITS << 10;
+    pub const FIELD2_BITS: u64 = CPos::FIELD3_BITS << 6;
     pub const FIELD2_SHIFT: u32 = CPos::FIELD2_BITS.trailing_zeros();
     /// Maskt the field number of piece 1
-    pub const FIELD1_BITS: u64 = 0x3f << 12;
+    pub const FIELD1_BITS: u64 = CPos::FIELD2_BITS << 6;
     pub const FIELD1_SHIFT: u32 = CPos::FIELD1_BITS.trailing_zeros();
     /// Mask the field of the white `KING`
-    pub const WHITE_KING_BITS: u64 = 0x0000_0000_0000_003f;
+    pub const WHITE_KING_BITS: u64 = CPos::BLACK_KING_BITS << 6;
     pub const WHITE_KING_SHIFT: u32 = CPos::WHITE_KING_BITS.trailing_zeros();
     /// Mask the field of the black `KING`
-    pub const BLACK_KING_BITS: u64 = 0x0000_0000_0000_0fc0;
+    pub const BLACK_KING_BITS: u64 = CPos::FIELD1_BITS << 6;
     pub const BLACK_KING_SHIFT: u32 = CPos::BLACK_KING_BITS.trailing_zeros();
 
     /// Mask for both kings, useful when we need to swap them
@@ -773,6 +839,7 @@ impl CPos {
 
         let mut pieces = 0;
         let mut kings = 0;
+        let mut codes = 0;
 
         // figure out validity
         let bstate = if pos.turn() == BLACK {
@@ -800,14 +867,14 @@ impl CPos {
         let bflags = (bstate as u64) << CPos::BLACK_STATUS_SHIFT;
         let wflags = (wstate as u64) << CPos::WHITE_STATUS_SHIFT;
 
-        // `BitSet` iterator guarantees fields in ascending order
+        // `BitSet` yields fields in ascending field order therefore we need to order them afterwards.
         for f in pos.occupied() {
             let p_on = pos.pieceOn(f);
             if p_on != KING {
                 let color = if pos.whites.member(f) { 8 } else { 0 };
                 let pcode = color | p_on as u64;
-                pieces <<= 4;
-                pieces |= pcode;
+                codes <<= 4;
+                codes |= pcode;
                 pieces <<= 6;
                 pieces |= f as u64;
             } else {
@@ -818,7 +885,10 @@ impl CPos {
                 }
             }
         }
-        CPos { bits: bflags | wflags | (pieces << 12) | kings }
+        CPos {
+            bits: bflags | wflags | (pieces << CPos::FIELD4_SHIFT) | (codes << CPos::CODE4_SHIFT) | kings,
+        }
+        .ordered()
     }
 
     /// Re-construct position
@@ -837,33 +907,23 @@ impl CPos {
 
         // place the kings
         pos = pos
-            .place(WHITE, KING, bit(Field::from((self.bits & 0x3f) as u8)))
-            .place(BLACK, KING, bit(Field::from(((self.bits >> 6) & 0x3f) as u8)));
-        let mut pcs = self.bits >> 12;
-        for _i in 0..4 {
-            let f = Field::from((pcs & 0x3f) as u8);
-            pcs >>= 6;
-            let c = if pcs & 8 == 0 { BLACK } else { WHITE };
-            let p = match pcs & 7 {
-                0 => EMPTY,
-                1 => PAWN,
-                2 => KNIGHT,
-                3 => BISHOP,
-                4 => ROOK,
-                5 => QUEEN,
-                _other => {
-                    panic!("illegal piece code {} in compressed position", pcs & 7);
-                    // EMPTY
-                }
-            };
+            .place(WHITE, KING, bit(self.white_king()))
+            .place(BLACK, KING, bit(self.black_king()));
+        for u in 0u64..4 {
+            let c = self.player_at(u);
+            let p = self.piece_at(u);
+            let f = self.field_at(u);
+
             if p != EMPTY {
                 if pos.isEmpty(f) {
                     pos = pos.place(c, p, bit(f));
                 } else {
-                    panic!("Double occupation of field {} in compressed position.", f);
+                    panic!(
+                        "Double occupation of field {} in compressed position {:?}.",
+                        f, self
+                    );
                 }
             }
-            pcs >>= 4;
         }
         pos
     }
@@ -965,6 +1025,34 @@ impl CPos {
                 p => Piece::from(p as u32),
             },
             _ => EMPTY,
+        }
+    }
+
+    /// Get all information on piece [n].
+    /// Valid index values are 0, 1, 2 or 3. Anything else yields [BLACK] [EMPTY] at [A1]
+    pub fn www_at(&self, n: u64) -> WWW {
+        match n {
+            0 => {
+                let code = (self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT;
+                let field = Field::from((self.bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT);
+                WWW(Player::from(code >= 8), Piece::from(code & 7), field)
+            }
+            1 => {
+                let code = (self.bits & CPos::CODE2_BITS) >> CPos::CODE2_SHIFT;
+                let field = Field::from((self.bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT);
+                WWW(Player::from(code >= 8), Piece::from(code & 7), field)
+            }
+            2 => {
+                let code = (self.bits & CPos::CODE3_BITS) >> CPos::CODE3_SHIFT;
+                let field = Field::from((self.bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT);
+                WWW(Player::from(code >= 8), Piece::from(code & 7), field)
+            }
+            3 => {
+                let code = (self.bits & CPos::CODE4_BITS) >> CPos::CODE4_SHIFT;
+                let field = Field::from((self.bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT);
+                WWW(Player::from(code >= 8), Piece::from(code & 7), field)
+            }
+            _ => WWW(BLACK, EMPTY, A1),
         }
     }
 
@@ -1127,6 +1215,30 @@ impl CPos {
         } else {
             0
         }
+    }
+
+    /// checks if [CPos] describes a possible chess board:
+    /// - all pieces have unique fields
+    /// - [PAWN]s are on ranks 2 to 7
+    /// - the king configuration is valid
+    /// (The position could still be invalid for both players for different reasons, but this is checked with [CPos::valid])
+    pub fn is_possible(&self) -> bool {
+        let occupied = (0..4).fold(bit(self.white_king()) + bit(self.black_king()), |a, e| {
+            if self.piece_at(e) != EMPTY {
+                a + bit(self.field_at(e))
+            } else {
+                a
+            }
+        });
+        let pawns_ok = (0..4).fold(true, |a, e| {
+            if self.piece_at(e) != PAWN {
+                a
+            } else {
+                a && self.field_at(e) >= A2 && self.field_at(e) <= H7
+            }
+        });
+        let pieces = (0..4).fold(2, |a, e| if self.piece_at(e) != EMPTY { a + 1 } else { a });
+        occupied.card() == pieces && pawns_ok && mdb::kingConfig(self.white_king(), self.black_king()) < 1806
     }
 
     /// Return true iff, assuming it is `players` turn, the opponent's `KING` is **not** in check
@@ -1377,7 +1489,7 @@ impl CPos {
 
     /// get the field number of the white king
     pub fn white_king(&self) -> Field {
-        Field::from(self.bits & CPos::WHITE_KING_BITS)
+        Field::from((self.bits & CPos::WHITE_KING_BITS) >> CPos::WHITE_KING_SHIFT)
     }
 
     /// get the field number of the black king
@@ -1399,7 +1511,7 @@ impl CPos {
         CPos { bits: self.bits & !CPos::TRANS_BITS }
     }
 
-    #[inline]
+    /// exchange kings and switch the colours of all pieces - needs to get [CPos::ordered].
     fn switch_black_and_white(&self) -> CPos {
         let mut bits = self.bits;
         // we need to flip the WHITE/BLACK bits on occupied positions
@@ -1416,22 +1528,11 @@ impl CPos {
             bits ^= 8 << CPos::CODE4_SHIFT;
         }
         // we also need to exchange kings
-        // we assume here that fixed black bits are further left than the corresponding white ones
-        // safer, but slower, would be `(bits & CPos::BLACK_KING) >> CPos::BLACK_KING_SHIFT << CPos::WHITE_KING_SHIFT)`
         bits = (bits & !CPos::KING_BITS)                      // clear affected bits
-                    | ((bits & CPos::KING_BITS)>>6)           // move the black king
-                    | ((bits & CPos::WHITE_KING_BITS)<<6)     // move the white king
+                    | ((bits & CPos::BLACK_KING_BITS)>>CPos::BLACK_KING_SHIFT << CPos::WHITE_KING_SHIFT)     // move the black king
+                    | ((bits & CPos::WHITE_KING_BITS)<<CPos::WHITE_KING_SHIFT << CPos::BLACK_KING_SHIFT)     // move the white king
                     ;
         CPos { bits: bits ^ CPos::S_BIT }
-    }
-
-    /// Make a canonical CPos un-canonic by switching black and white, mirroring horizontally if needed and flipping the flags
-    pub fn un_canonical(&self, sig: Signature) -> CPos {
-        if sig.has_pawns() {
-            self.switch_black_and_white().mirror_h().flipped_flags()
-        } else {
-            self.switch_black_and_white().flipped_flags()
-        }
     }
 
     /// Make a canonical CPos for lookup in the DB
@@ -1469,52 +1570,35 @@ impl CPos {
             this = this.mirror_h();
             debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
         }
-        /*
-        // now we need to sort out the positions where the black king is smaller than the white one
-        if sig.is_symmetric() && !has_pawns && this.white_king() > this.black_king() {
-            this = this.switch_black_and_white();
-            if !LEFT_HALF.member(this.white_king()) {
-                this = this.mirror_v();
-            }
-            // Since we had no pawns, the white king must have been in the lower left quarter.
-            // Thus, if the field of the former black king was smaller,
-            // this now white king must be in the lower half.
-            // After mirror_v, it is thus in the lower left quarter.
-            debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
-        }
-        */
-        if this.canonic_was_mirrored() {
-            this.ordered()
-        } else {
-            this
-        }
+        // make sure this **is** ordered.
+        this.ordered()
     }
 
     /// Does this `CPos` have black/white switched?
     ///
     /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
-    pub fn canonic_has_bw_switched(&self) -> bool {
+    pub const fn canonic_has_bw_switched(&self) -> bool {
         (self.bits & CPos::S_BIT) != 0
     }
 
     /// Was this `CPos` mirrored horizontally?
     ///
     /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
-    pub fn canonic_was_mirrored_h(&self) -> bool {
+    pub const fn canonic_was_mirrored_h(&self) -> bool {
         (self.bits & CPos::H_BIT) != 0
     }
 
     /// Was this `CPos` mirrored vertically?
     ///
     /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
-    pub fn canonic_was_mirrored_v(&self) -> bool {
+    pub const fn canonic_was_mirrored_v(&self) -> bool {
         (self.bits & CPos::V_BIT) != 0
     }
 
     /// Was this `CPos` mirrored?
     ///
     /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
-    pub fn canonic_was_mirrored(&self) -> bool {
+    pub const fn canonic_was_mirrored(&self) -> bool {
         (self.bits & (CPos::H_BIT | CPos::V_BIT)) != 0
     }
 
@@ -1523,118 +1607,311 @@ impl CPos {
         self.canonical(self.signature())
     }
 
+    #[inline]
     /// Returns this CPos with the flags flipped
     /// This is needed on a search result of a position that needed color changes to become canonical
-    pub fn flipped_flags(&self) -> CPos {
-        CPos {
-            bits: (self.bits & !CPos::STATUS_BITS) // the bits with all flags zeroed
-            | ((self.bits & CPos::BLACK_STATUS_BITS) >> 4) // add the black flags in the white flag bits
-            | ((self.bits & CPos::WHITE_STATUS_BITS) << 4), // and the white flags in the black flag bits
-        }
+    pub const fn flipped_flags(&self) -> CPos {
+        self.swap(CPos::BLACK_STATUS_BITS, CPos::WHITE_STATUS_BITS)
     }
 
-    /// for cpos pieces only!
-    fn swap_pieces(bits: u64, m1: u64, m2: u64) -> u64 {
+    /// Swap the indicated bits. The masks must not overlap and have the same number of bits.
+    #[inline]
+    pub const fn swap(&self, mask1: u64, mask2: u64) -> Self {
+        CPos { bits: CPos::swap_bits(self.bits, mask1, mask2) }
+    }
+
+    /// swaps the bits masked by m1 with the one masked by m2
+    /// The masks must not overlap and have the same shape and number of bits.
+    /// ```
+    /// use rasch::cpos::CPos;
+    /// assert_eq!(CPos::swap_bits(0x1234, 0xf0f0, 0x0f0f), 0x2143);
+    /// ```
+    pub const fn swap_bits(bits: u64, m1: u64, m2: u64) -> u64 {
         // now make the ALU hot
         (bits & !(m1|m2)) // clear affected bits
             | (((bits&m1) >> m1.trailing_zeros()) << m2.trailing_zeros())  // move m1 bits to m2
             | (((bits&m2) >> m2.trailing_zeros()) << m1.trailing_zeros()) // move m2 bits to m1
     }
 
-    /// order position 1 2 and 3 in a CPos, at max 3 swaps
-    fn order3(mut bits: u64) -> u64 {
-        // move the smallest/empty one to position 3
-        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
-            > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
-            || (bits & CPos::CODE2_BITS) == 0
-        {
-            bits = CPos::swap_pieces(
-                bits,
-                CPos::CODE3_BITS | CPos::FIELD3_BITS,
-                CPos::CODE2_BITS | CPos::FIELD2_BITS,
-            );
-        }
-        if ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
-            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
-            || (bits & CPos::CODE1_BITS) == 0
-        {
-            bits = CPos::swap_pieces(
-                bits,
-                CPos::CODE3_BITS | CPos::FIELD3_BITS,
-                CPos::CODE1_BITS | CPos::FIELD1_BITS,
-            );
-        }
-        // ... and bring 1 and 2 in the correct order
-        // swap 2 and 1, if 2 is greater
-        if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
-            > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
-            || (bits & CPos::CODE1_BITS) == 0
-        {
-            bits = CPos::swap_pieces(
-                bits,
-                CPos::CODE2_BITS | CPos::FIELD2_BITS,
-                CPos::CODE1_BITS | CPos::FIELD1_BITS,
-            );
-        }
-        bits
+    #[inline]
+    /// gives CODE flags and field number combined into a number
+    const fn ccval_A(bits: u64) -> u64 {
+        (((bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT) << 6)
+            | ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
+    }
+    #[inline]
+    /// gives CODE flags and field number combined into a number
+    const fn ccval_B(bits: u64) -> u64 {
+        (((bits & CPos::CODE2_BITS) >> CPos::CODE2_SHIFT) << 6)
+            | ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
+    }
+    #[inline]
+    /// gives CODE flags and field number combined into a number
+    const fn ccval_C(bits: u64) -> u64 {
+        (((bits & CPos::CODE3_BITS) >> CPos::CODE3_SHIFT) << 6)
+            | ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
+    }
+    #[inline]
+    /// gives CODE flags and field number combined into a number
+    const fn ccval_D(bits: u64) -> u64 {
+        (((bits & CPos::CODE4_BITS) >> CPos::CODE4_SHIFT) << 6)
+            | ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
     }
 
-    /// Return a CPos with the pieces ordered in such a way that field numbers are ascending from left to right.
-    /// Also, EMPTY pieces will be placed in the most possible left piece.
-    /// This is crucial for sorting.
-    /// Could be done by uncompressing and compressing, but this should be faster. It does at max 6 swaps.
+    #[inline]
+    /// 2 pieces must be swapped if left piece code is smaller or field is smaller for equal pieces
+    fn need_swap(ccv1: u64, ccv2: u64) -> bool {
+        ccv1 < ccv2
+    }
+
+    /// Return a CPos with the pieces ordered in such a way that white pieces come before black ones,
+    /// better pieces before not so good ones, but among equal pieces of the same player the fields are ascending.
     pub fn ordered(&self) -> CPos {
         let mut bits = self.bits;
-        if (bits & CPos::CODE4_BITS) != 0 {
-            // swap the minimum to 4 and sort the remaining 3
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
-                > ((bits & CPos::FIELD3_BITS) >> CPos::FIELD3_SHIFT)
-                || (bits & CPos::CODE3_BITS) == 0
-            {
-                bits = CPos::swap_pieces(
-                    bits,
-                    CPos::CODE4_BITS | CPos::FIELD4_BITS,
-                    CPos::CODE3_BITS | CPos::FIELD3_BITS,
-                );
+        if CPos::need_swap(CPos::ccval_A(bits), CPos::ccval_B(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE1_BITS, CPos::CODE2_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD1_BITS, CPos::FIELD2_BITS);
+        }
+        if CPos::need_swap(CPos::ccval_A(bits), CPos::ccval_C(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE1_BITS, CPos::CODE3_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD1_BITS, CPos::FIELD3_BITS);
+        }
+        if CPos::need_swap(CPos::ccval_A(bits), CPos::ccval_D(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE1_BITS, CPos::CODE4_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD1_BITS, CPos::FIELD4_BITS);
+        }
+        // A is now correct
+        if CPos::need_swap(CPos::ccval_B(bits), CPos::ccval_C(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE2_BITS, CPos::CODE3_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD2_BITS, CPos::FIELD3_BITS);
+        }
+        if CPos::need_swap(CPos::ccval_B(bits), CPos::ccval_D(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE2_BITS, CPos::CODE4_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD2_BITS, CPos::FIELD4_BITS);
+        }
+        // B is now correct
+        // swap C and D if needed
+        if CPos::need_swap(CPos::ccval_C(bits), CPos::ccval_D(bits)) {
+            bits = CPos::swap_bits(bits, CPos::CODE3_BITS, CPos::CODE4_BITS);
+            bits = CPos::swap_bits(bits, CPos::FIELD3_BITS, CPos::FIELD4_BITS);
+        }
+        CPos { bits }
+    }
+
+    /// Compute the nibble-address of a **canonical**, **ordered** [CPos]
+    ///
+    ///  A = OrdK(wK, bK) × PieceMax(0..3) + P0 × PieceMax(1..3) + P1 × PieceMax(2..3) + P2 × PieceMax(3..3) + P3
+    ///
+    /// where
+    ///
+    /// - OrdK(wK, bK) the ordinal number of the [KING] configuration 0..902 (or 1805 with [PAWN]s)
+    /// - PieceMax(i..j) product of PMax(i), PMax(i+1), ... PMax(j)
+    /// - PMax(i) = 62-i or 1 if piece i is [EMPTY] or 48-p for [PAWN]s preceeded by p other [PAWN]s
+    /// - Pi = field value where piece i stands - value of first possible field - number of occupied fields from the first possible field
+    ///   up to piece i' field
+    ///   0 if piece i is [EMPTY]
+    pub fn canonic_addr(&self) -> NibbleAddr {
+        let wK = self.white_king();
+        let bK = self.black_king();
+        let ord_k = mdb::kingConfig(wK, bK) as u64;
+        let www0 = self.www_at(0);
+        let www1 = self.www_at(1);
+        let www2 = self.www_at(2);
+        let www3 = self.www_at(3);
+        // let n_pawns0 = 0;
+        let n_pawns1 = if www0.1 == PAWN { 1 } else { 0 };
+        let n_pawns2 = n_pawns1 + if www1.1 == PAWN { 1 } else { 0 };
+        let n_pawns3 = n_pawns2 + if www2.1 == PAWN { 1 } else { 0 };
+        let p_max0 = match www0.1 {
+            EMPTY => 1,
+            PAWN => 48,
+            _ => 62,
+        };
+        let p_max1 = match www1.1 {
+            EMPTY => 1,
+            PAWN => 48 - n_pawns1,
+            _ => 61,
+        };
+        let p_max2 = match www2.1 {
+            EMPTY => 1,
+            PAWN => 48 - n_pawns2,
+            _ => 60,
+        };
+        let p_max3 = match www3.1 {
+            EMPTY => 1,
+            PAWN => 48 - n_pawns3,
+            _ => 59,
+        };
+        let between = |lower, upper, f| if f >= lower && f < upper { 1 } else { 0 };
+        let same = |a: WWW, b: WWW| if a.0 == b.0 && a.1 == b.1 { 1 } else { 0 };
+        let p0 = match www0.1 {
+            EMPTY => 0,
+            PAWN => {
+                www0.2 as u64
+                    - (A2 as u64)
+                    - between(A2, www0.2, wK)
+                    - between(A2, www0.2, bK)
+                    - same(www0, www1)
+                    - same(www0, www2)
+                    - same(www0, www3)
             }
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
-                > ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
-                || (bits & CPos::CODE2_BITS) == 0
-            {
-                bits = CPos::swap_pieces(
-                    bits,
-                    CPos::CODE4_BITS | CPos::FIELD4_BITS,
-                    CPos::CODE2_BITS | CPos::FIELD2_BITS,
-                );
+            _ => {
+                www0.2 as u64
+                    - between(A1, www0.2, wK)
+                    - between(A1, www0.2, bK)
+                    - same(www0, www1)
+                    - same(www0, www2)
+                    - same(www0, www3)
             }
-            if ((bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT)
-                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
-                || (bits & CPos::CODE1_BITS) == 0
-            {
-                bits = CPos::swap_pieces(
-                    bits,
-                    CPos::CODE4_BITS | CPos::FIELD4_BITS,
-                    CPos::CODE1_BITS | CPos::FIELD1_BITS,
-                );
+        };
+        let p1 = match www1.1 {
+            EMPTY => 0,
+            PAWN => {
+                www1.2 as u64
+                    - (A2 as u64)
+                    - between(A2, www1.2, wK)
+                    - between(A2, www1.2, bK)
+                    - between(A2, www1.2, www0.2)
+                    - same(www1, www2)
+                    - same(www1, www3)
             }
-            CPos { bits: CPos::order3(bits) }
-        } else if (bits & CPos::CODE3_BITS) != 0 {
-            CPos { bits: CPos::order3(bits) }
-        } else if (bits & CPos::CODE2_BITS) != 0 {
-            // swap 2 and 1, if 2 is greater
-            if ((bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT)
-                > ((bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT)
-                || (bits & CPos::CODE1_BITS) == 0
-            {
-                bits = CPos::swap_pieces(
-                    bits,
-                    CPos::CODE2_BITS | CPos::FIELD2_BITS,
-                    CPos::CODE1_BITS | CPos::FIELD1_BITS,
-                );
+            _ => {
+                www1.2 as u64
+                    - between(A1, www1.2, wK)
+                    - between(A1, www1.2, bK)
+                    - between(A1, www1.2, www0.2)
+                    - same(www1, www2)
+                    - same(www1, www3)
             }
-            CPos { bits }
-        } else {
-            CPos { bits }
+        };
+        let p2 = match www2.1 {
+            EMPTY => 0,
+            PAWN => {
+                www2.2 as u64
+                    - (A2 as u64)
+                    - between(A2, www2.2, wK)
+                    - between(A2, www2.2, bK)
+                    - between(A2, www2.2, www0.2)
+                    - between(A2, www2.2, www1.2)
+                    - same(www2, www3)
+            }
+            _ => {
+                www2.2 as u64
+                    - between(A1, www2.2, wK)
+                    - between(A1, www2.2, bK)
+                    - between(A1, www2.2, www0.2)
+                    - between(A1, www2.2, www1.2)
+                    - same(www2, www3)
+            }
+        };
+        let p3 = match www3.1 {
+            EMPTY => 0,
+            PAWN => {
+                www3.2 as u64
+                    - (A2 as u64)
+                    - between(A2, www3.2, wK)
+                    - between(A2, www3.2, bK)
+                    - between(A2, www3.2, www0.2)
+                    - between(A2, www3.2, www1.2)
+                    - between(A2, www3.2, www2.2)
+            }
+            _ => {
+                www3.2 as u64
+                    - between(A1, www3.2, wK)
+                    - between(A1, www3.2, bK)
+                    - between(A1, www3.2, www0.2)
+                    - between(A1, www3.2, www1.2)
+                    - between(A1, www3.2, www2.2)
+            }
+        };
+
+        NibbleAddr(
+            (ord_k * p_max0 * p_max1 * p_max2 * p_max3
+                + p0 * p_max1 * p_max2 * p_max3
+                + p1 * p_max2 * p_max3
+                + p2 * p_max3
+                + p3) as usize,
+        )
+    }
+
+    fn next_pc(&self, pawns: bool, u: u64) -> Option<u64> {
+        // any index other than 0,1,2,3 requests next king config
+        if u > 3 {
+            // make next king configuration
+            let ord_k = mdb::kingConfig(self.white_king(), self.black_king());
+            let max = if pawns { 1805 } else { 902 };
+            if ord_k >= max {
+                return None;
+            }
+            let mut kinx = ((self.white_king() as u64) << 6) + (self.black_king() as u64) + 1;
+            while kinx < 64 * 64 {
+                let w = Field::from(kinx >> 6);
+                let b = Field::from(kinx & 0x3f);
+                if mdb::kingConfig(w, b) <= max {
+                    return Some(self.move_king(WHITE, w).move_king(BLACK, b).bits);
+                }
+                kinx += 1;
+            }
+            panic!("big oops for ord_k={} max={} {:?}", ord_k, max, self);
+        }
+
+        let prev_u = if u == 0 { 42 } else { u - 1 };
+        // is it empty, perhaps?
+        if self.piece_at(u) == EMPTY {
+            return self.next_pc(pawns, prev_u);
+        }
+
+        // at this point, we have regular pieces only
+        let mut next = CPos { bits: self.bits };
+
+        loop {
+            let WWW(player, piece, f) = next.www_at(u);
+            let WWW(prev_pl, prev_piece, prev_f) =
+                if u > 0 { next.www_at(u - 1) } else { WWW(BLACK, EMPTY, A1) };
+            let limit = {
+                // if previous piece is the same colour and kind
+                // then the limit is the field before this one
+                if prev_pl == player && prev_piece == piece {
+                    if prev_f > A1 {
+                        Field::from((prev_f as u64) - 1)
+                    } else {
+                        A1 // cause immediate overflow
+                    }
+                } else if piece == PAWN {
+                    H7
+                } else {
+                    H8
+                }
+            };
+            // do we have overflow
+            if f >= limit {
+                match next.clear_piece(u).next_pc(pawns, prev_u) {
+                    None => return None,
+                    Some(nxt) => {
+                        // reconstruct CPos with our piece
+                        next = CPos { bits: nxt }
+                            .change_player(u, player)
+                            .change_piece(u, piece)
+                            .move_piece(u, if piece == PAWN { A2 } else { A1 });
+                    }
+                }
+            } else {
+                next = next.move_piece(u, Field::from((f as u64) + 1));
+            }
+            let f = next.field_at(u);
+            let f0 = next.field_at(0);
+            let f1 = next.field_at(1);
+            let f2 = next.field_at(2);
+
+            if f != next.white_king()
+                && f != next.black_king()
+                && (u == 0
+                    || u == 1 && f != f0
+                    || u == 2 && f != f0 && f != f1
+                    || u == 3 && f != f0 && f != f1 && f != f2)
+            {
+                return Some(next.bits);
+            }
         }
     }
 
@@ -1884,7 +2161,7 @@ impl CPos {
         let to = Field::from((self.bits & CPos::TARGET_BITS) >> CPos::TARGET_SHIFT);
         let kingmv = (self.bits & CPos::KING_MOVE_BIT) != 0;
         format!(
-            "{} {} {} {}  {}{} {}  {}{} {}  {}{} {}  {}{} {}  BK/WK {}/{}",
+            "{} {} {} {}  {} {} {} {} {} {}",
             if (self.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK },
             if kingmv {
                 "KING".to_string()
@@ -1906,67 +2183,54 @@ impl CPos {
                 " -".to_string()
             },
             to,
-            self.player_at(3),
-            self.piece_at(3),
-            self.field_at(3),
-            self.player_at(2),
-            self.piece_at(2),
-            self.field_at(2),
-            self.player_at(1),
-            self.piece_at(1),
-            self.field_at(1),
-            self.player_at(0),
-            self.piece_at(0),
-            self.field_at(0),
-            self.black_king(),
-            self.white_king()
+            WWW(WHITE, KING, self.white_king()),
+            WWW(BLACK, KING, self.black_king()),
+            self.www_at(0),
+            self.www_at(1),
+            self.www_at(2),
+            self.www_at(3)
         )
+    }
+}
+
+impl Iterator for CPos {
+    type Item = CPos;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let bits = self.bits;
+        if bits == 0 {
+            None
+        } else {
+            self.bits = self
+                .next_pc(
+                    self.piece_at(0) == PAWN
+                        || self.piece_at(1) == PAWN
+                        || self.piece_at(2) == PAWN
+                        || self.piece_at(3) == PAWN,
+                    3,
+                )
+                .unwrap_or(0);
+            Some(CPos { bits })
+        }
     }
 }
 
 impl fmt::Debug for CPos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&format!(
-            "{:?}/{:?} {}{}{}",
-            self.state(BLACK),
+            "{:?}/{:?} {}{}{}  {} {} {} {} {} {}",
             self.state(WHITE),
+            self.state(BLACK),
             if self.canonic_has_bw_switched() { "s" } else { "-" },
             if self.canonic_was_mirrored_h() { "h" } else { "-" },
-            if self.canonic_was_mirrored_v() { "v" } else { "-" }
-        ))?;
-        if self.piece_at(3) != EMPTY {
-            f.write_str(&format!(
-                ", {}{} {}",
-                self.player_at(3),
-                self.piece_at(3),
-                self.field_at(3)
-            ))?;
-        }
-        if self.piece_at(2) != EMPTY {
-            f.write_str(&format!(
-                ", {}{} {}",
-                self.player_at(2),
-                self.piece_at(2),
-                self.field_at(2)
-            ))?;
-        }
-        if self.piece_at(1) != EMPTY {
-            f.write_str(&format!(
-                ", {}{} {}",
-                self.player_at(1),
-                self.piece_at(1),
-                self.field_at(1)
-            ))?;
-        }
-        if self.piece_at(0) != EMPTY {
-            f.write_str(&format!(
-                ", {}{} {}",
-                self.player_at(0),
-                self.piece_at(0),
-                self.field_at(0)
-            ))?;
-        }
-        f.write_str(&format!(", BK/WK {}/{}", self.black_king(), self.white_king()))
+            if self.canonic_was_mirrored_v() { "v" } else { "-" },
+            WWW(WHITE, KING, self.white_king()),
+            WWW(BLACK, KING, self.black_king()),
+            self.www_at(0),
+            self.www_at(1),
+            self.www_at(2),
+            self.www_at(3)
+        ))
     }
 }
 
