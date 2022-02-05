@@ -583,7 +583,7 @@ pub fn test1(sig: &str) -> Result<(), String> {
             // let v = cpm.valid();
             let v = cpos.valid(player);
             let s = cpos.state(player);
-            if v && s == INVALID_POS || !v && s != INVALID_POS {
+            if v && s == INVP || !v && s != INVP {
                 eprintln!("failed.");
                 println!("valid={}, state={:?}", v, s);
                 // println!("CPMG={:?}", cpm);

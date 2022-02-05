@@ -41,45 +41,59 @@ fn formatu64(u: u64, result: &mut String) {
 ///    formatted_h(9999, "K") -> "9.9K"
 ///    formatted_h(19999, "K") -> "19M"
 pub fn formatted_h(n: usize, unit: char) -> String {
-	let next_unit = |c| match c {
-		'K' => 'M',
-		'M' => 'G',
-		'G' => 'T',
-		'T' => 'P',
-		'P' => '?',
-		'?' => '¿',
-		_   => 'K',
-	};
-	if next_unit(unit) == 'K' {
-		if n > 9999 {
-			let h = n / 1000;
-			if h < 100 {
-				format!("{}.{}K", h / 10, h % 10)
-			}
-			else { formatted_h(n / 1000, 'K') }
-		}
-		else {
-			format!("{:>4}", n)
-		}
-	}
-	else if n > 999 {
-		let h = n / 100;
-		if h < 100 {
-			format!("{}.{}{}", h / 10, h % 10, next_unit(unit))
-		}
-		else { formatted_h(n / 1000, next_unit(unit)) }
-	} else {
-		format!("{:>3}{}", n, unit)
-	}
+    let next_unit = |c| match c {
+        'K' => 'M',
+        'M' => 'G',
+        'G' => 'T',
+        'T' => 'P',
+        'P' => '?',
+        '?' => '¿',
+        _ => 'K',
+    };
+    if next_unit(unit) == 'K' {
+        if n > 9999 {
+            let h = n / 1000;
+            if h < 100 {
+                format!("{}.{}K", h / 10, h % 10)
+            } else {
+                formatted_h(n / 1000, 'K')
+            }
+        } else {
+            format!("{:>4}", n)
+        }
+    } else if n > 999 {
+        let h = n / 100;
+        if h < 100 {
+            format!("{}.{}{}", h / 10, h % 10, next_unit(unit))
+        } else {
+            formatted_h(n / 1000, next_unit(unit))
+        }
+    } else {
+        format!("{:>3}{}", n, unit)
+    }
 }
 /// Formats the number of remaining items in short, human readable form.
 ///
 /// e.g. fmt_human(15000, 1000) = " 14k"
 pub fn fmt_human(w: usize, r: usize) -> String {
     if w >= r {
-		formatted_h(w-r, '1')
+        formatted_h(w - r, '1')
     } else {
         "????".to_string()
+    }
+}
+
+/// print a progress indication consisting of promille value and remaining whatever
+///     '1234‰ 3.7G '
+pub fn progress(current: usize, maximum: usize) {
+    if maximum == 0 {
+        eprint!("   0‰    0 ");
+    } else {
+        eprint!(
+            "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08{:4}‰ {} ",
+            (current + 1) * 1000 / maximum,
+            formatted_h(maximum - (current + 1).min(maximum), '1')
+        );
     }
 }
 

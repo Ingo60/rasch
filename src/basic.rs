@@ -40,7 +40,11 @@ impl Player {
     /// the color of the opponent
     #[inline]
     pub fn opponent(self) -> Player {
-        if self == BLACK { WHITE } else { BLACK }
+        if self == BLACK {
+            WHITE
+        } else {
+            BLACK
+        }
     }
 
     /// compute -1 or 1 without conditional branch
@@ -408,90 +412,56 @@ pub fn showMovesSAN(moves: &[Move], start: Position) -> String {
 }
 
 /// Result of retrograde analysis.
-/// - MATE is given to all positions where the player cannot make any legal move and is in check.
-/// - STALEMATE is given to all positions where the player cannot move, but is not in check.
-/// - CAN_MATE is given to all positions where the player has a move such that
-/// the resulting position is either MATE or CANNOT_AVOID_MATE.
-/// - CAN_DRAW is given to all positions that are not CAN_MATE where the player has a move such that
-/// the resulting position is either STALEMATE or CANNOT_AVOID_DRAW.
-/// - CANNOT_AVOID_DRAW is given to positions where all moves that do not lead to CAN_MATE for the opponent are
-/// lead to STALEMATE or CAN_DRAW
-/// In addition, this is reported for positions not found in a database search.
-/// - CANNOT_AVOID_MATE is givon to positions where all moves lead to CAN_MATE.
+/// - DRAW is given to all positions where we do not know whether it is a win or loss and to stalemates.
+/// - WINS is given to all positions that are a win when the correct move is played. The move will be in the "moves" file.
+/// - LOST is given to all positions that are either mate or cannot avoid it.
+/// - INVP is flagged if the position is not valid for the player to move (because opponents [KING] is in check).
 ///
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CPosState {
-    /// not yet analyzed (this must map from and to u0!)
-    UNKNOWN,
+    /// not known to be a win or loss
+    DRAW,
 
-    /// no moves possible and the king is in check
-    MATE,
+    /// there is a move that leads to a win
+    WINS,
 
-    /// no moves possible, but not in check
-    STALEMATE,
+    /// either mate or all moves left lead to [WINS] moves for the opponent
+    LOST,
 
-    /// there is at least 1 move in this position that reaches a position that is `MATE`,
-    /// or `CANNOT_AVOID_MATE`
-    CAN_MATE,
-
-    /// there is at least 1 move in this position that reaches a position that is `STALEMATE`,
-    /// or `CANNOT_AVOID_DRAW`
-    CAN_DRAW,
-
-    /// For every possible move, the opponent can answer with a move that forces a draw or a mate,
-    /// but for at least one move only a draw can be enforced.
-    ///
-    /// Also given to positions missing from database files. The rationale is that
-    /// (assuming this program is correct) if the player can neither force mate but can avoid mate for himself,
-    /// then it must be a draw. And this is true for endless repetitions and lack of material.
-    /// Hence, the *K-K* table is just an empty file.
-    CANNOT_AVOID_DRAW,
-
-    /// For every possible move, the opponent can answer with a move
-    /// that leads to mate for this player sooner or later. Sorry!
-    CANNOT_AVOID_MATE,
-
-    /// Position is not valid for the player this flags apply to.
-    /// This happens when the opposite KING would be in check or
-    /// there is a PAWN of this player who is eligible for en-passant
-    /// capturing. But this would only be possible when it is the
-    /// other player's move.
-    INVALID_POS,
+    /// Position is not valid for the player this flags apply to
+    /// (e.g. opposite [KING] is in check).
+    INVP,
 }
 
 impl From<u64> for CPosState {
     /// cast a number to CPosState
     /// ```
-    /// assert!((0..8).all(|n| n == rasch::cpos::CPosState::from(n) as u64))
+    /// assert!((0..3).all(|n| n == rasch::basics::CPosState::from(n) as u64))
     /// ```
     fn from(u: u64) -> CPosState {
-        match u & 7 {
-            0 => UNKNOWN,
-            1 => MATE,
-            2 => STALEMATE,
-            3 => CAN_MATE,
-            4 => CAN_DRAW,
-            5 => CANNOT_AVOID_DRAW,
-            6 => CANNOT_AVOID_MATE,
-            7 => INVALID_POS,
-            _ => UNKNOWN, // to make rustc happy
+        match u & 3 {
+            0 => DRAW,
+            1 => WINS,
+            2 => LOST,
+            3 => INVP,
+            _ => INVP, // to make rustc happy
         }
     }
 }
 
-impl Debug for CPosState {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let s = match self {
-            MATE => "MATE",
-            STALEMATE => "STAL",
-            CANNOT_AVOID_DRAW => "DRAW",
-            CAN_DRAW => "DRWS",
-            CAN_MATE => "WINS",
-            CANNOT_AVOID_MATE => "LOOS",
-            INVALID_POS => "INVP",
-            UNKNOWN => "UNKN",
-        };
-        write!(f, "{}", s)
+impl From<u8> for CPosState {
+    /// cast a number to CPosState
+    /// ```
+    /// assert!((0..3).all(|n| n == rasch::basics::CPosState::from(n) as u64))
+    /// ```
+    fn from(u: u8) -> CPosState {
+        match u & 3 {
+            0 => DRAW,
+            1 => WINS,
+            2 => LOST,
+            3 => INVP,
+            _ => INVP, // to make rustc happy
+        }
     }
 }
 

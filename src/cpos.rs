@@ -18,8 +18,6 @@ use std::{
     slice,
 };
 
-use crate::position::PAWN_FIELDS;
-
 use super::{
     basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
     cposio::mk_egtb_path,
@@ -27,7 +25,9 @@ use super::{
     fen::encodeFEN,
     fieldset::{BitSet, Field},
     mdb,
-    position::{bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, WHITE_TO_MOVE},
+    position::{
+        bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, PAWN_FIELDS, WHITE_TO_MOVE,
+    },
 };
 use CPosState::*;
 use Field::*;
@@ -35,7 +35,7 @@ use Piece::*;
 use Player::*;
 
 pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
-pub type EgtbMMap<'a> = HashMap<Signature, (Mmap, &'a [CPos])>;
+pub type EgtbMMap<'a> = HashMap<Signature, (Mmap, &'a [u8])>;
 
 /// Signature of a CPos
 ///
@@ -492,8 +492,8 @@ impl Signature {
             }
             inx += 1;
         }
-        let stw = if cpos.valid(WHITE) { UNKNOWN } else { INVALID_POS };
-        let stb = if cpos.valid(BLACK) { UNKNOWN } else { INVALID_POS };
+        let stw = if cpos.valid(WHITE) { DRAW } else { INVP };
+        let stb = if cpos.valid(BLACK) { DRAW } else { INVP };
         cpos.ordered().with_state(stw, stb)
     }
 }
@@ -568,9 +568,8 @@ impl NibbleAddr {
     /// byte is used, else the right half. The extracted information is returned in the
     /// right 4 bits.
     pub fn get_nibble(&self, array: &[u8]) -> u8 {
-        let NibbleAddr(naddr) = *self;
-        let baddr = naddr >> 1;
-        if naddr & 1 == 0 {
+        let baddr = self.0 >> 1;
+        if self.0 & 1 == 0 {
             // even
             array[baddr] >> 4
         } else {
@@ -578,7 +577,8 @@ impl NibbleAddr {
         }
     }
 
-    /// Even nibbles go in the left 4 bits, odd nibbles in the right 4 bits
+    /// Store a nibble in a byte array.
+    /// Even nibbles go in the left 4 bits, odd nibbles in the right 4 bits.
     ///
     /// The [nibble] passed as argument must have the information in its rightmost 4 bits.
     pub fn set_nibble(&self, array: &mut [u8], nibble: u8) -> () {
@@ -825,7 +825,7 @@ impl CPos {
     pub const KING_BITS: u64 = CPos::WHITE_KING_BITS | CPos::BLACK_KING_BITS;
 
     /// Compress an ordinary position, which must be a valid endgame position.
-    /// Sets either INVALID_POS or UNKNOWN flags for both players.
+    /// Sets either INVP or DRAW flags for both players.
     pub fn new(pos: &Position) -> CPos {
         // this makes sure that we never use more than 40 bits for encoding of pieces
         if !pos.validEndgame() {
@@ -844,25 +844,25 @@ impl CPos {
         // figure out validity
         let bstate = if pos.turn() == BLACK {
             if pos.valid() {
-                UNKNOWN
+                DRAW
             } else {
-                INVALID_POS
+                INVP
             }
         } else if pos.validForOpponent() {
-            UNKNOWN
+            DRAW
         } else {
-            INVALID_POS
+            INVP
         };
         let wstate = if pos.turn() == WHITE {
             if pos.valid() {
-                UNKNOWN
+                DRAW
             } else {
-                INVALID_POS
+                INVP
             }
         } else if pos.validForOpponent() {
-            UNKNOWN
+            DRAW
         } else {
-            INVALID_POS
+            INVP
         };
         let bflags = (bstate as u64) << CPos::BLACK_STATUS_SHIFT;
         let wflags = (wstate as u64) << CPos::WHITE_STATUS_SHIFT;
@@ -1530,7 +1530,7 @@ impl CPos {
         // we also need to exchange kings
         bits = (bits & !CPos::KING_BITS)                      // clear affected bits
                     | ((bits & CPos::BLACK_KING_BITS)>>CPos::BLACK_KING_SHIFT << CPos::WHITE_KING_SHIFT)     // move the black king
-                    | ((bits & CPos::WHITE_KING_BITS)<<CPos::WHITE_KING_SHIFT << CPos::BLACK_KING_SHIFT)     // move the white king
+                    | ((bits & CPos::WHITE_KING_BITS)>>CPos::WHITE_KING_SHIFT << CPos::BLACK_KING_SHIFT)     // move the white king
                     ;
         CPos { bits: bits ^ CPos::S_BIT }
     }
@@ -2005,7 +2005,7 @@ impl CPos {
             } else {
                 // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
                 // All searches will terminate immediately because the number of entries is 0.
-                CPos { bits: 0 }.with_state(INVALID_POS, INVALID_POS)
+                CPos { bits: 0 }.with_state(INVP, INVP)
             };
             hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
         }
@@ -2015,6 +2015,7 @@ impl CPos {
     pub fn egtb_mmap<'a>(canonsig: Signature, ext: &str, hash: &'a mut EgtbMMap) -> Result<(), String> {
         if !hash.contains_key(&canonsig) {
             let path = mk_egtb_path(canonsig, ext);
+
             let mm = {
                 let path: &str = &path;
                 let file = OpenOptions::new()
@@ -2022,14 +2023,46 @@ impl CPos {
                     .open(path)
                     .map_err(|e| format!("Can't read {} ({})", path, e))?;
                 let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
-                // let start = &map[0] as *const u8;
-                // let s = map.as_ptr();
-                let array = unsafe { slice::from_raw_parts(map.as_ptr().cast::<CPos>(), map.len() / 8) };
+                let array = unsafe { slice::from_raw_parts(map.as_ptr(), map.len()) };
                 (map, array)
             };
+
+            // let mm = byte_ro_map(&path)?;
             hash.insert(canonsig, mm);
         }
         Ok(())
+    }
+
+    /// Look up a CPos in an u8 slice and sets the state flags accordingly in the result.
+    ///
+    /// Fails if the address is too big.
+    pub fn lookup_canonic(&self, array: &[u8]) -> Result<CPos, String> {
+        let addr = self.canonic_addr();
+        if addr.bytes() > array.len() {
+            Err(format!(
+                "array length {} < {} for {:?}  {:?}",
+                array.len(),
+                addr.bytes(),
+                addr,
+                self
+            ))
+        } else {
+            let nibble = addr.get_nibble(array);
+            let ws = nibble >> 2;
+            let bs = nibble & 3;
+            Ok(self.with_state(CPosState::from(ws), CPosState::from(bs)))
+        }
+    }
+
+    /// Constructs a nibble from the state information and puts it in an array.
+    pub fn update_canonic(&self, array: &mut [u8]) {
+        let addr = self.canonic_addr();
+        if addr.bytes() > array.len() {
+            panic!("array length {} < {} for {:?}", array.len(), addr.bytes(), self);
+        }
+        let ws = self.state(WHITE) as u8;
+        let bs = self.state(BLACK) as u8;
+        addr.set_nibble(array, (ws << 2) | bs);
     }
 
     /// A variant of `find` where the searched `CPos` is guaranteed canonical.
@@ -2041,47 +2074,7 @@ impl CPos {
         // we don't want hash.entry(canonsig).or_insert_with(|| ...) either, because it destroys propagation
         // of errors upwards.
         let blubb = hash.get_mut(&canonsig).unwrap();
-        match blubb.1.binary_search(self) {
-            Ok(u) => Ok(blubb.1[u]),
-            Err(_) => Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW)),
-        }
-
-        // let maxpos = blubb.1;
-        // let mid_cpos = blubb.2;
-        // let mut upper = maxpos;
-
-        // let mut lower = 0;
-        // while lower < upper {
-        //     let mid = lower + (upper - lower) / 2;
-        //     match if mid == maxpos / 2 {
-        //         Ok(mid_cpos)
-        //     } else {
-        //         CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
-        //     } {
-        //         Err(ioe) => {
-        //             let path = mk_egtb_path(canonsig, "egtb");
-        //             return Err(format!(
-        //                 "error reading EGTB file {} at {} ({})",
-        //                 path,
-        //                 8 * mid,
-        //                 ioe
-        //             ));
-        //         }
-        //         Ok(c) => {
-        //             if c == self {
-        //                 return Ok(c);
-        //             } else if c < self {
-        //                 lower = mid + 1;
-        //             } else
-        //             /* c >  canon */
-        //             {
-        //                 upper = mid;
-        //             }
-        //         }
-        //     }
-        // }
-        // // pretend we found a DRAW
-        // Ok(self.with_state(CANNOT_AVOID_DRAW, CANNOT_AVOID_DRAW))
+        self.lookup_canonic(blubb.1)
     }
 
     pub fn mpos_player(&self) -> Player {
@@ -2096,8 +2089,8 @@ impl CPos {
         CPos { bits: (self.bits & !CPos::WHITE_BIT) & CPos::COMP_BITS }
     }
 
-    /// Find a move associated with a **canonic** `CPos`.
-    /// - it is an error if the status of the selected player is not `CAN_MATE`
+    /// Find a move associated with a **canonic** [CPos].
+    /// - it is an error if the status of the selected player is not [WINS]
     /// - it is an error if the move is not found.
     pub fn find_canonic_move(
         self,
@@ -2105,12 +2098,12 @@ impl CPos {
         player: Player,
         hash: &mut EgtbMap,
     ) -> Result<CPos, String> {
-        let this = if self.state(player) == CAN_MATE {
+        let this = if self.state(player) == WINS {
             Ok(CPos {
                 bits: if player == WHITE { CPos::WHITE_BIT } else { 0 } | (self.bits & CPos::COMP_BITS),
             })
         } else {
-            Err(String::from("CANT_MOVE"))
+            Err(String::from("CANT_WIN"))
         }?;
 
         CPos::egtb_open(canonsig, "moves", hash)?;

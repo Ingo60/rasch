@@ -268,6 +268,19 @@ pub fn cpos_ro_map(path: &str) -> Result<(Mmap, &[CPos]), String> {
     Ok((map, array))
 }
 
+/// Map the given path as read-only byte slice into memory.
+///
+/// **Note**: when the returned map goes out of scope, the slice will become unusable!
+pub fn byte_ro_map(path: &str) -> Result<(Mmap, &[u8]), String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| format!("Can't read {} ({})", path, e))?;
+    let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+    let array = unsafe { slice::from_raw_parts(map.as_ptr(), map.len()) };
+    Ok((map, array))
+}
+
 /// Map the given path as read/write CPos slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
@@ -283,6 +296,21 @@ pub fn cpos_rw_map(path: &str) -> Result<(MmapMut, &mut [CPos]), String> {
     Ok((map, array))
 }
 
+/// Map the given path as read/write byte slice into memory.
+///
+/// **Note**: when the returned map goes out of scope, the slice will become unusable!
+pub fn byte_rw_map(path: &str) -> Result<(MmapMut, &mut [u8]), String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("Can't read/write {} ({})", path, e))?;
+    let mut map = unsafe { MmapMut::map_mut(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+    let start = map.as_mut_ptr();
+    let array = unsafe { slice::from_raw_parts_mut(start, map.len()) };
+    Ok((map, array))
+}
+
 /// Map the given path as read/write CPos anonymous slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
@@ -290,6 +318,16 @@ pub fn cpos_anon_map(n_pos: &usize) -> Result<(MmapMut, &mut [CPos]), String> {
     let mut map = /*unsafe*/ { MmapMut::map_anon(n_pos * 8) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
     let start = &mut map[0] as *mut u8;
     let array = unsafe { slice::from_raw_parts_mut(start.cast::<CPos>(), map.len() / 8) };
+    Ok((map, array))
+}
+
+/// Map the given path as read/write anonymous [u8] slice into memory.
+///
+/// **Note**: when the returned map goes out of scope, the slice will become unusable!
+pub fn byte_anon_map(n_bytes: &usize) -> Result<(MmapMut, &mut [u8]), String> {
+    let mut map = /*unsafe*/ { MmapMut::map_anon(*n_bytes) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
+    let start = &mut map[0] as *mut u8;
+    let array = unsafe { slice::from_raw_parts_mut(start, map.len()) };
     Ok((map, array))
 }
 
