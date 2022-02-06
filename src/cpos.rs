@@ -34,8 +34,8 @@ use Field::*;
 use Piece::*;
 use Player::*;
 
-pub type EgtbMap = HashMap<Signature, Box<(File, u64, CPos)>>;
-pub type EgtbMMap<'a> = HashMap<Signature, (Mmap, &'a [u8])>;
+pub type MovesMap<'a> = HashMap<Signature, (Mmap, &'a [CPos])>;
+pub type EgtbMap<'a> = HashMap<Signature, (Mmap, &'a [u8])>;
 
 /// Signature of a CPos
 ///
@@ -1967,7 +1967,7 @@ impl CPos {
     ///
     /// For a one time lookup, one can simply pass an empty hash. Subsequent searches may benefit a little from
     /// already opened files, but a real difference is seen with many thousand lookups only.
-    pub fn find(&self, hash: &mut EgtbMMap) -> Result<CPos, String> {
+    pub fn find(&self, hash: &mut EgtbMap) -> Result<CPos, String> {
         let selfsig = self.signature();
         let canon = self.canonical(selfsig);
         canon
@@ -1976,33 +1976,7 @@ impl CPos {
                 CPos { bits: (cp.bits & !CPos::TRANS_BITS) | (canon.bits & CPos::TRANS_BITS) })
     }
 
-    /// Helper function for managing the EGTB map
-    /// Makes sure the file corresponding to the given signature is open.
-    fn egtb_open(canonsig: Signature, ext: &str, hash: &mut EgtbMap) -> Result<(), String> {
-        if !hash.contains_key(&canonsig) {
-            let path = mk_egtb_path(canonsig, ext);
-            let mut rfile =
-                File::open(&path).map_err(|ioe| format!("could not open EGTB file {} ({})", path, ioe))?;
-            let upper = rfile
-                .seek(SeekFrom::End(0))
-                .map_err(|ioe| format!("error seeking EGTB file {} ({})", path, ioe))?;
-            let npos = upper / 8;
-            let mid = npos / 2;
-            let m_pos = if npos > 0 {
-                // this read must not be done for empty EGTBs
-                CPos::read_at(&mut rfile, SeekFrom::Start(8 * mid))
-                    .map_err(|ioe| format!("error reading EGTB file {} at {} ({})", path, 8 * mid, ioe))?
-            } else {
-                // "remember" a fake CPos for an empty EGTB (e.g. K-K), it will never make a difference.
-                // All searches will terminate immediately because the number of entries is 0.
-                CPos { bits: 0 }.with_state(INVP, INVP)
-            };
-            hash.insert(canonsig, Box::new((rfile, npos, m_pos)));
-        }
-        Ok(())
-    }
-
-    pub fn egtb_mmap<'a>(canonsig: Signature, ext: &str, hash: &'a mut EgtbMMap) -> Result<(), String> {
+    pub fn egtb_mmap<'a>(canonsig: Signature, ext: &str, hash: &'a mut EgtbMap) -> Result<(), String> {
         if !hash.contains_key(&canonsig) {
             let path = mk_egtb_path(canonsig, ext);
 
@@ -2014,6 +1988,26 @@ impl CPos {
                     .map_err(|e| format!("Can't read {} ({})", path, e))?;
                 let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
                 let array = unsafe { slice::from_raw_parts(map.as_ptr(), map.len()) };
+                (map, array)
+            };
+
+            // let mm = byte_ro_map(&path)?;
+            hash.insert(canonsig, mm);
+        }
+        Ok(())
+    }
+
+    pub fn moves_mmap<'a>(canonsig: Signature, hash: &'a mut MovesMap) -> Result<(), String> {
+        if !hash.contains_key(&canonsig) {
+            let path = mk_egtb_path(canonsig, "moves");
+            let mm = {
+                let path: &str = &path;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .open(path)
+                    .map_err(|e| format!("Can't read {} ({})", path, e))?;
+                let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+                let array = unsafe { slice::from_raw_parts(map.as_ptr().cast::<CPos>(), map.len() / 8) };
                 (map, array)
             };
 
@@ -2056,7 +2050,7 @@ impl CPos {
     }
 
     /// A variant of `find` where the searched `CPos` is guaranteed canonical.
-    pub fn find_canonic(&self, canonsig: Signature, hash: &mut EgtbMMap) -> Result<CPos, String> {
+    pub fn find_canonic(&self, canonsig: Signature, hash: &mut EgtbMap) -> Result<CPos, String> {
         CPos::egtb_mmap(canonsig, "egtb", hash)?;
 
         // the unwrap is justified because of the insert() above
@@ -2096,17 +2090,17 @@ impl CPos {
     pub fn find_move(
         &self,
         player: Player,
-        e_hash: &mut EgtbMMap,
-        m_hash: &mut EgtbMap,
+        e_hash: &mut EgtbMap,
+        m_hash: &mut MovesMap,
     ) -> Result<Move, String> {
         let canonic = self.clear_trans().find(e_hash)?;
         let cplayer = if canonic.canonic_has_bw_switched() { player.opponent() } else { player };
-        let mpos = canonic.find_canonic_move(canonic.signature(), cplayer, m_hash)?;
+        let mpos = canonic.find_canonic_mpos(canonic.signature(), cplayer, m_hash)?;
         Ok(canonic.mv_from_mpos(mpos))
     }
 
     /// Find the db state for [Player]
-    pub fn find_state(&self, player: Player, e_hash: &mut EgtbMMap) -> Result<CPosState, String> {
+    pub fn find_state(&self, player: Player, e_hash: &mut EgtbMap) -> Result<CPosState, String> {
         let canonic = self.clear_trans().find(e_hash)?;
         Ok(if canonic.canonic_has_bw_switched() {
             canonic.state(player.opponent())
@@ -2118,11 +2112,11 @@ impl CPos {
     /// Find a move position associated with a **canonic** [CPos].
     /// - it is an error if the status of the selected player is not [WINS]
     /// - it is an error if the move is not found.
-    pub fn find_canonic_move(
+    pub fn find_canonic_mpos(
         self,
         canonsig: Signature,
         player: Player,
-        hash: &mut EgtbMap,
+        hash: &mut MovesMap,
     ) -> Result<CPos, String> {
         let this = if self.state(player) == WINS {
             Ok(CPos {
@@ -2132,46 +2126,35 @@ impl CPos {
             Err(String::from("CANT WIN"))
         }?;
 
-        CPos::egtb_open(canonsig, "moves", hash)?;
+        CPos::moves_mmap(canonsig, hash)?;
 
         // the unwrap is justified because of the egtb_open() above
         let blubb = hash.get_mut(&canonsig).unwrap();
-
-        let maxpos = blubb.1;
-        let mid_cpos = blubb.2;
-        let mut upper = maxpos;
-        let mut lower = 0;
-
-        while lower < upper {
-            let mid = lower + (upper - lower) / 2;
-            match if mid == maxpos / 2 {
-                Ok(mid_cpos)
-            } else {
-                CPos::read_at(&mut blubb.0, SeekFrom::Start(8 * mid))
-            } {
-                Err(ioe) => {
-                    let path = mk_egtb_path(canonsig, "moves");
-                    return Err(format!(
-                        "error reading EGTB file {} at {} ({})",
-                        path,
-                        8 * mid,
-                        ioe
-                    ));
-                }
-                Ok(c) => {
-                    if c == this {
-                        return Ok(c);
-                    } else if c < this {
-                        lower = mid + 1;
-                    } else
-                    /* c >  canon */
-                    {
-                        upper = mid;
-                    }
-                }
-            }
+        match blubb.1.binary_search(&this) {
+            Ok(u) => Ok(blubb.1[u]),
+            Err(_) => Err(String::from("NOT FOUND")),
         }
-        Err(String::from("NOT FOUND"))
+    }
+
+    pub fn find_canonic_mpos_index(
+        self,
+        canonsig: Signature,
+        player: Player,
+        hash: &mut MovesMap,
+    ) -> Result<usize, String> {
+        let this = if self.state(player) == WINS {
+            Ok(CPos {
+                bits: if player == WHITE { CPos::WHITE_BIT } else { 0 } | (self.bits & CPos::COMP_BITS),
+            })
+        } else {
+            Err(String::from("CANT WIN"))
+        }?;
+
+        CPos::moves_mmap(canonsig, hash)?;
+
+        // the unwrap is justified because of the egtb_open() above
+        let blubb = hash.get_mut(&canonsig).unwrap();
+        blubb.1.binary_search(&this).map_err(|_| "NOT FOUND".to_string())
     }
 
     /// debugging output for a move `CPos`

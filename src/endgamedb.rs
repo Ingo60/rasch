@@ -108,7 +108,7 @@
 
 use super::{
     basic::{CPosState, Move, Piece, Player},
-    cpos::{CPos, EgtbMMap, EgtbMap, Mirrorable, Signature},
+    cpos::{CPos, EgtbMap, Mirrorable, MovesMap, Signature},
     cposio::{
         byte_anon_map, byte_ro_map, byte_rw_map, cpos_append_writer, cpos_create_writer, cpos_file_size,
         cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, CPosReader,
@@ -239,15 +239,15 @@ pub fn play(fen: &str) -> Result<(), String> {
     Err(String::from("DRAW (50 moves)"))
 }
 
-/// feed in an end game position and get back an appropriate move, provided the EGTB exists
+/// feed in an end game position and get back an appropriate move, provided the EGTB files exist
 pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     let cpos = if pos.validEndgame() {
         Ok(pos.compressed())
     } else {
         Err(String::from("position is no valid end game."))
     }?;
-    let mut ehash: EgtbMMap = HashMap::new();
-    let mut mhash: EgtbMap = HashMap::new();
+    let mut ehash: EgtbMap = HashMap::new();
+    let mut mhash: MovesMap = HashMap::new();
     let sig = cpos.signature();
     println!("# {} is canonic {}", sig, sig.is_canonic());
     let rpos = cpos.find(&mut ehash)?;
@@ -275,7 +275,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     match s {
         INVP => Err(format!("illegal {:?} state for this position", s)),
         WINS => {
-            let mpos = rpos.find_canonic_move(rpos.signature(), canonic_player, &mut mhash)?;
+            let mpos = rpos.find_canonic_mpos(rpos.signature(), canonic_player, &mut mhash)?;
             println!(
                 "# {} found move    0x{:016x}  {}  fen: {}",
                 mpos.signature(),
@@ -643,7 +643,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
     let mut pass = 0;
     let mut um_writer = cpos_append_writer("/dev/null")?;
     let (mut map, mut db) = byte_anon_map(&1)?;
-    let mut ehash: EgtbMMap = HashMap::new();
+    let mut ehash: EgtbMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
     let mut state = if Path::new(&egtb_path).is_file() {
@@ -856,7 +856,7 @@ fn scan_mates_aliens(
     at: CPos,
     um_writer: &mut BufWriter<File>,
     db: &mut [u8],
-    hash: &mut EgtbMMap,
+    hash: &mut EgtbMap,
 ) -> Result<Option<CPos>, String> {
     let mut wins = 0usize;
     let mut loos = 0usize;
@@ -971,7 +971,7 @@ fn scan_um(
     reader: &mut BufReader<File>,
     writer: &mut BufWriter<File>,
     db: &mut [u8],
-    e_hash: &mut EgtbMMap,
+    e_hash: &mut EgtbMap,
 ) -> Result<Option<usize>, String> {
     let um_path = mk_temp_path(signature, "um");
     let mut r_pos = reader
