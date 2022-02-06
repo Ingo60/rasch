@@ -13,10 +13,6 @@ do
     for SIG in K$f-K K-K$f
     do
         ./target/release/rasch gen $SIG
-        if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
-        then
-            echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
-        fi
     done
 done
 
@@ -28,10 +24,6 @@ do
         for SIG in  K$f$g-K  K$f-K$g  K-K$f$g
         do
             ./target/release/rasch gen $SIG
-            if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
-            then
-                echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
-            fi
         done
     done
 done
@@ -46,10 +38,6 @@ do
             for SIG in  K$f$g$h-K K$f$g-K$h K$f-K$g$h K-K$f$g$h
             do
                 ./target/release/rasch gen $SIG
-                if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
-                then
-                    echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
-                fi
             done
         done
     done
@@ -67,12 +55,7 @@ do
                 for SIG in K$f$g$h$i-K K$f$g$h-K$i K$f$g-K$h$i  K$f-K$g$h$i K-K$f$g$h$i
                 do
                     ./target/release/rasch gen $SIG 
-                    if  [ -f $EGTB/$SIG.egtb -a -f $TEST/$SIG.egtb ]
-                    then
-                        echo ./target/release/rasch diff $SIG $TEST/$SIG.egtb
-                    fi
                 done
-                
             done
         done
     done
