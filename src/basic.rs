@@ -7,6 +7,7 @@
 use super::fieldset::Field;
 use super::position::Position;
 use std::fmt::{Debug, Display, Formatter};
+use std::path::Path;
 pub use Piece::*;
 pub use Player::*;
 
@@ -491,7 +492,14 @@ pub use CPosState::*;
 pub fn decode_str_sig(desc: &str) -> Result<Vec<PlayerPiece>, String> {
     let mut result = Vec::new();
     let mut wer = WHITE;
-    for c in desc.chars() {
+    let path = Path::new(desc);
+    let sigdesc = if path.is_file() {
+        path.file_stem().map(|x| x.to_str()).flatten().unwrap_or(desc)
+    } else {
+        desc
+    };
+    // let stripped_egtb  = desc.replace("from", to)
+    for c in sigdesc.chars() {
         match c.to_ascii_uppercase() {
             'K' => {}
             'Q' => {
@@ -512,7 +520,7 @@ pub fn decode_str_sig(desc: &str) -> Result<Vec<PlayerPiece>, String> {
             '-' if wer == WHITE => {
                 wer = BLACK;
             }
-            _ => return Err(format!("invalid signature '{}': at char '{}'\n", desc, c)),
+            _ => return Err(format!("invalid signature '{}': at char '{}'\n", sigdesc, c)),
         }
     }
     Ok(result)

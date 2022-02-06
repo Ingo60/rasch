@@ -556,7 +556,11 @@ impl fmt::Debug for WWW {
 
 impl fmt::Display for WWW {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}{}", self.0, self.1, self.2)
+        if self.0 != BLACK || self.1 != EMPTY || self.2 != A1 {
+            write!(f, "{}{}{}", self.0, self.1, self.2)
+        } else {
+            f.write_str("----")
+        }
     }
 }
 
@@ -1352,25 +1356,16 @@ impl CPos {
     /// Return a `CPos` where the move has been applied.
     pub fn apply(&self, mv: Move) -> CPos {
         let mut new = *self;
-        let mut need_order = false;
 
         // clear target piece, if there is one
-        // if the removed piece is not at index 3, a reordering is probably needed
-        // actually, it is only needed if the piece after it is occupied
         match new.piece_index_by_field(mv.to()) {
-            Ok(u) => {
-                need_order = need_order || (u < 3 && new.piece_at(u + 1) != EMPTY);
-                new = new.clear_piece(u)
-            }
+            Ok(u) => new = new.clear_piece(u),
             Err(KING) => panic!("attempt to capture KING: {}  CPos {:?}", mv, new),
             Err(_) => { /* non capturing */ }
         }
         // move the piece or KING
         match new.piece_index_by_field(mv.from()) {
             Ok(u) => {
-                need_order = need_order
-                    || (u < 3 && new.piece_at(u + 1) != EMPTY && mv.to() < new.field_at(u + 1)
-                        || u > 0 && new.piece_at(u - 1) != EMPTY && mv.to() > new.field_at(u - 1));
                 if mv.promote() != EMPTY {
                     new = new.change_piece(u, mv.promote())
                 }
@@ -1381,11 +1376,7 @@ impl CPos {
             }
             Err(x) => panic!("attempt to move from {:?} field {}", x, mv.from()),
         }
-        if need_order {
-            new.ordered()
-        } else {
-            new
-        }
+        new.ordered()
     }
 
     /// make a `CPos` into a "move CPos" for a certain `Move`
@@ -1967,8 +1958,7 @@ impl CPos {
     /// Find a CPos in the database files.
     ///
     /// Absent I/O errors, the result will be the canonical `CPos` that is the same as the one searched for,
-    /// with appropriately set flags. Even if the entry is not in the database, this just means that the state
-    /// for both colours is OTHER_DRAW and a canonical CPos with this state is returned.
+    /// with appropriately set flags.
     ///
     /// The databse consists of a number of files, each named after the signature of the `CPos`s it contains.
     /// To avoid frequent opening and closing of several files, `File` objects of files
@@ -2089,7 +2079,43 @@ impl CPos {
         CPos { bits: (self.bits & !CPos::WHITE_BIT) & CPos::COMP_BITS }
     }
 
-    /// Find a move associated with a **canonic** [CPos].
+    /// Find the winning move for [Player].
+    ///
+    /// If this is a winning position for [player], the result will be the [Move], applicable to this position, that leads to a win.
+    ///
+    /// If this is no winning position, the result will be
+    ///
+    ///     Err("CANT WIN")
+    ///
+    /// The database could be inconsistent and the move could be missing. In this
+    /// case one gets
+    ///
+    ///     Err("NOT FOUND")
+    ///
+    /// Other errors indicate I/O errors.
+    pub fn find_move(
+        &self,
+        player: Player,
+        e_hash: &mut EgtbMMap,
+        m_hash: &mut EgtbMap,
+    ) -> Result<Move, String> {
+        let canonic = self.clear_trans().find(e_hash)?;
+        let cplayer = if canonic.canonic_has_bw_switched() { player.opponent() } else { player };
+        let mpos = canonic.find_canonic_move(canonic.signature(), cplayer, m_hash)?;
+        Ok(canonic.mv_from_mpos(mpos))
+    }
+
+    /// Find the db state for [Player]
+    pub fn find_state(&self, player: Player, e_hash: &mut EgtbMMap) -> Result<CPosState, String> {
+        let canonic = self.clear_trans().find(e_hash)?;
+        Ok(if canonic.canonic_has_bw_switched() {
+            canonic.state(player.opponent())
+        } else {
+            canonic.state(player)
+        })
+    }
+
+    /// Find a move position associated with a **canonic** [CPos].
     /// - it is an error if the status of the selected player is not [WINS]
     /// - it is an error if the move is not found.
     pub fn find_canonic_move(
@@ -2103,7 +2129,7 @@ impl CPos {
                 bits: if player == WHITE { CPos::WHITE_BIT } else { 0 } | (self.bits & CPos::COMP_BITS),
             })
         } else {
-            Err(String::from("CANT_WIN"))
+            Err(String::from("CANT WIN"))
         }?;
 
         CPos::egtb_open(canonsig, "moves", hash)?;
@@ -2154,7 +2180,7 @@ impl CPos {
         let to = Field::from((self.bits & CPos::TARGET_BITS) >> CPos::TARGET_SHIFT);
         let kingmv = (self.bits & CPos::KING_MOVE_BIT) != 0;
         format!(
-            "{} {} {} {}  {} {} {} {} {} {}",
+            "{} {} {}  {}  {} {} {} {} {} {}",
             if (self.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK },
             if kingmv {
                 "KING".to_string()
@@ -2173,7 +2199,7 @@ impl CPos {
                     }
                 )
             } else {
-                " -".to_string()
+                "--".to_string()
             },
             to,
             WWW(WHITE, KING, self.white_king()),

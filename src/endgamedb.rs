@@ -111,10 +111,12 @@ use super::{
     cpos::{CPos, EgtbMMap, EgtbMap, Mirrorable, Signature},
     cposio::{
         byte_anon_map, byte_ro_map, byte_rw_map, cpos_append_writer, cpos_create_writer, cpos_file_size,
-        cpos_open_reader, mk_egtb_path, mk_temp_path, CPosReader,
+        cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, CPosReader,
     },
     fen::{decodeFEN, encodeFEN},
+    position::{showMovesSAN, Position},
     sortegtb::sort_from_to,
+    util::*,
 };
 
 // use super::fieldset::*;
@@ -124,21 +126,14 @@ use CPosState::*;
 use Piece::*;
 use Player::*;
 
-use super::position::Position;
-use super::util::*;
-// use crate::position::Mirrorable;
-
-use std::env;
-use std::fs::{remove_file, File};
-use std::io::BufReader;
-use std::io::BufWriter;
-use std::io::ErrorKind::*;
-use std::io::{Seek, SeekFrom, Write};
-use std::{collections::HashMap, fs::rename};
-// use std::iter::FromIterator;
-use std::path::Path;
-
-use std::sync::{atomic, Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    fs::{remove_file, rename, File},
+    io::{BufReader, BufWriter, ErrorKind::*, Seek, SeekFrom, Write},
+    path::Path,
+    sync::{atomic, Arc},
+};
 
 pub type Cache = HashMap<usize, Vec<(Move, CPos)>>;
 
@@ -156,6 +151,7 @@ enum MakeState {
 use MakeState::*;
 
 static sigint_received: atomic::AtomicBool = atomic::AtomicBool::new(false);
+static handler_installed: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
 /// Sort the um file, if present.
 ///
@@ -331,47 +327,106 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
 /// - the moves file must exist
 /// - the moves file must be sorted
 /// - it must not contain duplicates
-/// - for each move position, there must be an entry in the associated EGTB file and the status for the player must be CAN_MATE
-/// - for each move position, the entry from the EGTB file must uncompress to a valid `Position`
-/// - for each move position, the reconstructed `Move` must occur in the moves list of that `Position`
-pub fn check_mmap(arg: &str) -> Result<(), String> {
+/// - for each move position, there must be an entry in the associated EGTB file and the status for the player must be [WINS]
+/// - for each move position, a valid [Position] must be obtainable
+/// - for each move position, the reconstructed `Move` must occur in the moves list of that [Position]
+pub fn check_moves(arg: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(arg)?;
     let path = mk_egtb_path(signature, "moves");
     let egtb = mk_egtb_path(signature, "egtb");
-    // let f = cpos_rw_file(&egtb)?;
-    // let mmap = unsafe { Mmap::map(&f) }.map_err(|e| format!("cannot mmap {} ({})", egtb, e))?;
-    // let start = &mmap[0] as *const u8;
     let epositions = byte_ro_map(&egtb)?;
     let mut last = CPos { bits: 0 };
     let mut sorted = true;
-    let mut dupl = false;
+    let mut dupl = 0usize;
     let mut unrelated = false;
     let mut invalid = false;
     let mut badmoves = 0usize;
+    let mut badmpos = 0usize;
     let rdr = CPosReader::new(&path)?;
     let n_pos = cpos_file_size(&path)?;
     let mut curr_pos = 0;
     eprint!(
-        "{} checking {} move positions from {} ...   0% ",
+        "{} checking {} move positions from {} ",
         signature.display(),
         formatted_sz(n_pos),
         path
     );
+    progress(0, 0);
     for mpos in rdr {
         curr_pos += 1;
-        if curr_pos % 1_000_000 == 0 && n_pos > 0 {
-            eprint!("\x08\x08\x08\x08\x08\x08{:>4}% ", curr_pos * 100 / n_pos);
+        if n_pos > 0 && (curr_pos % 1_000_000 == 1 || curr_pos >= n_pos) {
+            progress(curr_pos, n_pos);
         }
         sorted = sorted && last <= mpos;
-        dupl = dupl || last == mpos;
+
+        if last == mpos {
+            if dupl == 0 {
+                eprintln!(
+                    "\n{}:{}  duplicate mpos {} ({:#016x})",
+                    signature,
+                    curr_pos,
+                    mpos.mpos_debug(),
+                    mpos.bits
+                );
+            }
+            dupl += 1;
+        }
         last = mpos;
-        let canonic = CPos { bits: mpos.bits & CPos::COMP_BITS & !CPos::WHITE_BIT };
-        let u = canonic.canonic_addr().get_nibble(epositions.1);
-        let ws = CPosState::from(u >> 2);
-        let bs = CPosState::from(u & 3);
-        let cpos = canonic.with_state(ws, bs);
-        let player = if (mpos.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK };
+
+        if mpos.signature() != signature {
+            if badmpos == 0 {
+                eprintln!(
+                    "\n{}:{}  signature mismatch  {}  {}",
+                    signature,
+                    curr_pos,
+                    mpos.signature(),
+                    mpos.mpos_debug()
+                );
+            }
+            badmpos += 1;
+            continue;
+        }
+
+        let canonic = mpos.mpos_to_cpos();
+        if canonic != canonic.canonical(signature) {
+            if badmpos == 0 {
+                eprintln!("\n{}:{}  move position is not canonic.", signature, curr_pos);
+                eprintln!("    move pos  {}", mpos.mpos_debug());
+                eprintln!("    canonic   {:?}", canonic.canonical(signature));
+            }
+            badmpos += 1;
+            continue;
+        }
+
+        let cpos: CPos;
+        match canonic.lookup_canonic(epositions.1) {
+            Ok(x) => cpos = x,
+            Err(s) => {
+                if badmpos == 0 {
+                    eprintln!(
+                        "\n{}:{}  move position cannot be found in {}",
+                        signature, curr_pos, egtb
+                    );
+                    eprintln!("    {}", s);
+                    eprintln!("    {} (Signature {})", mpos.mpos_debug(), mpos.signature());
+                }
+                badmpos += 1;
+                continue;
+            }
+        };
+
+        let player = mpos.mpos_player();
+
+        if !unrelated && cpos.state(player) != WINS {
+            eprintln!(
+                "\n{}:{}  position not marked as WINS for {:?}",
+                signature, curr_pos, player
+            );
+            eprintln!("    mpos:  {} ({:#016x})", mpos.mpos_debug(), mpos.bits);
+            eprintln!("    cpos:  {:?} ({:#016x})", cpos, cpos.bits);
+        }
         unrelated = unrelated || cpos.state(player) != WINS;
+
         let pos = cpos.uncompressed(player);
         invalid = invalid || !pos.valid();
         if pos.valid() {
@@ -381,7 +436,13 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
                 Some(_mv) => badmoves,
                 None => {
                     if badmoves == 0 {
-                        eprintln!("\nmove {}  impossible in position {}", xmv, encodeFEN(&pos));
+                        eprintln!(
+                            "\n{}:{}  move {} impossible in position {}",
+                            signature,
+                            curr_pos,
+                            xmv,
+                            encodeFEN(&pos)
+                        );
                         eprintln!("cpos 0x{:016x} {:?}", cpos.bits, cpos);
                         eprintln!("mpos 0x{:016x} {}", mpos.bits, mpos.mpos_debug());
                     }
@@ -390,133 +451,38 @@ pub fn check_mmap(arg: &str) -> Result<(), String> {
             };
         }
     }
-    eprintln!("\x08\x08\x08\x08\x08\x08 done.");
+    eprintln!(" done.");
     if !sorted {
-        eprintln!("{} moves file {} is not sorted.", signature.display(), path);
+        eprintln!("{} moves file {} is not sorted.", signature, path);
     }
-    if dupl {
+    if dupl > 0 {
         eprintln!(
-            "{} moves file {} contains duplicate entries.",
-            signature.display(),
-            path
+            "{} moves file {} contains {} duplicate entries.",
+            signature, path, dupl
         );
     }
     if unrelated {
-        eprintln!(
-            "{} moves file {} has unrelated entries.",
-            signature.display(),
-            path
-        );
+        eprintln!("{} moves file {} has unrelated entries.", signature, path);
     }
     if invalid {
         eprintln!(
             "{} moves file {} has entries that yield invalid positions.",
-            signature.display(),
-            path
+            signature, path
         );
+    }
+    if badmpos > 0 {
+        eprintln!("{} moves file has {} illegal positions.", signature, badmpos);
     }
     if badmoves > 0 {
         eprintln!(
             "{} moves file {} has {} bad/unknown moves.",
-            signature.display(),
-            path,
-            badmoves
+            signature, path, badmoves
         );
     }
 
     std::mem::drop(epositions.0);
 
-    if sorted && !dupl && !unrelated && !invalid && badmoves == 0 {
-        Ok(())
-    } else {
-        Err(format!("moves file {} is corrupt", path))
-    }
-}
-
-/// ### Check sanity of move positions for a Signature
-/// - the moves file must exist
-/// - the moves file must be sorted
-/// - it must not contain duplicates
-/// - for each move position, there must be an entry in the associated EGTB file and the status for the player must be CAN_MATE
-/// - for each move position, the entry from the EGTB file must uncompress to a valid `Position`
-/// - for each move position, the reconstructed `Move` must occur in the moves list of that `Position`
-pub fn check_moves(arg: &str) -> Result<(), String> {
-    let signature = Signature::new_from_str_canonic(arg)?;
-    let path = mk_egtb_path(signature, "moves");
-    let mut hash: EgtbMMap = HashMap::new();
-    let mut last = CPos { bits: 0 };
-    let mut sorted = true;
-    let mut dupl = false;
-    let mut unrelated = false;
-    let mut invalid = false;
-    let mut badmoves = false;
-    let rdr = CPosReader::new(&path)?;
-    let n_pos = cpos_file_size(&path)?;
-    let mut curr_pos = 0;
-    eprint!(
-        "{} checking {} move positions from {} ...   0% ",
-        signature.display(),
-        formatted_sz(n_pos),
-        path
-    );
-    for mpos in rdr {
-        curr_pos += 1;
-        if curr_pos % 1_000_000 == 0 && n_pos > 0 {
-            eprint!("\x08\x08\x08\x08\x08\x08{:>4}% ", curr_pos * 100 / n_pos);
-        }
-        sorted = sorted && last <= mpos;
-        dupl = dupl || last == mpos;
-        last = mpos;
-        let cpos = CPos { bits: mpos.bits & CPos::COMP_BITS & !CPos::WHITE_BIT }
-            .find_canonic(signature, &mut hash)?;
-        let player = if (mpos.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK };
-        unrelated = unrelated || cpos.state(player) != WINS;
-        let pos = cpos.uncompressed(player);
-        invalid = invalid || !pos.valid();
-        if pos.valid() {
-            let mvs = pos.moves();
-            let xmv = cpos.mv_from_mpos(mpos);
-            badmoves = badmoves
-                || match mvs.iter().copied().find(|x| *x == xmv) {
-                    Some(_mv) => false,
-                    None => true,
-                };
-        }
-    }
-    eprintln!("\x08\x08\x08\x08\x08\x08 done.");
-    if !sorted {
-        eprintln!("{} moves file {} is not sorted.", signature.display(), path);
-    }
-    if dupl {
-        eprintln!(
-            "{} moves file {} contains duplicate entries.",
-            signature.display(),
-            path
-        );
-    }
-    if unrelated {
-        eprintln!(
-            "{} moves file {} has unrelated entries.",
-            signature.display(),
-            path
-        );
-    }
-    if invalid {
-        eprintln!(
-            "{} moves file {} has entries that yield invalid positions.",
-            signature.display(),
-            path
-        );
-    }
-    if badmoves {
-        eprintln!(
-            "{} moves file {} has invalid/unknown moves.",
-            signature.display(),
-            path
-        );
-    }
-
-    if sorted && !dupl && !unrelated && !invalid && !badmoves {
+    if sorted && dupl == 0 && !unrelated && !invalid && badmoves == 0 && badmpos == 0 {
         Ok(())
     } else {
         Err(format!("moves file {} is corrupt", path))
@@ -524,79 +490,97 @@ pub fn check_moves(arg: &str) -> Result<(), String> {
 }
 
 /// Provide statistics for an endgame tablebase and perform basic checks.
-pub fn stats(sig: String) -> Result<(), String> {
-    let dbfile = format!("{}/{}", env::var("EGTB").unwrap_or(String::from("./egtb")), sig);
+pub fn check_egtb(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let e_path = mk_egtb_path(signature, "egtb");
+    let m_path = mk_egtb_path(signature, "moves");
+    let (_map1, edb) = byte_ro_map(&e_path)?;
+    let (_map2, mdb) = cpos_ro_map(&m_path)?;
 
-    let egtbfile = format!(
-        "{}/{}.egtb",
-        env::var("EGTB").unwrap_or(String::from("egtb")),
-        sig
-    );
-    let path = if Path::new(&sig).is_file() {
-        sig
-    } else if Path::new(&dbfile).is_file() {
-        dbfile
-    } else {
-        egtbfile
-    };
-    let file = match File::open(&path) {
-        Err(cant) => return Err(format!("can't open {} ({})", path, cant)),
-        Ok(f) => f,
-    };
-    let mut rdr = BufReader::with_capacity(8 * 1024 * 1024, file);
-    let mv_path = path.replace(".egtb", ".moves");
-    let nmoves = if mv_path == path {
-        eprintln!("can't derive moves file");
-        Ok(0)
-    } else {
-        cpos_file_size(&mv_path)
-    }?;
-
-    let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut wkinds = vec![0, 0, 0, 0, 0, 0, 0, 0];
+    let mut bkinds = vec![0, 0, 0, 0, 0, 0, 0, 0];
     let c0 = CPos { bits: 0 };
-    let mut wexamples = vec![
-        c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0,
-    ];
-    let mut bexamples = vec![
-        c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0, c0,
-    ];
-    let mut last = c0;
+    let mut wexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0];
+    let mut bexamples = vec![c0, c0, c0, c0, c0, c0, c0, c0];
     let mut total = 0usize;
-    let mut sorted = true;
-    let mut duplic = false;
-    let mut moves_wrong = false;
+    let mut moves_missing = 0usize;
+    let mut poss_missing = 0usize;
     let mut cad_both = 0usize;
     let mut cad_example = c0;
-    loop {
-        match CPos::read_seq(&mut rdr) {
-            Err(x) if x.kind() == UnexpectedEof => break,
-            Err(x) => return Err(format!("read error ({}) in {}", x, path)),
-            Ok(c) => {
-                let inx = c.state(WHITE) as usize;
-                wkinds[inx] += 1;
-                wexamples[inx] = c;
-                let inx = c.state(BLACK) as usize;
-                bkinds[inx] += 1;
-                bexamples[inx] = c;
+    let last = signature.last();
+    eprint!(
+        "{}  checking {} positions in {} ",
+        signature,
+        formatted_sz(2 * edb.len()),
+        e_path
+    );
+    progress(0, 0);
+    for current in signature.first() {
+        total += 1;
+        if total % (1024 * 1024 * 4) == 1 || current == last {
+            progress(current.canonic_addr().0, last.canonic_addr().0);
+            if sigint_received.load(atomic::Ordering::SeqCst) {
+                eprintln!("\x08\x08 canceled.");
+                sigint_received.store(false, atomic::Ordering::SeqCst);
+                return Err("interrupted".to_string());
+            }
+        }
 
-                sorted = sorted && last <= c;
-                duplic = duplic || last == c;
-                last = c;
+        let c = match current.lookup_canonic(edb) {
+            Ok(x) => x,
+            Err(s) if poss_missing == 0 => {
+                eprintln!(
+                    "\n{}:{}  position cannot be found in {}",
+                    signature, total, e_path
+                );
+                eprintln!("    {}", s);
+                poss_missing += 1;
+                continue;
+            }
+            Err(_) => {
+                poss_missing += 1;
+                continue;
+            }
+        };
 
-                if c.state(BLACK) == DRAW && c.state(WHITE) == DRAW {
-                    cad_both += 1;
-                    cad_example = c;
+        let inx = c.state(WHITE) as usize;
+        wkinds[inx] += 1;
+        wexamples[inx] = c;
+        let inx = c.state(BLACK) as usize;
+        bkinds[inx] += 1;
+        bexamples[inx] = c;
+
+        if c.state(BLACK) == DRAW && c.state(WHITE) == DRAW {
+            cad_both += 1;
+            cad_example = c;
+        }
+
+        for p in [BLACK, WHITE] {
+            if c.state(p) == WINS {
+                let m =
+                    CPos { bits: if p == WHITE { CPos::WHITE_BIT } else { 0 } | (c.bits & CPos::COMP_BITS) };
+                match mdb.binary_search(&m) {
+                    Ok(_) => {}
+                    Err(s) if moves_missing == 0 => {
+                        eprintln!(
+                            "\n{}:{}  no move for {:?} WINS position ({})",
+                            signature, total, p, s
+                        );
+                        eprintln!("    cpos  {:?} ({:#016x})", c, c.bits);
+                        moves_missing += 1;
+                    }
+                    Err(_) => moves_missing += 1,
                 }
-                total += 1;
             }
         }
     }
-    for i in 1..15 {
+    eprintln!(" done.");
+
+    for i in 0..wkinds.len() {
         let s = CPosState::from(i as u64);
         if wkinds[i] > 0 {
             eprintln!(
-                "{:>12} white positions with status {:<20} for example {}",
+                "{:>12} white positions with status {:<6} for example {}",
                 formatted_sz(wkinds[i]),
                 format!("{:?}", s),
                 encodeFEN(&wexamples[i].uncompressed(WHITE))
@@ -604,7 +588,7 @@ pub fn stats(sig: String) -> Result<(), String> {
         }
         if bkinds[i] > 0 {
             eprintln!(
-                "{:>12} black positions with status {:<20} for example {}",
+                "{:>12} black positions with status {:<6} for example {}",
                 formatted_sz(bkinds[i]),
                 format!("{:?}", s),
                 encodeFEN(&bexamples[i].uncompressed(BLACK))
@@ -613,38 +597,39 @@ pub fn stats(sig: String) -> Result<(), String> {
     }
     if cad_both > 0 {
         eprintln!(
-            "{:>12} both  positions with status {:<20} for example {}",
+            "{:>12} both  positions with status {:<6} for example {}",
             formatted_sz(cad_both),
             format!("{:?}", DRAW),
             encodeFEN(&cad_example.uncompressed(BLACK))
         );
     }
     eprintln!("{:>12} positions total", formatted_sz(total));
-    if wkinds[WINS as usize] + bkinds[WINS as usize] != nmoves as usize {
-        eprintln!(
-            "Warning: we have {} WINS positions but {} moves.",
-            formatted_sz(wkinds[WINS as usize] + bkinds[WINS as usize]),
-            formatted_sz(nmoves)
-        );
-        moves_wrong = true;
+    if moves_missing > 0 {
+        eprintln!("{:>12} moves are missing", formatted_sz(moves_missing));
     }
-    if wkinds[DRAW as usize] + bkinds[DRAW as usize] > 0 {
-        eprintln!("Warning: the table contains positions with DRAW state.");
-    }
-    if !sorted {
-        eprintln!("Warning: the table is not sorted.");
-    }
-    if duplic {
-        eprintln!("Warning: the table contains duplicates.");
-    }
-    if wkinds[DRAW as usize] > 0 || bkinds[DRAW as usize] > 0 || !sorted || duplic || moves_wrong {
-        eprintln!("Warning: This is an invalid or yet incomplete end game table.");
+    if poss_missing > 0 {
+        eprintln!("{:>12} positions are missing", formatted_sz(poss_missing));
     }
 
-    Ok(())
+    if moves_missing > 0 || poss_missing > 0 {
+        eprintln!("Warning: This is an invalid or yet incomplete end game table.");
+        Err("corrupt egtb".to_string())
+    } else {
+        Ok(())
+    }
 }
 
-const DEBUG_POSITION: CPos = CPos { bits: 0x0048_d274_a630 };
+const DEBUG_POSITION: CPos = CPos { bits: 0x1009_1000_0225_0000 };
+
+pub fn make(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let rels = signature.predecessors();
+    for x in rels.keys() {
+        let s = x.display();
+        make(&s)?;
+    }
+    gen(sig)
+}
 
 /// mmap backed generation
 pub fn gen(sig: &str) -> Result<(), String> {
@@ -674,10 +659,13 @@ pub fn gen(sig: &str) -> Result<(), String> {
     };
 
     let handler_ref = Arc::new(&sigint_received);
-    ctrlc::set_handler(move || {
-        handler_ref.store(true, atomic::Ordering::SeqCst);
-    })
-    .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
+    if !handler_installed.load(atomic::Ordering::SeqCst) {
+        ctrlc::set_handler(move || {
+            handler_ref.store(true, atomic::Ordering::SeqCst);
+        })
+        .map_err(|e| format!("Cannot set CTRL-C handler ({})", e))?;
+        handler_installed.store(true, atomic::Ordering::SeqCst);
+    }
 
     while state != Done {
         pass += 1;
@@ -688,6 +676,8 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 std::mem::drop(um_writer);
                 um_writer = cpos_append_writer("/dev/null")?;
                 state = make_moves(signature, &um_path, &moves_path)?;
+                check_egtb(&signature.display())?;
+                check_moves(&signature.display())?;
             }
 
             StartUp => {
@@ -838,7 +828,7 @@ fn register_winner(
     writer: &mut BufWriter<File>,
     db: &mut [u8],
 ) -> Result<usize, String> {
-    let canonic = can.canonical(signature);
+    let canonic = can.clear_trans().canonical(signature);
     let c = canonic.lookup_canonic(db)?;
     let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
     let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
@@ -882,15 +872,17 @@ fn scan_mates_aliens(
         if n_items > 0 && (n % (128 * 1024) == 0 || current == last) {
             if sigint_received.load(atomic::Ordering::SeqCst) {
                 eprintln!("\x08\x08 canceled.");
+                sigint_received.store(false, atomic::Ordering::SeqCst);
                 return Ok(Some(current));
             }
             progress(current.canonic_addr().0, 2 * n_items);
         }
-        let cp = current.lookup_canonic(db)?;
-        if cp == DEBUG_POSITION {
-            eprint!("!scan_mates_aliens");
-        }
+
         'next_player: for player in [BLACK, WHITE] {
+            let cp = current.lookup_canonic(db)?;
+            if cp == DEBUG_POSITION {
+                eprint!("!scan_mates_aliens!");
+            }
             if cp.state(player) == DRAW {
                 let mut all_successors_can_mate = true;
                 let mut no_moves = true;
@@ -1003,16 +995,13 @@ fn scan_um(
             Err(other) => Err(format!("read error on {} ({})", um_path, other))?,
             Ok(mpos) => {
                 r_pos += 1;
-                if w_pos > 0 && (r_pos % (16 * 1024) == 0 || r_pos + 1 == w_pos) {
+                if w_pos > 0 && (r_pos % (32 * 1024) == 0 || r_pos + 1 == w_pos) {
                     if sigint_received.load(atomic::Ordering::SeqCst) {
                         eprintln!("\x08\x08 canceled.");
+                        sigint_received.store(false, atomic::Ordering::SeqCst);
                         return Ok(Some(r_pos));
                     }
-                    eprint!(
-                        "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08{:4}‰ {} ",
-                        (r_pos + 1) * 1000 / w_pos,
-                        fmt_human(w_pos, r_pos + 1)
-                    );
+                    progress(r_pos, w_pos);
                 }
                 let cpos = mpos.mpos_to_cpos();
                 if cpos == DEBUG_POSITION {
@@ -1076,24 +1065,8 @@ fn scan_um(
                                 .map(|mv| (dbu.unapply(mv, EMPTY), mv))
                                 .filter(|(c, _mv)| c.valid(player) && c.signature() == signature)
                             {
-                                let canonic = canm.clear_trans().canonical(signature);
-                                if canonic == DEBUG_POSITION {
-                                    eprint!("!scan_um_new_winner!");
-                                }
-                                let c = canonic.lookup_canonic(db)?;
-                                if c.state(umv.player()) == DRAW {
-                                    let hmv =
-                                        if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
-                                    let mv =
-                                        if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
-                                    let mpos = c.mpos_from_mv(mv);
-                                    c.with_state_for(mv.player(), WINS).update_canonic(db);
-                                    mpos.write_seq(writer).map_err(|ioe| {
-                                        format!("unexpected error ({}) while writing to {}", ioe, um_path)
-                                    })?;
-                                    n_winner += 1;
-                                    // w_pos += 1;
-                                }
+                                let w = register_winner(signature, canm, umv, writer, db)?;
+                                n_winner += w;
                             }
                         }
                     }
@@ -1148,4 +1121,66 @@ pub fn debug(args: &[String]) {
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct Variant(CPos, Vec<Move>);
+
+impl fmt::Debug for Variant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cpos = self.0;
+        let mvs = &self.1;
+        if mvs.len() > 0 {
+            let pos = cpos.uncompressed(mvs[0].player());
+            f.write_str(&encodeFEN(&pos))?;
+            f.write_str("  ")?;
+            f.write_str(&showMovesSAN(mvs, pos))
+        } else {
+            f.write_str(&format!("{:?}", cpos))
+        }
+        // f.debug_tuple("Variant").field(&self.0).field(&self.1).finish()
+    }
+}
+
+/// command line: rasch win FEN
+pub fn check_win(fen: &str) -> Result<(), String> {
+    let pos = decodeFEN(fen)?;
+    let winner = pos.turn();
+    let looser = winner.opponent();
+    if pos.valid() { Ok(()) } else { Err("invalid position".to_string()) }?;
+    if pos.validEndgame() { Ok(()) } else { Err("no endgame".to_string()) }?;
+    let mut e_hash = HashMap::new();
+    let mut m_hash = HashMap::new();
+    let cpos = pos.compressed();
+    let mv = cpos.find_move(winner, &mut e_hash, &mut m_hash)?;
+
+    let mut variants = Vec::new();
+    variants.push(Variant(cpos, vec![mv]));
+
+    while !variants.is_empty() {
+        match variants.pop() {
+            None => {}
+            Some(Variant(cpos, mvs)) => {
+                let lost = mvs.iter().fold(cpos, |p, m| p.apply(*m));
+                let st = lost.find_state(looser, &mut e_hash)?;
+                if st == LOST { Ok(()) } else { Err("NOT LOST".to_string()) }?;
+                let mut found = 0;
+                for mv in lost.move_iterator(looser) {
+                    let wins = lost.apply(mv);
+                    if wins.valid(winner) {
+                        found += 1;
+                        let mut mvs2 = mvs.clone();
+                        mvs2.push(mv);
+                        let wmv = wins.find_move(winner, &mut e_hash, &mut m_hash)?;
+                        mvs2.push(wmv);
+                        variants.push(Variant(cpos, mvs2));
+                    }
+                }
+                if found == 0 {
+                    println!("{:?}", Variant(cpos, mvs.clone()));
+                }
+            }
+        }
+    }
+    Ok(())
 }

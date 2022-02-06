@@ -76,6 +76,14 @@ fn main() {
                 std::process::exit(1)
             }
         }
+    } else if argv[1] == "make" && argv.len() >= 3 {
+        match E::make(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
     } else if argv[1] == "debug" && argv.len() > 2 {
         E::debug(&argv[2..]);
     } else if argv[1] == "test1" && argv.len() >= 3 {
@@ -121,22 +129,16 @@ fn main() {
                 std::process::exit(1)
             }
         }
-    } else if argv[1].starts_with("stats") && argv.len() >= 3 {
-        match E::stats(String::from(argv[2].clone())) {
+    } else if argv[1] == "stats" && argv.len() >= 3 {
+        match E::check_egtb(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
-            }
-        }
-    } else if argv[1] == "check-old" && argv.len() >= 3 {
-        match E::check_moves(&argv[2]) {
-            Ok(_) => {}
-            Err(s) => {
-                eprintln!("error: {}", s);
+                std::process::exit(1);
             }
         }
     } else if argv[1] == "check" && argv.len() >= 3 {
-        match E::check_mmap(&argv[2]) {
+        match E::check_moves(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
@@ -157,6 +159,25 @@ fn main() {
             fen.push_str(&argv[i]);
         }
         match E::play(&fen) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("win") && argv.len() == 3 {
+        match E::check_win(&String::from(argv[2].clone())) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+            }
+        }
+    } else if argv[1].starts_with("win") && argv.len() == 8 {
+        let mut fen = String::from(argv[2].clone());
+        for i in 3..8 {
+            fen.push(' ');
+            fen.push_str(&argv[i]);
+        }
+        match E::check_win(&fen) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
@@ -195,11 +216,13 @@ fn main() {
             \n    {0} [negamin|negamax|pvs|bns|mtdf]     # default is `negamin`
             \nDeveloper tools:\
             \n    {0} flamegraph [N]    # used to get data for cargo flamegraph\
-            \n    {0} make sig          # genereate end game table\
-            \n    {0} stats sig         # print statistics for end game table\
+            \n    {0} gen  sig          # genereate end game table\
+            \n    {0} make sig          # make end game table\
+            \n    {0} stats sig         # check end game table & print statistics\
+            \n    {0} check sig         # check moves table\
             \n    {0} play 'fen'        # simulate end game from position given in FEN notation\
             \n    {0} move 'fen'        # like \"play\", but only one move\
-            \n    {0} sort sig          # sort an unsorted end game table\
+            \n    {0} win  'fen'        # list all winning variants for the given position\
             \n\
             \nThe directory where end game tables reside is given with environment variable EGTB.\
             \nDefault is ./egtb\
