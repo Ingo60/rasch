@@ -128,7 +128,6 @@ use Player::*;
 
 use std::{
     collections::HashMap,
-    fmt,
     fs::{remove_file, rename, File},
     io::{BufReader, BufWriter, ErrorKind::*, Seek, SeekFrom, Write},
     path::Path,
@@ -145,6 +144,7 @@ enum MakeState {
     StartUp,
     WriteEgtb,
     ScanForMate(CPos),
+    ScanForAliens(CPos),
     ScanUM(usize),
 }
 
@@ -208,7 +208,7 @@ fn make_work(signature: Signature, pass: usize, work_path: &str) -> Result<MakeS
         }
         let ws = if cpos.valid(WHITE) { DRAW } else { INVP };
         let bs = if cpos.valid(BLACK) { DRAW } else { INVP };
-        cpos.with_state(ws, bs).update_canonic(array);
+        cpos.with_state(ws, bs).set_canonic(array);
     }
     eprintln!("done, found {}.", formatted_h(max_items, '1'));
     let mut writer = cpos_create_writer(work_path)?;
@@ -619,8 +619,6 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
     }
 }
 
-const DEBUG_POSITION: CPos = CPos { bits: 0x1009_1000_0225_0000 };
-
 pub fn make(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let rels = signature.predecessors();
@@ -738,6 +736,8 @@ pub fn gen(sig: &str) -> Result<(), String> {
                         ScanForMate(xpos)
                     } else if pat.bits as usize == RESTART_UM {
                         ScanUM(xpos.bits as usize)
+                    } else if pat.bits as usize == RESTART_ALIENS {
+                        ScanForAliens(xpos)
                     } else {
                         return Err("there is garbage in the restart file".to_string());
                     }
@@ -748,12 +748,37 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             ScanForMate(at) => {
                 eprint!(
-                    "{}  Pass {:2} - find mates, stalemates, direct winners & alien loosers    0‰ {} ",
+                    "{}  Pass {:2} - find mates, stalemates & direct winners    0‰ {} ",
                     signature,
                     pass,
                     fmt_human(db.len(), 0)
                 );
-                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash)?;
+                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash, true)?;
+                um_writer
+                    .flush()
+                    .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
+                eprint!("    setting checkpoint ");
+                match result {
+                    None => {
+                        set_checkpoint(&restart_path, RESTART_ALIENS, 0)?;
+                        state = ScanForAliens(signature.first());
+                    }
+                    Some(wpos) => {
+                        eprint!(" for restart ");
+                        set_checkpoint(&restart_path, RESTART_MATES, wpos.bits as usize)?;
+                        return Err("terminated via Ctrl-C".to_string());
+                    }
+                }
+            }
+
+            ScanForAliens(at) => {
+                eprint!(
+                    "{}  Pass {:2} - find alien loosers    0‰ {} ",
+                    signature,
+                    pass,
+                    fmt_human(db.len(), 0)
+                );
+                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash, false)?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -765,7 +790,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     }
                     Some(wpos) => {
                         eprint!(" for restart ");
-                        set_checkpoint(&restart_path, RESTART_MATES, wpos.bits as usize)?;
+                        set_checkpoint(&restart_path, RESTART_ALIENS, wpos.bits as usize)?;
                         return Err("terminated via Ctrl-C".to_string());
                     }
                 }
@@ -807,6 +832,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
 const RESTART_MATES: usize = 0xBADDEED;
 const RESTART_UM: usize = 0xDEADBEEF;
+const RESTART_ALIENS: usize = 0xCAFEBABE;
 
 /// Remember the reading position in long words of the um-file
 fn set_checkpoint(path: &str, pattern: usize, at: usize) -> Result<(), String> {
@@ -820,6 +846,8 @@ fn set_checkpoint(path: &str, pattern: usize, at: usize) -> Result<(), String> {
     Ok(())
 }
 
+const DEBUG_POSITION: CPos = CPos { bits: 0xdaa0002103040 };
+
 /// assert_eq!(signature, can.signature())
 fn register_winner(
     signature: Signature,
@@ -829,15 +857,15 @@ fn register_winner(
     db: &mut [u8],
 ) -> Result<usize, String> {
     let canonic = can.clear_trans().canonical(signature);
+    if canonic == DEBUG_POSITION {
+        eprint!(" \x08");
+    }
     let c = canonic.lookup_canonic(db)?;
     let hmv = if canonic.canonic_was_mirrored_h() { umv.mirror_h() } else { umv };
     let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
     let mpos = c.mpos_from_mv(mv);
     if c.state(mv.player()) == DRAW {
-        if c == DEBUG_POSITION {
-            eprint!("!register_new_winner!");
-        }
-        c.with_state_for(mv.player(), WINS).update_canonic(db);
+        c.with_db_state_for(mv.player(), WINS, db);
         mpos.write_seq(writer).map_err(|ioe| {
             format!(
                 "unexpected error ({}) while writing to {}",
@@ -857,6 +885,7 @@ fn scan_mates_aliens(
     um_writer: &mut BufWriter<File>,
     db: &mut [u8],
     hash: &mut EgtbMap,
+    mate_only: bool,
 ) -> Result<Option<CPos>, String> {
     let mut wins = 0usize;
     let mut loos = 0usize;
@@ -881,17 +910,16 @@ fn scan_mates_aliens(
         'next_player: for player in [BLACK, WHITE] {
             let cp = current.lookup_canonic(db)?;
             if cp == DEBUG_POSITION {
-                eprint!("!scan_mates_aliens!");
+                eprint!(" \x08");
             }
             if cp.state(player) == DRAW {
                 let mut all_successors_can_mate = true;
                 let mut no_moves = true;
-                for (mv, succ) in cp
-                    .move_iterator(player)
-                    .map(|mv| (mv, cp.apply(mv)))
-                    .filter(|(_, c)| c.valid(player.opponent()))
-                {
+                for (succ, mv) in cp.successors(player) {
                     no_moves = false;
+                    if mate_only {
+                        continue 'next_player;
+                    }
                     // is this one of our positions?
                     // if so, let this position remain DRAW
                     // and let the work be done by retrograde analysis
@@ -909,12 +937,8 @@ fn scan_mates_aliens(
                     })?;
                     match succ.state(player.opponent()) {
                         LOST => {
-                            let mpos = cp.mpos_from_mv(mv);
-                            cp.with_state_for(player, WINS).update_canonic(db);
-                            mpos.write_seq(um_writer).map_err(|ioe| {
-                                format!("unexpected error ({}) while writing to {}.um", ioe, signature)
-                            })?;
-                            wins += 1;
+                            let newwin = register_winner(signature, cp, mv, um_writer, db)?;
+                            wins += newwin;
                             continue 'next_player;
                         }
                         WINS => continue, /* with next move */
@@ -936,7 +960,7 @@ fn scan_mates_aliens(
                     } else {
                         loos += 1;
                     }
-                    cp.with_state_for(player, LOST).update_canonic(db);
+                    cp.with_db_state_for(player, LOST, db);
                     // find all moves from same signature (no captures, no promotions) that come here
                     // they all CAN_MATE
                     for (pred, mv) in cp
@@ -1005,19 +1029,14 @@ fn scan_um(
                 }
                 let cpos = mpos.mpos_to_cpos();
                 if cpos == DEBUG_POSITION {
-                    eprint!("!scan_um_winner!");
+                    eprint!(" \x08");
                 }
                 let player = mpos.mpos_player();
                 // loop over potential loosers
-                for (lpos, _lmv) in cpos
-                    .reverse_move_iterator(player)
-                    .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                    .map(|mv| (cpos.unapply(mv, EMPTY), mv))
-                    .filter(|(c, _mv)| c.valid(player.opponent()) && c.signature() == signature)
-                {
+                for (lpos, _lmv) in cpos.predecessors(player) {
                     let can_looser = lpos.clear_trans().canonical(signature);
                     if can_looser == DEBUG_POSITION {
-                        eprint!("!scan_um_looser!");
+                        eprint!(" \x08");
                     }
                     let dbu = can_looser.lookup_canonic(db)?;
                     // is this position unknown yet?
@@ -1056,7 +1075,7 @@ fn scan_um(
                             } // first non can-mate is enough
                         }
                         if all_children_can_mate {
-                            dbu.with_state_for(player.opponent(), LOST).update_canonic(db);
+                            dbu.with_db_state_for(player.opponent(), LOST, db);
                             n_looser += 1;
                             // this may also give rise to new can mates
                             for (canm, umv) in dbu
@@ -1126,25 +1145,11 @@ pub fn debug(args: &[String]) {
 #[derive(Clone)]
 struct Variant(CPos, Vec<Move>);
 
-impl fmt::Debug for Variant {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cpos = self.0;
-        let mvs = &self.1;
-        if mvs.len() > 0 {
-            let pos = cpos.uncompressed(mvs[0].player());
-            f.write_str(&encodeFEN(&pos))?;
-            f.write_str("  ")?;
-            f.write_str(&showMovesSAN(mvs, pos))
-        } else {
-            f.write_str(&format!("{:?}", cpos))
-        }
-        // f.debug_tuple("Variant").field(&self.0).field(&self.1).finish()
-    }
-}
-
 /// command line: rasch win FEN
 pub fn check_win(fen: &str) -> Result<(), String> {
     let pos = decodeFEN(fen)?;
+    let fenfields = fen.split(' ').collect::<Vec<_>>();
+    let halfmoves = usize::from_str_radix(fenfields[5], 10).map_err(|e| format!("{}", e))?;
     let winner = pos.turn();
     let looser = winner.opponent();
     if pos.valid() { Ok(()) } else { Err("invalid position".to_string()) }?;
@@ -1155,32 +1160,102 @@ pub fn check_win(fen: &str) -> Result<(), String> {
     let mv = cpos.find_move(winner, &mut e_hash, &mut m_hash)?;
 
     let mut variants = Vec::new();
-    variants.push(Variant(cpos, vec![mv]));
+    variants.push(Variant(cpos.apply(mv), vec![mv]));
 
     while !variants.is_empty() {
         match variants.pop() {
             None => {}
-            Some(Variant(cpos, mvs)) => {
-                let lost = mvs.iter().fold(cpos, |p, m| p.apply(*m));
+            Some(Variant(lost, mvs)) => {
                 let st = lost.find_state(looser, &mut e_hash)?;
                 if st == LOST { Ok(()) } else { Err("NOT LOST".to_string()) }?;
                 let mut found = 0;
-                for mv in lost.move_iterator(looser) {
-                    let wins = lost.apply(mv);
-                    if wins.valid(winner) {
-                        found += 1;
-                        let mut mvs2 = mvs.clone();
-                        mvs2.push(mv);
-                        let wmv = wins.find_move(winner, &mut e_hash, &mut m_hash)?;
-                        mvs2.push(wmv);
-                        variants.push(Variant(cpos, mvs2));
+                if halfmoves < 2 || mvs.len() < halfmoves {
+                    for mv in lost.move_iterator(looser) {
+                        let wins = lost.apply(mv);
+                        if wins.valid(winner) {
+                            found += 1;
+                            let mut mvs2 = mvs.clone();
+                            mvs2.push(mv);
+                            let wmv = wins.find_move(winner, &mut e_hash, &mut m_hash)?;
+                            mvs2.push(wmv);
+                            variants.push(Variant(wins.apply(wmv), mvs2));
+                        }
                     }
-                }
-                if found == 0 {
-                    println!("{:?}", Variant(cpos, mvs.clone()));
+                    if found == 0 {
+                        println!("{} mate", showMovesSAN(&mvs, pos));
+                    }
+                } else {
+                    println!("{}", showMovesSAN(&mvs, pos),);
                 }
             }
         }
     }
     Ok(())
+}
+
+pub fn check_sane(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let last_addr = signature.last().canonic_addr();
+
+    eprint!("{} looking for insane mate moves  ", signature);
+    progress(0, 0);
+    let mut n_item = 0;
+    let mut n_insane = 0;
+
+    let mut e_hash = HashMap::new();
+    let mut m_hash = HashMap::new();
+
+    let is_mate_pos = |cp: CPos, player| {
+        cp.state(player) == LOST
+            && cp.state(player.opponent()) == INVP
+            && cp.successors(player).next().is_none()
+    };
+
+    for current in signature.first() {
+        n_item += 1;
+        if n_item & 0xff_ffff == 1 {
+            progress(current.canonic_addr().0, last_addr.0);
+        }
+        for player in [BLACK, WHITE] {
+            let cp = current.find_canonic(signature, &mut e_hash)?;
+            if is_mate_pos(cp, player) {
+                for (pred, mv) in cp.predecessors(player) {
+                    match pred.find_move(player.opponent(), &mut e_hash, &mut m_hash) {
+                        Ok(back) if back == mv => {}
+                        Ok(back) => {
+                            let other = pred.apply(back).find(&mut e_hash).unwrap_or(pred.apply(back));
+                            let alsomate = is_mate_pos(other, player);
+
+                            if n_insane == 0 && !alsomate {
+                                println!();
+                                println!("    {:?} mate  {:?}", player, cp);
+                                println!(
+                                    "    predecessor {:?}  by {}",
+                                    pred.find(&mut e_hash).unwrap_or(pred),
+                                    mv
+                                );
+                                println!(
+                                    "    leading to  {:?}  by {}  ({})",
+                                    other,
+                                    back,
+                                    if alsomate { "mate" } else { "NOT mate" }
+                                );
+                            }
+                            n_insane += if alsomate { 0 } else { 1 };
+                        }
+                        Err(s) => {
+                            return Err(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    progress(999, 1000);
+    eprintln!(" done.");
+    if n_insane > 0 {
+        Err(format!("{} insane mates", n_insane))
+    } else {
+        Ok(())
+    }
 }

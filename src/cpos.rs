@@ -15,6 +15,7 @@ use std::{
     fs::{File, OpenOptions},
     hash::{Hash, Hasher},
     io::{BufReader, ErrorKind::UnexpectedEof, Read, Seek, SeekFrom, Write},
+    // iter::{Filter, Map},
     slice,
 };
 
@@ -974,6 +975,24 @@ impl CPos {
     /// ```
     pub fn reverse_move_iterator(&self, player: Player) -> CPosReverseMoveIterator {
         CPosReverseMoveIterator::new(*self, player)
+    }
+
+    /// Iterator for all the predecessors of a [CPos] where it is [player]s move, that have the same signature as [CPos].
+    /// This excludes "undoing" [PAWN] promotions and captures as well as "uncapturing" pieces.
+    pub fn predecessors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
+        let signature = self.signature();
+        self.reverse_move_iterator(player)
+            .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
+            .map(|mv| (self.unapply(mv, EMPTY), mv))
+            .filter(move |(c, _)| c.valid(player.opponent()) && c.signature() == signature)
+    }
+
+    /// Iterator for all the successors of a [CPos] assuming it is [player]s move.
+    /// All sorts of moves are considered, so beware of successors with different signatures.
+    pub fn successors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
+        self.move_iterator(player)
+            .map(|mv| (self.apply(mv), mv))
+            .filter(move |(c, _)| c.valid(player.opponent()))
     }
 
     /// Get the player for piece1, piece2, piece3 or piece4
@@ -2039,7 +2058,7 @@ impl CPos {
     }
 
     /// Constructs a nibble from the state information and puts it in an array.
-    pub fn update_canonic(&self, array: &mut [u8]) {
+    pub fn set_canonic(&self, array: &mut [u8]) {
         let addr = self.canonic_addr();
         if addr.bytes() > array.len() {
             panic!("array length {} < {} for {:?}", array.len(), addr.bytes(), self);
@@ -2047,6 +2066,20 @@ impl CPos {
         let ws = self.state(WHITE) as u8;
         let bs = self.state(BLACK) as u8;
         addr.set_nibble(array, (ws << 2) | bs);
+    }
+
+    /// like [CPos::with_state_for] but updates it also in the database
+    /// The [CPos] must be canonic.
+    pub fn with_db_state_for(&self, player: Player, state: CPosState, array: &mut [u8]) -> CPos {
+        let addr = self.canonic_addr();
+        if addr.bytes() > array.len() {
+            panic!("array length {} < {} for {:?}", array.len(), addr.bytes(), self);
+        }
+        let nibble = addr.get_nibble(array);
+        let ws = if player == WHITE { state as u8 } else { nibble >> 2 };
+        let bs = if player == BLACK { state as u8 } else { nibble & 3 };
+        addr.set_nibble(array, (ws << 2) | bs);
+        self.with_state(CPosState::from(ws), CPosState::from(bs))
     }
 
     /// A variant of `find` where the searched `CPos` is guaranteed canonical.

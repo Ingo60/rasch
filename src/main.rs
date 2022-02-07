@@ -145,6 +145,14 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    } else if argv[1] == "sane" && argv.len() >= 3 {
+        match E::check_sane(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1);
+            }
+        }
     } else if argv[1].starts_with("play") && argv.len() == 3 {
         match E::play(&String::from(argv[2].clone())) {
             Ok(_) => {}
