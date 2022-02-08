@@ -281,6 +281,31 @@ pub fn byte_ro_map(path: &str) -> Result<(Mmap, &[u8]), String> {
     Ok((map, array))
 }
 
+/// Map the given path as read-only unsigned short slice into memory
+pub fn short_ro_map(path: &str) -> Result<(Mmap, &[u16]), String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| format!("Can't read {} ({})", path, e))?;
+    let map = unsafe { Mmap::map(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+    let array = unsafe { slice::from_raw_parts(map.as_ptr().cast::<u16>(), map.len() / 2) };
+    Ok((map, array))
+}
+
+/// Map the given path as read/write CPos slice into memory.
+///
+/// **Note**: when the returned map goes out of scope, the slice will become unusable!
+pub fn short_rw_map(path: &str) -> Result<(MmapMut, &mut [u16]), String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("Can't read/write {} ({})", path, e))?;
+    let mut map = unsafe { MmapMut::map_mut(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
+    let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr().cast::<u16>(), map.len() / 2) };
+    Ok((map, array))
+}
+
 /// Map the given path as read/write CPos slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!

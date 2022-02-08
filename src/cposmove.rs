@@ -118,6 +118,20 @@ pub struct CPosReverseMoveIterator {
     sources: BitSet,
 }
 
+/// Like [CPosReverseMoveIterator], but doesn't generate [PAWN] promotions or captures.
+///
+/// Put differently, when results are used with [CPos::unapply_nc], the positions obtained
+/// have the same signature as the iterated over position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CPosSimpleReverseMoveIterator {
+    cpos: CPos,
+    player: Player,
+    index: u64,
+    whites: BitSet,
+    occupied: BitSet,
+    sources: BitSet,
+}
+
 impl CPosMoveIterator {
     pub fn new(p: CPos, player: Player) -> CPosMoveIterator {
         let mut this = CPosMoveIterator {
@@ -183,84 +197,6 @@ impl CPosMoveIterator {
     /// tell if all fields in given bitset are empty
     pub fn all_empty(&self, fields: BitSet) -> bool {
         self.occupied.intersection(fields).null()
-    }
-
-    /// return true iff the opponent is not in check
-    ///
-    /// See also `CPos::valid`
-    pub fn valid(&self) -> bool {
-        let his_king = self.cpos.players_king(self.player.opponent());
-        let my_king = self.cpos.players_king(self.player);
-        if mdb::kingTargets(my_king).member(his_king) {
-            false
-        } else {
-            for u in 0..4 {
-                if self.cpos.player_at(u) == self.player {
-                    let from = self.cpos.field_at(u);
-                    match self.cpos.piece_at(u) {
-                        EMPTY => return true, /* no attacker can be found further left */
-                        QUEEN => {
-                            if self.all_empty(mdb::canBishop(from, his_king))
-                                || self.all_empty(mdb::canRook(from, his_king))
-                            {
-                                return false;
-                            }
-                        }
-                        ROOK => {
-                            if self.all_empty(mdb::canRook(from, his_king)) {
-                                return false;
-                            }
-                        }
-                        BISHOP => {
-                            if self.all_empty(mdb::canBishop(from, his_king)) {
-                                return false;
-                            }
-                        }
-                        KNIGHT => {
-                            if mdb::knightTargets(from).member(his_king) {
-                                return false;
-                            }
-                        }
-                        PAWN => {
-                            if self.player == BLACK && mdb::targetOfBlackPawns(his_king).member(from)
-                                || self.player == WHITE && mdb::targetOfWhitePawns(his_king).member(from)
-                            {
-                                return false;
-                            }
-                        }
-                        _ => panic!(""),
-                    }
-                }
-            }
-            true
-        }
-    }
-
-    /// Apply a move to the contained CPos and return a new one.
-    ///
-    /// May be a bit clumsy. See also `CPos::apply()`.
-    pub fn apply(&self, mv: Move) -> CPos {
-        let mut new = self.cpos;
-        if self.occupied_by_him().member(mv.to()) {
-            match new.piece_index_by_field(mv.to()) {
-                Ok(u) => new = new.clear_piece(u),
-                Err(KING) => panic!("attempt to capture KING"),
-                Err(x) => panic!("occupied field {} is {:?}", mv.to(), x),
-            }
-        }
-        match self.cpos.piece_index_by_field(mv.from()) {
-            Ok(u) => {
-                if mv.promote() != EMPTY {
-                    new = new.change_piece(u, mv.promote())
-                }
-                new = new.move_piece(u, mv.to());
-            }
-            Err(KING) => {
-                new = new.move_king(mv.player(), mv.to());
-            }
-            Err(x) => panic!("attempt to move from {:?} field {}", x, mv.from()),
-        }
-        new.ordered()
     }
 }
 
@@ -560,6 +496,158 @@ impl Iterator for CPosReverseMoveIterator {
     }
 }
 
+impl CPosSimpleReverseMoveIterator {
+    pub fn new(p: CPos, player: Player) -> CPosSimpleReverseMoveIterator {
+        let mut this = CPosSimpleReverseMoveIterator {
+            cpos: p,
+            player,
+            whites: BitSet::empty(),
+            occupied: BitSet::empty(),
+            index: 4,
+            sources: BitSet::empty(),
+        };
+        let wkbit = bit(p.white_king());
+        this.occupied = this.occupied + wkbit;
+        this.whites = this.whites + wkbit;
+        this.occupied = this.occupied + bit(p.black_king());
+
+        // Fill whites and occupieds
+        for u in 0..4 {
+            let piece = p.piece_at(u);
+            if piece != EMPTY {
+                let f = p.field_at(u);
+                let fbs = bit(f);
+                this.occupied = this.occupied + fbs;
+                if p.player_at(u) == WHITE {
+                    this.whites = this.whites + fbs;
+                }
+            }
+        }
+
+        for u in 0..4 {
+            if p.piece_at(u) != EMPTY && p.player_at(u) != this.player {
+                this.index = u;
+                break;
+            }
+        }
+        this.sources = if this.index < 4 {
+            piece_sources(
+                p.piece_at(this.index),
+                this.player.opponent(),
+                p.field_at(this.index),
+            )
+        } else {
+            piece_sources(
+                KING,
+                this.player.opponent(),
+                p.players_king(this.player.opponent()),
+            )
+        };
+
+        this
+    }
+
+    /// set of fields occupied by player
+    pub fn occupied_by_player(&self) -> BitSet {
+        if self.player == WHITE {
+            self.whites
+        } else {
+            self.occupied - self.whites
+        }
+    }
+
+    /// set of fields occupied by opponent
+    pub fn occupied_by_opponent(&self) -> BitSet {
+        if self.player == WHITE {
+            self.occupied - self.whites
+        } else {
+            self.whites
+        }
+    }
+
+    /// set of empty fields in this position
+    pub fn empty(&self) -> BitSet {
+        !self.occupied
+    }
+
+    /// tell if all fields in given bitset are empty
+    pub fn all_empty(&self, fields: BitSet) -> bool {
+        self.occupied.intersection(fields).null()
+    }
+}
+
+impl Iterator for CPosSimpleReverseMoveIterator {
+    type Item = Move;
+    /// Give us the next **raw** backwards move. Must be checked for validity.
+    fn next(&mut self) -> Option<Self::Item> {
+        let me = self.player.opponent();
+        while self.index < 5 {
+            match self.sources.next() {
+                None => {
+                    // continue with next piece, if any, or the king
+                    self.index += 1;
+                    if self.index < 4 {
+                        let pc = self.cpos.piece_at(self.index);
+                        if pc != EMPTY && self.cpos.player_at(self.index) == me {
+                            // found next piece
+                            self.sources = piece_sources(pc, me, self.cpos.field_at(self.index));
+                        };
+                    } else if self.index == 4 {
+                        self.sources = piece_sources(KING, me, self.cpos.players_king(me));
+                    } else
+                    /* if self.index > 4 */
+                    {
+                        return None;
+                    };
+                }
+                Some(from) if self.occupied.member(from) => {}
+                Some(from) => {
+                    let to = if self.index < 4 {
+                        self.cpos.field_at(self.index)
+                    } else {
+                        self.cpos.players_king(me)
+                    };
+                    let piece = if self.index < 4 { self.cpos.piece_at(self.index) } else { KING };
+                    let mv = Move::new(me, piece, EMPTY, from, to);
+                    match piece {
+                        PAWN => {
+                            if !mv.is_capture_by_pawn() {
+                                let es = match me {
+                                    WHITE => mdb::canWhitePawn(from, to) - bit(to),
+                                    BLACK => mdb::canBlackPawn(from, to) - bit(to),
+                                };
+
+                                if self.all_empty(es) {
+                                    return Some(mv);
+                                }
+                            }
+                        }
+                        BISHOP => {
+                            if self.all_empty(mdb::canBishop(from, to)) {
+                                return Some(mv);
+                            }
+                        }
+                        ROOK => {
+                            if self.all_empty(mdb::canRook(from, to)) {
+                                return Some(mv);
+                            }
+                        }
+                        QUEEN => {
+                            if self.all_empty(mdb::canBishop(from, to))
+                                || self.all_empty(mdb::canRook(from, to))
+                            {
+                                return Some(mv);
+                            }
+                        }
+                        _other => return Some(mv),
+                    };
+                }
+            }
+        }
+        None
+    }
+}
+
 pub fn test1(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let egtb_path = mk_egtb_path(signature, "egtb");
@@ -692,7 +780,7 @@ pub fn test3(pos: &Position) -> Result<(), String> {
     println!();
     for mv in cpos.reverse_move_iterator(pos.turn()) {
         let unc = if mv.is_capture_by_pawn() { QUEEN } else { EMPTY };
-        let prev = cpos.unapply(mv, unc);
+        let prev = cpos.unapply_general(mv, unc);
         let v = prev.valid(pos.turn().opponent());
         println!("unapplying {} yields {:?} (valid:{})", mv, prev, v);
         if v {

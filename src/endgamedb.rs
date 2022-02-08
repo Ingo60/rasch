@@ -107,7 +107,7 @@
 //!
 
 use super::{
-    basic::{CPosState, Move, Piece, Player},
+    basic::{CPosState, Move, Player},
     cpos::{CPos, EgtbMap, Mirrorable, MovesMap, Signature},
     cposio::{
         byte_anon_map, byte_ro_map, byte_rw_map, cpos_append_writer, cpos_create_writer, cpos_file_size,
@@ -123,7 +123,6 @@ use super::{
 // use super::position as P;
 
 use CPosState::*;
-use Piece::*;
 use Player::*;
 
 use std::{
@@ -973,10 +972,16 @@ fn scan_mates_aliens(
     }
 
     eprintln!("done.");
-    if wins + mates + loos + stalemates > 0 {
+    if mates > 0 {
         eprintln!("    Found {} MATE positions.", formatted_sz(mates),);
+    }
+    if stalemates > 0 {
         eprintln!("    Found {} STALEMATE positions.", formatted_sz(stalemates),);
+    }
+    if wins > 0 {
         eprintln!("    Found {} new WINS positions.", formatted_sz(wins));
+    }
+    if loos > 0 {
         eprintln!("    Found {} new LOST positions.", formatted_sz(loos));
     }
     Ok(None)
@@ -1203,7 +1208,7 @@ pub fn check_sane(sig: &str) -> Result<(), String> {
 
     for current in signature.first() {
         n_item += 1;
-        if n_item & 0xff_ffff == 1 {
+        if n_item & 0x7f_ffff == 1 {
             progress(current.canonic_addr().0, last_addr.0);
         }
         for player in [BLACK, WHITE] {
