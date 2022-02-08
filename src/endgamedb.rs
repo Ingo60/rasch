@@ -963,12 +963,7 @@ fn scan_mates_aliens(
                     cp.with_db_state_for(player, LOST, db);
                     // find all moves from same signature (no captures, no promotions) that come here
                     // they all CAN_MATE
-                    for (pred, mv) in cp
-                        .reverse_move_iterator(player)
-                        .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                        .map(|mv| (cp.unapply(mv, EMPTY), mv))
-                        .filter(|(c, _)| c.valid(player.opponent()) && c.signature() == signature)
-                    {
+                    for (pred, mv) in cp.predecessors(player) {
                         let found = register_winner(signature, pred, mv, um_writer, db)?;
                         wins += found;
                     }
@@ -1078,12 +1073,7 @@ fn scan_um(
                             dbu.with_db_state_for(player.opponent(), LOST, db);
                             n_looser += 1;
                             // this may also give rise to new can mates
-                            for (canm, umv) in dbu
-                                .reverse_move_iterator(player.opponent())
-                                .filter(|mv| !mv.is_capture_by_pawn() && !mv.is_promotion())
-                                .map(|mv| (dbu.unapply(mv, EMPTY), mv))
-                                .filter(|(c, _mv)| c.valid(player) && c.signature() == signature)
-                            {
+                            for (canm, umv) in dbu.predecessors(player.opponent()) {
                                 let w = register_winner(signature, canm, umv, writer, db)?;
                                 n_winner += w;
                             }
