@@ -108,10 +108,10 @@
 
 use super::{
     basic::{CPosState, Move, Player},
-    cpos::{CPos, EgtbMap, Mirrorable, MovesMap, Signature},
+    cpos::{CPos, DtmMap, EgtbMap, Mirrorable, MovesMap, Signature},
     cposio::{
         byte_anon_map, byte_ro_map, byte_rw_map, cpos_append_writer, cpos_create_writer, cpos_file_size,
-        cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, CPosReader,
+        cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, short_ro_map, short_rw_map, CPosReader,
     },
     fen::{decodeFEN, encodeFEN},
     position::{showMovesSAN, Position},
@@ -195,7 +195,7 @@ fn make_work(signature: Signature, pass: usize, work_path: &str) -> Result<MakeS
     progress(0, 0);
 
     let map_size = last.canonic_addr().bytes();
-    let (_map, array) = byte_anon_map(&map_size)?;
+    let (_map, array) = byte_anon_map(map_size)?;
 
     // set all flags to INVP
     array.fill(0xff);
@@ -247,6 +247,7 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
     }?;
     let mut ehash: EgtbMap = HashMap::new();
     let mut mhash: MovesMap = HashMap::new();
+    let mut dhash: DtmMap = HashMap::new();
     let sig = cpos.signature();
     println!("# {} is canonic {}", sig, sig.is_canonic());
     let rpos = cpos.find(&mut ehash)?;
@@ -290,10 +291,49 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
             );
             Ok(mv)
         }
-        DRAW | LOST => {
+        LOST => {
+            if rpos.successors(canonic_player).next().is_none() {
+                println!("# this looks like mate");
+                Err("MATE".to_string())
+            } else {
+                let (dtm, rmv) = rpos
+                    .successors(canonic_player)
+                    .map(|(succ, mv)| {
+                        (
+                            succ.find_dtm(canonic_player.opponent(), &mut ehash, &mut mhash, &mut dhash)
+                                .or::<String>(Ok(0u16))
+                                .unwrap(),
+                            mv,
+                        )
+                    })
+                    .reduce(|(dtm1, mv1), (dtm2, mv2)| if dtm1 > dtm2 { (dtm1, mv1) } else { (dtm2, mv2) })
+                    .unwrap();
+                let cmv = if rpos.canonic_has_bw_switched() {
+                    Move::new(
+                        rmv.player().opponent(),
+                        rmv.piece(),
+                        rmv.promote(),
+                        rmv.from(),
+                        rmv.to(),
+                    )
+                } else {
+                    rmv
+                };
+                let hmv = if rpos.canonic_was_mirrored_h() { cmv.mirror_h() } else { cmv };
+                let mv = if rpos.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+                println!(
+                    "# {:?} to move cannot avoid mate, but makes it hard with {} DTM {}",
+                    pos.turn(),
+                    mv.showSAN(*pos),
+                    dtm,
+                );
+                Ok(mv)
+            }
+        }
+        DRAW => {
             let moves = pos.moves();
             if moves.is_empty() {
-                let what = if s == LOST { "mate" } else { "stalemate" };
+                let what = "stalemate";
                 println!("# this looks like {}", what);
                 Err(what.to_uppercase())
             } else {
@@ -506,6 +546,10 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
     let mut poss_missing = 0usize;
     let mut cad_both = 0usize;
     let mut cad_example = c0;
+    let mut mates_white = 0usize;
+    let mut mates_black = 0usize;
+    let mut mate_wexample = c0;
+    let mut mate_bexample = c0;
     let last = signature.last();
     eprint!(
         "{}  checking {} positions in {} ",
@@ -552,6 +596,20 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
         if c.state(BLACK) == DRAW && c.state(WHITE) == DRAW {
             cad_both += 1;
             cad_example = c;
+        }
+
+        if c.state(BLACK) == LOST && c.state(WHITE) == INVP && c.successors(BLACK).next().is_none() {
+            if mates_black == 0 {
+                mate_bexample = c;
+            }
+            mates_black += 1;
+        }
+
+        if c.state(WHITE) == LOST && c.state(BLACK) == INVP && c.successors(WHITE).next().is_none() {
+            if mates_white == 0 {
+                mate_wexample = c;
+            }
+            mates_white += 1;
         }
 
         for p in [BLACK, WHITE] {
@@ -602,6 +660,20 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
             encodeFEN(&cad_example.uncompressed(BLACK))
         );
     }
+    if mates_white > 0 {
+        eprintln!(
+            "{:>12} white positions with status MATE   for example {}",
+            formatted_sz(mates_white),
+            encodeFEN(&mate_wexample.uncompressed(WHITE))
+        );
+    }
+    if mates_black > 0 {
+        eprintln!(
+            "{:>12} black positions with status MATE   for example {}",
+            formatted_sz(mates_black),
+            encodeFEN(&mate_bexample.uncompressed(BLACK))
+        );
+    }
     eprintln!("{:>12} positions total", formatted_sz(total));
     if moves_missing > 0 {
         eprintln!("{:>12} moves are missing", formatted_sz(moves_missing));
@@ -639,7 +711,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
     let mut pass = 0;
     let mut um_writer = cpos_append_writer("/dev/null")?;
-    let (mut map, mut db) = byte_anon_map(&1)?;
+    let (mut map, mut db) = byte_anon_map(1)?;
     let mut ehash: EgtbMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
@@ -685,7 +757,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
             WriteEgtb => {
                 eprintln!("{}  Pass {:2} - finishing {}", signature, pass, egtb_path);
                 std::mem::drop(map);
-                let (xmap, xdb) = byte_anon_map(&1)?;
+                let (xmap, xdb) = byte_anon_map(1)?;
                 map = xmap;
                 db = xdb;
                 rename(Path::new(&work_path), Path::new(&egtb_path))
@@ -1098,6 +1170,25 @@ fn scan_um(
 /// (as the vscode debugger displays only raw decimal values)
 pub fn debug(args: &[String]) {
     let mut w = 0;
+    let mut e_hash = HashMap::new();
+    let mut m_hash = HashMap::new();
+    let mut d_hash = HashMap::new();
+
+    let decode_pos = |s: &str| {
+        if s.starts_with("0x") {
+            CPos { bits: u64::from_str_radix(&s[2..], 16).unwrap_or_default() }
+        } else if s.contains('/') {
+            match decodeFEN(s) {
+                Ok(pos) => pos.compressed(),
+                Err(s) => {
+                    eprintln!("Warning: {}", s);
+                    CPos { bits: 0 }
+                }
+            }
+        } else {
+            CPos { bits: u64::from_str_radix(s, 10).unwrap_or_default() }
+        }
+    };
 
     while w < args.len() {
         match args[w].as_str() {
@@ -1115,18 +1206,49 @@ pub fn debug(args: &[String]) {
                 w += 2;
             }
             "cpos" => {
-                let cpos = CPos { bits: u64::from_str_radix(args[w + 1].as_str(), 10).unwrap_or_default() };
-                eprintln!("cpos  {}  0x{:016x}  {:?}", cpos.signature(), cpos.bits, cpos);
+                let cpos = decode_pos(&args[w + 1]);
+                eprintln!("cpos  {}  0x{:016x}  {:?} ", cpos.signature(), cpos.bits, cpos);
                 w += 2;
             }
             "mpos" => {
-                let mpos = CPos { bits: u64::from_str_radix(args[w + 1].as_str(), 10).unwrap_or_default() };
+                let mpos = decode_pos(&args[w + 1]);
                 eprintln!(
-                    "cpos  {}  0x{:016x}  {}",
+                    "mpos  {}  0x{:016x}  {}",
                     mpos.signature(),
                     mpos.bits,
                     mpos.mpos_debug()
                 );
+                let cpos = mpos.mpos_to_cpos();
+                let succ = cpos.apply(cpos.mv_from_mpos(mpos)).find(&mut e_hash).unwrap();
+                eprintln!("succ  {}  0x{:016x}  {:?} ", succ.signature(), succ.bits, succ);
+                w += 2;
+            }
+            "dtm" => {
+                let cpos = decode_pos(&args[w + 1]);
+                match cpos.find_state(WHITE, &mut e_hash) {
+                    Err(s) => eprintln!("{}", s),
+                    Ok(ws) => match cpos.find_state(BLACK, &mut e_hash) {
+                        Err(s) => eprintln!("{}", s),
+                        Ok(bs) => {
+                            let xpos = cpos.with_state(ws, bs);
+                            let wdtm = xpos
+                                .find_dtm(WHITE, &mut e_hash, &mut m_hash, &mut d_hash)
+                                .map_err(|_| "NO DTM".to_string());
+                            let bdtm = xpos
+                                .find_dtm(BLACK, &mut e_hash, &mut m_hash, &mut d_hash)
+                                .map_err(|_| "NO DTM".to_string());
+                            eprintln!(
+                                "cpos  {}  0x{:016x}  {:?}  DTM(w) {:?} DTM(b) {:?}",
+                                xpos.signature(),
+                                xpos.bits,
+                                xpos,
+                                wdtm,
+                                bdtm
+                            );
+                        }
+                    },
+                }
+
                 w += 2;
             }
             bad => {
@@ -1188,7 +1310,7 @@ pub fn check_win(fen: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn check_sane(sig: &str) -> Result<(), String> {
+pub fn check_sane_mates(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let last_addr = signature.last().canonic_addr();
 
@@ -1253,4 +1375,331 @@ pub fn check_sane(sig: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+pub fn check_sane_via_lost(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let last_addr = signature.last().canonic_addr();
+
+    eprint!("{} looking for insane winning moves via lost ", signature);
+    progress(0, 0);
+    let mut n_item = 0usize;
+    let mut n_insane = 0usize;
+    let mut n_diffdtm = 0usize;
+
+    let mut e_hash = HashMap::new();
+    let mut m_hash = HashMap::new();
+    let mut d_hash = HashMap::new();
+
+    for current in signature.first() {
+        n_item += 1;
+        if n_item & 0x0f_ffff == 1 {
+            progress(current.canonic_addr().0, last_addr.0);
+        }
+        for player in [BLACK, WHITE] {
+            let cp = current.find_canonic(signature, &mut e_hash)?;
+            if cp.state(player) == LOST {
+                let cp_dtm = cp.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
+                for (pred, mv) in cp.predecessors(player) {
+                    match pred.find_move(player.opponent(), &mut e_hash, &mut m_hash) {
+                        Ok(back) if back == mv => {
+                            let pred_dtm =
+                                pred.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
+                            if pred_dtm != cp_dtm + 1 {
+                                if n_diffdtm == 0 {
+                                    println!();
+                                    println!("    {:?} lost  {:?}  DTM {}", player, cp, cp_dtm);
+                                    println!(
+                                        "    predecessor {:?}  by {}  DTM {} (should be {})",
+                                        pred.find(&mut e_hash).unwrap_or(pred),
+                                        mv,
+                                        pred_dtm,
+                                        cp_dtm + 1,
+                                    );
+                                }
+                                n_diffdtm += 1;
+                            }
+                        }
+                        Ok(back) => {
+                            let other = pred.apply(back).find(&mut e_hash).unwrap_or(pred.apply(back));
+                            let other_dtm = other.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
+
+                            if other_dtm > cp_dtm {
+                                if n_insane < 10 {
+                                    println!();
+                                    println!("    {:?} lost  {:?}  DTM {}", player, cp, cp_dtm);
+                                    println!(
+                                        "    predecessor {:?}  by {}",
+                                        pred.find(&mut e_hash).unwrap_or(pred),
+                                        mv
+                                    );
+                                    println!("    leading to  {:?}  by {} DTM {}", other, back, other_dtm);
+                                }
+                                n_insane += 1;
+                            }
+                        }
+                        Err(s) => {
+                            return Err(s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    progress(999, 1000);
+    eprintln!(" done.");
+    if n_insane > 0 || n_diffdtm > 0 {
+        Err(format!("{} insane wins, {} diff dtn", n_insane, n_diffdtm))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn check_sane_via_moves(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let mut e_hash = HashMap::new();
+    let mut m_hash = HashMap::new();
+    let mut d_hash = HashMap::new();
+
+    // let us access the moves array
+    CPos::moves_mmap(signature, &mut m_hash)?;
+    let mdb = m_hash.get(&signature).unwrap().1;
+
+    eprint!("{} looking for insane winning moves via moves ", signature);
+    progress(0, 0);
+    let mut n_insane = 0usize;
+
+    for n_item in 0..mdb.len() {
+        if n_item & 0x3_ffff == 0 {
+            progress(n_item, mdb.len());
+        }
+        let mpos = mdb[n_item];
+        let winner = mpos.mpos_player();
+        let cpos = mpos.mpos_to_cpos().find_canonic(signature, &mut e_hash)?;
+        let cpos_dtm = cpos
+            .find_dtm(winner, &mut e_hash, &mut m_hash, &mut d_hash)
+            .map_err(|e| {
+                eprint!(" \x08");
+                e
+            })?;
+        let target_pos = cpos.apply(cpos.mv_from_mpos(mpos));
+        if target_pos.signature() != signature {
+            continue;
+        }
+        let target_dtm = target_pos
+            .find_dtm(winner.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)
+            .map_err(|e| {
+                eprint!(" \x08");
+                e
+            })?;
+        let mut better_pos = target_pos;
+        let mut better_mv = cpos.mv_from_mpos(mpos);
+        let mut better_dtm = target_dtm;
+        for (lost, mv) in cpos.successors(winner) {
+            if lost.find_state(winner.opponent(), &mut e_hash)? != LOST {
+                continue;
+            }
+            let dtm = lost
+                .find_dtm(winner.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)
+                .map_err(|e| {
+                    eprint!(" \x08");
+                    e
+                })?;
+            if dtm < better_dtm {
+                better_pos = lost;
+                better_mv = mv;
+                better_dtm = dtm;
+            }
+        }
+        if better_dtm < target_dtm {
+            if n_insane < 10 {
+                eprintln!();
+                eprintln!("    {:?} winner  {:?}  DTM {}", winner, cpos, cpos_dtm);
+                eprintln!(
+                    "    reaches       {:?}  DTM {} by {}",
+                    target_pos,
+                    target_dtm,
+                    cpos.mv_from_mpos(mpos)
+                );
+                eprintln!(
+                    "    could be      {:?}  DTM {} by {}",
+                    better_pos, better_dtm, better_mv
+                );
+            }
+            n_insane += 1;
+        }
+    }
+    progress(999, 1000);
+    eprintln!(" done.");
+    if n_insane > 0 {
+        Err(format!("{} insane mates", n_insane))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn dtm_command(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    let dtm_path = mk_egtb_path(signature, "dtm");
+    let path_dtm = Path::new(&dtm_path);
+    let remove_on_error = !path_dtm.is_file();
+    match dtm_run(signature, (&dtm_path).to_string()) {
+        Ok(()) => Ok(()),
+        Err(s) => {
+            if remove_on_error {
+                remove_file(path_dtm).unwrap_or_default();
+            };
+            Err(s)
+        }
+    }
+}
+
+pub fn dtm_run(signature: Signature, dtm_path: String) -> Result<(), String> {
+    let mut m_hash = HashMap::new();
+    let mut d_hash = HashMap::new();
+    let mut e_hash = HashMap::new();
+    CPos::moves_mmap(signature, &mut m_hash)?;
+    let mdb = m_hash.get(&signature).unwrap().1;
+
+    if !Path::new(&dtm_path).is_file() {
+        dtm_init(signature, &dtm_path, &mut m_hash)?;
+        let (_map, ddb) = short_rw_map(&dtm_path)?;
+        eprint!("{}  find DTM 1 and alien DTMs ", signature);
+        progress(0, 0);
+        dtm_mate_aliens(signature, ddb, &mut d_hash, &mut m_hash, &mut e_hash)?;
+    }
+
+    if Path::new(&dtm_path).is_file() {
+        let (_map, ddb) = short_ro_map(&dtm_path)?;
+        let mut vx: Vec<usize> = (0..mdb.len()).collect();
+        vx.sort_unstable_by(|a, b| ddb[*b].cmp(&ddb[*a]));
+        for top in 0..10.min(vx.len()) {
+            let index = vx[top];
+            let mpos = mdb[index];
+            println!(
+                "    {:>6}  {}",
+                ddb[index],
+                encodeFEN(&mpos.mpos_to_cpos().uncompressed(mpos.mpos_player()))
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn dtm_init(signature: Signature, dtm_path: &str, m_hash: &mut MovesMap) -> Result<(), String> {
+    CPos::moves_mmap(signature, m_hash)?;
+    // the unwrap is justified because of the CPos::moves_mmap
+    let mdb = m_hash.get(&signature).unwrap().1;
+    let (_map, ddb) = byte_anon_map(&mdb.len() * 2)?;
+    ddb.fill(0xff);
+    let mut writer = cpos_create_writer(dtm_path)?;
+    writer
+        .write_all(ddb)
+        .map_err(|e| format!("write error on {} ({})", dtm_path, e))
+}
+
+/// compute dtm of won position
+pub fn compute_wins_dtm(
+    signature: Signature,
+    wins: CPos,
+    winner: Player,
+    ddb: &mut [u16],
+    d_hash: &mut DtmMap,
+    m_hash: &mut MovesMap,
+    e_hash: &mut EgtbMap,
+) -> Result<u16, String> {
+    let mv = wins.find_move(winner, e_hash, m_hash)?;
+    let looser = wins.apply(mv).find(e_hash)?;
+    compute_lost_dtm(signature, looser, winner.opponent(), ddb, d_hash, m_hash, e_hash).map(|u| u + 1)
+}
+
+/// compute the DTM of a lost position
+pub fn compute_lost_dtm(
+    signature: Signature,
+    lost: CPos,
+    looser: Player,
+    ddb: &mut [u16],
+    d_hash: &mut DtmMap,
+    m_hash: &mut MovesMap,
+    e_hash: &mut EgtbMap,
+) -> Result<u16, String> {
+    let mut lost_dtm = 0;
+    let winner = looser.opponent();
+
+    for (wins, _) in lost.successors(looser) {
+        let w_dtm = if wins.signature() == signature {
+            let wins = wins.find(e_hash)?;
+            let u = wins.find_canonic_mpos_index(signature, winner, m_hash)?;
+            if ddb[u] == 0xffff {
+                ddb[u] = compute_wins_dtm(signature, wins, winner, ddb, d_hash, m_hash, e_hash)?;
+            }
+            ddb[u]
+        } else {
+            wins.find_dtm(winner, e_hash, m_hash, d_hash)?
+        };
+
+        if w_dtm > lost_dtm {
+            lost_dtm = w_dtm;
+        }
+    }
+    Ok(if lost_dtm > 0 { lost_dtm + 1 } else { lost_dtm })
+}
+
+pub fn dtm_mate_aliens(
+    signature: Signature,
+    ddb: &mut [u16],
+    d_hash: &mut DtmMap,
+    m_hash: &mut MovesMap,
+    e_hash: &mut EgtbMap,
+) -> Result<(), String> {
+    // CPos::moves_mmap(signature, m_hash)?;
+    // the unwrap is justified because of the CPos::moves_mmap
+    let mdb = m_hash.get(&signature).unwrap().1;
+    let mut n_done = 0usize;
+    let mut max_dtm = 0u16;
+
+    for item in 0..mdb.len() {
+        if item & 0x3f_ffff == 0 {
+            progress(n_done, mdb.len());
+        }
+        let mpos = mdb[item];
+        let cpos = mpos.mpos_to_cpos().find_canonic(signature, e_hash)?;
+        let winner = mpos.mpos_player();
+        let mv = cpos.mv_from_mpos(mpos);
+        let lost = cpos.apply(mv);
+        let looser_stat = lost.find_state(winner.opponent(), e_hash)?;
+        let winner_stat = lost.find_state(winner, e_hash)?;
+        assert!(looser_stat == LOST); // because it was a winning move
+        if lost.signature() != signature {
+            ddb[item] = 1 + lost.find_dtm(winner.opponent(), e_hash, m_hash, d_hash)?;
+            n_done += 1;
+            max_dtm = max_dtm.max(ddb[item]);
+        } else if winner_stat == INVP && lost.successors(winner.opponent()).next().is_none() {
+            ddb[item] = 1;
+            n_done += 1;
+            max_dtm = max_dtm.max(1);
+        }
+    }
+    progress(n_done, mdb.len());
+    eprintln!("  found {}", n_done);
+
+    eprint!("{}  find subsequent DTM  ", signature);
+    progress(0, 0);
+
+    for item in 0..mdb.len() {
+        if item & 0x3f_ffff == 0 {
+            progress(item, mdb.len());
+        }
+        if ddb[item] < 0xffff {
+            continue;
+        }
+        let mpos = mdb[item];
+        let wins = mpos.mpos_to_cpos().find_canonic(signature, e_hash)?;
+        let winner = mpos.mpos_player();
+        ddb[item] = compute_wins_dtm(signature, wins, winner, ddb, d_hash, m_hash, e_hash)?;
+    }
+    progress(999, 1000);
+    assert!(ddb.iter().find(|x| **x == 0xffff).is_none());
+    eprintln!();
+    Ok(())
 }

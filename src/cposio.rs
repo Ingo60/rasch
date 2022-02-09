@@ -256,7 +256,7 @@ pub fn cpos_rw_file(path: &str) -> Result<File, String> {
 /// Map the given path as read-only CPos slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
-pub fn cpos_ro_map(path: &str) -> Result<(Mmap, &[CPos]), String> {
+pub fn cpos_ro_map<'a>(path: &str) -> Result<(Mmap, &'a [CPos]), String> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -271,7 +271,7 @@ pub fn cpos_ro_map(path: &str) -> Result<(Mmap, &[CPos]), String> {
 /// Map the given path as read-only byte slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
-pub fn byte_ro_map(path: &str) -> Result<(Mmap, &[u8]), String> {
+pub fn byte_ro_map<'a>(path: &str) -> Result<(Mmap, &'a [u8]), String> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -282,7 +282,7 @@ pub fn byte_ro_map(path: &str) -> Result<(Mmap, &[u8]), String> {
 }
 
 /// Map the given path as read-only unsigned short slice into memory
-pub fn short_ro_map(path: &str) -> Result<(Mmap, &[u16]), String> {
+pub fn short_ro_map<'a>(path: &str) -> Result<(Mmap, &'a [u16]), String> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -349,10 +349,9 @@ pub fn cpos_anon_map(n_pos: &usize) -> Result<(MmapMut, &mut [CPos]), String> {
 /// Map the given path as read/write anonymous [u8] slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
-pub fn byte_anon_map(n_bytes: &usize) -> Result<(MmapMut, &mut [u8]), String> {
-    let mut map = /*unsafe*/ { MmapMut::map_anon(*n_bytes) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
-    let start = &mut map[0] as *mut u8;
-    let array = unsafe { slice::from_raw_parts_mut(start, map.len()) };
+pub fn byte_anon_map<'a>(n_bytes: usize) -> Result<(MmapMut, &'a mut [u8]), String> {
+    let mut map = /*unsafe*/ { MmapMut::map_anon(n_bytes) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
+    let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr(), map.len()) };
     Ok((map, array))
 }
 

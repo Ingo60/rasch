@@ -146,7 +146,15 @@ fn main() {
             }
         }
     } else if argv[1] == "sane" && argv.len() >= 3 {
-        match E::check_sane(&argv[2]) {
+        match E::check_sane_via_moves(&argv[2]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1);
+            }
+        }
+    } else if argv[1] == "dtm" && argv.len() >= 3 {
+        match E::dtm_command(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
