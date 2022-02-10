@@ -316,8 +316,7 @@ pub fn cpos_rw_map(path: &str) -> Result<(MmapMut, &mut [CPos]), String> {
         .open(path)
         .map_err(|e| format!("Can't read/write {} ({})", path, e))?;
     let mut map = unsafe { MmapMut::map_mut(&file) }.map_err(|e| format!("Can't mmap {} ({})", path, e))?;
-    let start = &mut map[0] as *mut u8;
-    let array = unsafe { slice::from_raw_parts_mut(start.cast::<CPos>(), map.len() / 8) };
+    let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr().cast::<CPos>(), map.len() / 8) };
     Ok((map, array))
 }
 
@@ -339,10 +338,9 @@ pub fn byte_rw_map(path: &str) -> Result<(MmapMut, &mut [u8]), String> {
 /// Map the given path as read/write CPos anonymous slice into memory.
 ///
 /// **Note**: when the returned map goes out of scope, the slice will become unusable!
-pub fn cpos_anon_map(n_pos: &usize) -> Result<(MmapMut, &mut [CPos]), String> {
+pub fn cpos_anon_map<'a>(n_pos: usize) -> Result<(MmapMut, &'a mut [CPos]), String> {
     let mut map = /*unsafe*/ { MmapMut::map_anon(n_pos * 8) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
-    let start = &mut map[0] as *mut u8;
-    let array = unsafe { slice::from_raw_parts_mut(start.cast::<CPos>(), map.len() / 8) };
+    let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr().cast::<CPos>(), map.len() / 8) };
     Ok((map, array))
 }
 
@@ -352,6 +350,13 @@ pub fn cpos_anon_map(n_pos: &usize) -> Result<(MmapMut, &mut [CPos]), String> {
 pub fn byte_anon_map<'a>(n_bytes: usize) -> Result<(MmapMut, &'a mut [u8]), String> {
     let mut map = /*unsafe*/ { MmapMut::map_anon(n_bytes) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
     let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr(), map.len()) };
+    Ok((map, array))
+}
+
+/// Map the given path as read/write anonymous [u16] slice into memory
+pub fn short_anon_map<'a>(n_short: usize) -> Result<(MmapMut, &'a mut [u16]), String> {
+    let mut map = /*unsafe*/ { MmapMut::map_anon(n_short * 2) }.map_err(|e| format!("Can't mmap anon ({})", e))?;
+    let array = unsafe { slice::from_raw_parts_mut(map.as_mut_ptr().cast::<u16>(), map.len() / 2) };
     Ok((map, array))
 }
 

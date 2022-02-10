@@ -106,14 +106,18 @@
 //! equals the number of CAN_MATE positions found.
 //!
 
+use crate::cposio::cpos_rw_map;
+
 use super::{
     basic::{CPosState, Move, Player},
     cpos::{CPos, DtmMap, EgtbMap, Mirrorable, MovesMap, Signature},
     cposio::{
-        byte_anon_map, byte_ro_map, byte_rw_map, cpos_append_writer, cpos_create_writer, cpos_file_size,
-        cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, short_ro_map, short_rw_map, CPosReader,
+        byte_anon_map, byte_ro_map, byte_rw_map, cpos_anon_map, cpos_append_writer, cpos_create_writer,
+        cpos_file_size, cpos_open_reader, cpos_ro_map, mk_egtb_path, mk_temp_path, short_anon_map,
+        short_ro_map, short_rw_map, CPosReader,
     },
     fen::{decodeFEN, encodeFEN},
+    fieldset::Field,
     position::{showMovesSAN, Position},
     sortegtb::sort_from_to,
     util::*,
@@ -123,6 +127,7 @@ use super::{
 // use super::position as P;
 
 use CPosState::*;
+use Field::*;
 use Player::*;
 
 use std::{
@@ -145,6 +150,9 @@ enum MakeState {
     ScanForMate(CPos),
     ScanForAliens(CPos),
     ScanUM(usize),
+    InitDTM,
+    MakeDTM,
+    OptDTM,
 }
 
 use MakeState::*;
@@ -533,6 +541,7 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let e_path = mk_egtb_path(signature, "egtb");
     let m_path = mk_egtb_path(signature, "moves");
+    let d_path = mk_egtb_path(signature, "dtm");
     let (_map1, edb) = byte_ro_map(&e_path)?;
     let (_map2, mdb) = cpos_ro_map(&m_path)?;
 
@@ -686,6 +695,25 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
         eprintln!("Warning: This is an invalid or yet incomplete end game table.");
         Err("corrupt egtb".to_string())
     } else {
+        // print DTM table if d_path exists
+        match short_ro_map(&d_path) {
+            Ok((_map, ddb)) => {
+                let mut vx: Vec<usize> = (0..ddb.len()).collect();
+                vx.sort_unstable_by(|a, b| ddb[*b].cmp(&ddb[*a]));
+                println!("Top 20 positions with the greatest distance to mate:");
+                for top in 0..20.min(vx.len()) {
+                    let index = vx[top];
+                    let mpos = mdb[index];
+                    println!(
+                        "DTM {:>4}  {}",
+                        ddb[index],
+                        encodeFEN(&mpos.mpos_to_cpos().uncompressed(mpos.mpos_player()))
+                    );
+                }
+            }
+            Err(s) => eprintln!("Warning: {}", s),
+        }
+
         Ok(())
     }
 }
@@ -705,19 +733,29 @@ pub fn gen(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let egtb_path = mk_egtb_path(signature, "egtb");
     let moves_path = mk_egtb_path(signature, "moves");
+    let dtm_path = mk_egtb_path(signature, "dtm");
     let work_path = mk_egtb_path(signature, "work");
     let um_path = mk_temp_path(signature, "um");
     let restart_path = mk_egtb_path(signature, "restart");
 
     let mut pass = 0;
     let mut um_writer = cpos_append_writer("/dev/null")?;
-    let (mut map, mut db) = byte_anon_map(1)?;
-    let mut ehash: EgtbMap = HashMap::new();
+    let (mut e_map, mut edb) = byte_anon_map(1)?;
+    let (mut m_map, mut mdb) = cpos_anon_map(1)?;
+    let (mut d_map, mut ddb) = short_anon_map(1)?;
+
+    let mut e_hash: EgtbMap = HashMap::new();
+    let mut m_hash: MovesMap = HashMap::new();
+    let mut d_hash: DtmMap = HashMap::new();
 
     // initial state depends on the files in the EGTB directory
     let mut state = if Path::new(&egtb_path).is_file() {
         if Path::new(&moves_path).is_file() {
-            Done
+            if Path::new(&dtm_path).is_file() {
+                Done
+            } else {
+                InitDTM
+            }
         } else {
             EgtbPresent
         }
@@ -744,9 +782,67 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
                 std::mem::drop(um_writer);
                 um_writer = cpos_append_writer("/dev/null")?;
-                state = make_moves(signature, &um_path, &moves_path)?;
-                check_egtb(&signature.display())?;
-                check_moves(&signature.display())?;
+                make_moves(signature, &um_path, &moves_path)?;
+                // check_egtb(&signature.display())?;
+                // check_moves(&signature.display())?;
+                remove_file(Path::new(&dtm_path)).unwrap_or_default();
+                state = InitDTM;
+            }
+
+            InitDTM => {
+                eprint!("{}  Pass {:2} - initializing {} ... ", signature, pass, dtm_path);
+                std::mem::drop(m_map);
+                {
+                    let mm = cpos_rw_map(&moves_path)?;
+                    m_map = mm.0;
+                    mdb = mm.1;
+                }
+                dtm_init(&dtm_path, mdb)?;
+                std::mem::drop(d_map);
+                {
+                    let dm = short_rw_map(&dtm_path)?;
+                    d_map = dm.0;
+                    ddb = dm.1;
+                }
+                state = MakeDTM;
+                eprintln!("\x08\x08\x08\x08done");
+            }
+
+            MakeDTM => {
+                eprint!("{}  Pass {:2} - computing distances to mate ", signature, pass);
+                progress(0, 0);
+
+                match dtm_mate_aliens(signature, ddb, mdb, &mut d_hash, &mut m_hash, &mut e_hash) {
+                    Ok(()) => state = OptDTM,
+                    Err(s) => {
+                        std::mem::drop(d_map);
+                        remove_file(Path::new(&dtm_path)).unwrap_or_default();
+                        return Err(s);
+                    }
+                }
+                d_map
+                    .flush()
+                    // .and_then(|_| um_writer.flush())
+                    .map_err(|e| format!("Can't sync {} ({})", dtm_path, e))?;
+            }
+
+            OptDTM => {
+                eprint!("{}  Pass {:2} - optimizing winning moves    ", signature, pass);
+                progress(0, 0);
+
+                let opt_result = dtm_opt(signature, ddb, mdb, &mut e_hash, &mut m_hash, &mut d_hash);
+                m_map
+                    .flush()
+                    .map_err(|e| format!("Can't sync {} ({})", moves_path, e))?;
+                match opt_result {
+                    Ok(n) => state = if n == 0 { Done } else { MakeDTM },
+                    Err(s) => {
+                        std::mem::drop(d_map);
+                        std::mem::drop(m_map);
+                        remove_file(Path::new(&dtm_path)).unwrap_or_default();
+                        return Err(s);
+                    }
+                }
             }
 
             StartUp => {
@@ -756,10 +852,10 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             WriteEgtb => {
                 eprintln!("{}  Pass {:2} - finishing {}", signature, pass, egtb_path);
-                std::mem::drop(map);
+                std::mem::drop(e_map);
                 let (xmap, xdb) = byte_anon_map(1)?;
-                map = xmap;
-                db = xdb;
+                e_map = xmap;
+                edb = xdb;
                 rename(Path::new(&work_path), Path::new(&egtb_path))
                     .map_err(|e| format!("mv {} {} failed ({})", work_path, egtb_path, e))?;
                 state = EgtbPresent;
@@ -768,13 +864,14 @@ pub fn gen(sig: &str) -> Result<(), String> {
             WorkPresent => {
                 eprintln!("{}  Pass {:2} - continuing with {}", signature, pass, work_path);
                 remove_file(&moves_path).unwrap_or_default();
-                std::mem::drop(map);
+                std::mem::drop(e_map);
                 // from this point on, the map is connected to the working file
                 // and um_writer writes to the um file
+                // until EgtbPresent
                 {
                     let (xmap, xdb) = byte_rw_map(&work_path)?;
-                    map = xmap;
-                    db = xdb;
+                    e_map = xmap;
+                    edb = xdb;
 
                     um_writer = if Path::new(&um_path).is_file() {
                         cpos_append_writer(&um_path)
@@ -822,9 +919,9 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     "{}  Pass {:2} - find mates, stalemates & direct winners    0‰ {} ",
                     signature,
                     pass,
-                    fmt_human(db.len(), 0)
+                    fmt_human(edb.len(), 0)
                 );
-                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash, true)?;
+                let result = scan_mates_aliens(signature, at, &mut um_writer, edb, &mut e_hash, true)?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -847,9 +944,9 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     "{}  Pass {:2} - find alien loosers    0‰ {} ",
                     signature,
                     pass,
-                    fmt_human(db.len(), 0)
+                    fmt_human(edb.len(), 0)
                 );
-                let result = scan_mates_aliens(signature, at, &mut um_writer, db, &mut ehash, false)?;
+                let result = scan_mates_aliens(signature, at, &mut um_writer, edb, &mut e_hash, false)?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -873,9 +970,10 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 um_reader
                     .seek(SeekFrom::Start(at as u64 * 8))
                     .map_err(|e| format!("Can't seek {} to index {} ({})", um_path, at, e))?;
-                let r = scan_um(signature, &mut um_reader, &mut um_writer, db, &mut ehash)?;
+                let r = scan_um(signature, &mut um_reader, &mut um_writer, edb, &mut e_hash)?;
                 eprint!("    Flushing {} and {} ... ", work_path, um_path);
-                map.flush()
+                e_map
+                    .flush()
                     .and_then(|_| um_writer.flush())
                     .map_err(|e| format!("Can't sync {} and {} ({})", work_path, um_path, e))?;
                 eprintln!("done.");
@@ -1460,90 +1558,21 @@ pub fn check_sane_via_moves(sig: &str) -> Result<(), String> {
     let mut e_hash = HashMap::new();
     let mut m_hash = HashMap::new();
     let mut d_hash = HashMap::new();
+    let moves_path = mk_egtb_path(signature, "moves");
+    let dtm_path = mk_egtb_path(signature, "dtm");
+    let (_map1, mdb) = cpos_rw_map(&moves_path)?;
+    let (_map2, ddb) = short_rw_map(&dtm_path)?;
 
-    // let us access the moves array
-    CPos::moves_mmap(signature, &mut m_hash)?;
-    let mdb = m_hash.get(&signature).unwrap().1;
-
-    eprint!("{} looking for insane winning moves via moves ", signature);
-    progress(0, 0);
-    let mut n_insane = 0usize;
-
-    for n_item in 0..mdb.len() {
-        if n_item & 0x3_ffff == 0 {
-            progress(n_item, mdb.len());
-        }
-        let mpos = mdb[n_item];
-        let winner = mpos.mpos_player();
-        let cpos = mpos.mpos_to_cpos().find_canonic(signature, &mut e_hash)?;
-        let cpos_dtm = cpos
-            .find_dtm(winner, &mut e_hash, &mut m_hash, &mut d_hash)
-            .map_err(|e| {
-                eprint!(" \x08");
-                e
-            })?;
-        let target_pos = cpos.apply(cpos.mv_from_mpos(mpos));
-        if target_pos.signature() != signature {
-            continue;
-        }
-        let target_dtm = target_pos
-            .find_dtm(winner.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)
-            .map_err(|e| {
-                eprint!(" \x08");
-                e
-            })?;
-        let mut better_pos = target_pos;
-        let mut better_mv = cpos.mv_from_mpos(mpos);
-        let mut better_dtm = target_dtm;
-        for (lost, mv) in cpos.successors(winner) {
-            if lost.find_state(winner.opponent(), &mut e_hash)? != LOST {
-                continue;
-            }
-            let dtm = lost
-                .find_dtm(winner.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)
-                .map_err(|e| {
-                    eprint!(" \x08");
-                    e
-                })?;
-            if dtm < better_dtm {
-                better_pos = lost;
-                better_mv = mv;
-                better_dtm = dtm;
-            }
-        }
-        if better_dtm < target_dtm {
-            if n_insane < 10 {
-                eprintln!();
-                eprintln!("    {:?} winner  {:?}  DTM {}", winner, cpos, cpos_dtm);
-                eprintln!(
-                    "    reaches       {:?}  DTM {} by {}",
-                    target_pos,
-                    target_dtm,
-                    cpos.mv_from_mpos(mpos)
-                );
-                eprintln!(
-                    "    could be      {:?}  DTM {} by {}",
-                    better_pos, better_dtm, better_mv
-                );
-            }
-            n_insane += 1;
-        }
-    }
-    progress(999, 1000);
-    eprintln!(" done.");
-    if n_insane > 0 {
-        Err(format!("{} insane mates", n_insane))
-    } else {
-        Ok(())
-    }
+    dtm_opt(signature, ddb, mdb, &mut e_hash, &mut m_hash, &mut d_hash).map(|_| ())
 }
 
 pub fn dtm_command(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     let dtm_path = mk_egtb_path(signature, "dtm");
+    let moves_path = mk_egtb_path(signature, "moves");
     let path_dtm = Path::new(&dtm_path);
     let remove_on_error = !path_dtm.is_file();
-    match dtm_run(signature, (&dtm_path).to_string()) {
+    match dtm_run(signature, (&dtm_path).to_string(), moves_path) {
         Ok(()) => Ok(()),
         Err(s) => {
             if remove_on_error {
@@ -1554,21 +1583,33 @@ pub fn dtm_command(sig: &str) -> Result<(), String> {
     }
 }
 
-pub fn dtm_run(signature: Signature, dtm_path: String) -> Result<(), String> {
+pub fn dtm_run(signature: Signature, dtm_path: String, moves_path: String) -> Result<(), String> {
     let mut m_hash = HashMap::new();
     let mut d_hash = HashMap::new();
     let mut e_hash = HashMap::new();
-    CPos::moves_mmap(signature, &mut m_hash)?;
-    let mdb = m_hash.get(&signature).unwrap().1;
+
+    let (_map2, mdb) = cpos_rw_map(&moves_path)?;
 
     if !Path::new(&dtm_path).is_file() {
-        dtm_init(signature, &dtm_path, &mut m_hash)?;
-        let (_map, ddb) = short_rw_map(&dtm_path)?;
-        eprint!("{}  find DTM 1 and alien DTMs ", signature);
-        progress(0, 0);
-        dtm_mate_aliens(signature, ddb, &mut d_hash, &mut m_hash, &mut e_hash)?;
+        dtm_init(&dtm_path, mdb)?;
     }
 
+    let (_map1, ddb) = short_rw_map(&dtm_path)?;
+
+    loop {
+        eprint!("{}  compute DTM ", signature);
+        progress(0, 0);
+        dtm_mate_aliens(signature, ddb, mdb, &mut d_hash, &mut m_hash, &mut e_hash)?;
+        eprint!("{}  optimize moves  ", signature);
+        progress(0, 0);
+        match dtm_opt(signature, ddb, mdb, &mut e_hash, &mut m_hash, &mut d_hash) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(s) => return Err(s),
+        }
+    }
+
+    /*
     if Path::new(&dtm_path).is_file() {
         let (_map, ddb) = short_ro_map(&dtm_path)?;
         let mut vx: Vec<usize> = (0..mdb.len()).collect();
@@ -1583,14 +1624,12 @@ pub fn dtm_run(signature: Signature, dtm_path: String) -> Result<(), String> {
             );
         }
     }
+    */
     Ok(())
 }
 
-pub fn dtm_init(signature: Signature, dtm_path: &str, m_hash: &mut MovesMap) -> Result<(), String> {
-    CPos::moves_mmap(signature, m_hash)?;
-    // the unwrap is justified because of the CPos::moves_mmap
-    let mdb = m_hash.get(&signature).unwrap().1;
-    let (_map, ddb) = byte_anon_map(&mdb.len() * 2)?;
+pub fn dtm_init(dtm_path: &str, mdb: &[CPos]) -> Result<(), String> {
+    let (_map, ddb) = byte_anon_map(mdb.len() * 2)?;
     ddb.fill(0xff);
     let mut writer = cpos_create_writer(dtm_path)?;
     writer
@@ -1598,19 +1637,33 @@ pub fn dtm_init(signature: Signature, dtm_path: &str, m_hash: &mut MovesMap) -> 
         .map_err(|e| format!("write error on {} ({})", dtm_path, e))
 }
 
-/// compute dtm of won position
+/// compute DTM of won position
 pub fn compute_wins_dtm(
     signature: Signature,
     wins: CPos,
     winner: Player,
     ddb: &mut [u16],
+    mdb: &mut [CPos],
     d_hash: &mut DtmMap,
     m_hash: &mut MovesMap,
     e_hash: &mut EgtbMap,
 ) -> Result<u16, String> {
-    let mv = wins.find_move(winner, e_hash, m_hash)?;
-    let looser = wins.apply(mv).find(e_hash)?;
-    compute_lost_dtm(signature, looser, winner.opponent(), ddb, d_hash, m_hash, e_hash).map(|u| u + 1)
+    let looser = winner.opponent();
+    let mv = if wins.signature() == signature {
+        let canonic = wins.clear_trans().find(e_hash)?;
+        let player = if canonic.canonic_has_bw_switched() { looser } else { winner };
+        let mpos = CPos {
+            bits: (canonic.bits & CPos::COMP_BITS) | if player == WHITE { CPos::WHITE_BIT } else { 0 },
+        };
+        let u = mdb
+            .binary_search(&mpos)
+            .map_err(|_| "WINNER NOT FOUND LOCALLY".to_string())?;
+        canonic.mv_from_mpos(mdb[u])
+    } else {
+        wins.find_move(winner, e_hash, m_hash)?
+    };
+    let lost = wins.apply(mv).find(e_hash)?;
+    compute_lost_dtm(signature, lost, looser, ddb, mdb, d_hash, m_hash, e_hash).map(|u| u + 1)
 }
 
 /// compute the DTM of a lost position
@@ -1619,6 +1672,7 @@ pub fn compute_lost_dtm(
     lost: CPos,
     looser: Player,
     ddb: &mut [u16],
+    mdb: &mut [CPos],
     d_hash: &mut DtmMap,
     m_hash: &mut MovesMap,
     e_hash: &mut EgtbMap,
@@ -1629,9 +1683,14 @@ pub fn compute_lost_dtm(
     for (wins, _) in lost.successors(looser) {
         let w_dtm = if wins.signature() == signature {
             let wins = wins.find(e_hash)?;
-            let u = wins.find_canonic_mpos_index(signature, winner, m_hash)?;
+            let wmov = CPos {
+                bits: if winner == WHITE { CPos::WHITE_BIT } else { 0 } | (wins.bits & CPos::COMP_BITS),
+            };
+            let u = mdb
+                .binary_search(&wmov)
+                .map_err(|_| "NOT FOUND LOCALLY".to_string())?;
             if ddb[u] == 0xffff {
-                ddb[u] = compute_wins_dtm(signature, wins, winner, ddb, d_hash, m_hash, e_hash)?;
+                ddb[u] = compute_wins_dtm(signature, wins, winner, ddb, mdb, d_hash, m_hash, e_hash)?;
             }
             ddb[u]
         } else {
@@ -1648,18 +1707,18 @@ pub fn compute_lost_dtm(
 pub fn dtm_mate_aliens(
     signature: Signature,
     ddb: &mut [u16],
+    mdb: &mut [CPos],
     d_hash: &mut DtmMap,
     m_hash: &mut MovesMap,
     e_hash: &mut EgtbMap,
 ) -> Result<(), String> {
-    // CPos::moves_mmap(signature, m_hash)?;
-    // the unwrap is justified because of the CPos::moves_mmap
-    let mdb = m_hash.get(&signature).unwrap().1;
     let mut n_done = 0usize;
     let mut max_dtm = 0u16;
 
+    ddb.fill(0xffff);
+
     for item in 0..mdb.len() {
-        if item & 0x3f_ffff == 0 {
+        if item & 0x0f_ffff == 0 {
             progress(n_done, mdb.len());
         }
         let mpos = mdb[item];
@@ -1681,13 +1740,13 @@ pub fn dtm_mate_aliens(
         }
     }
     progress(n_done, mdb.len());
-    eprintln!("  found {}", n_done);
+    // eprintln!("  found {}", n_done);
 
-    eprint!("{}  find subsequent DTM  ", signature);
-    progress(0, 0);
+    // eprint!("{}  find subsequent DTM  ", signature);
+    // progress(0, 0);
 
     for item in 0..mdb.len() {
-        if item & 0x3f_ffff == 0 {
+        if item & 0x0f_ffff == 0 {
             progress(item, mdb.len());
         }
         if ddb[item] < 0xffff {
@@ -1696,10 +1755,79 @@ pub fn dtm_mate_aliens(
         let mpos = mdb[item];
         let wins = mpos.mpos_to_cpos().find_canonic(signature, e_hash)?;
         let winner = mpos.mpos_player();
-        ddb[item] = compute_wins_dtm(signature, wins, winner, ddb, d_hash, m_hash, e_hash)?;
+        ddb[item] = compute_wins_dtm(signature, wins, winner, ddb, mdb, d_hash, m_hash, e_hash)?;
+        max_dtm = max_dtm.max(ddb[item]);
     }
     progress(999, 1000);
-    assert!(ddb.iter().find(|x| **x == 0xffff).is_none());
-    eprintln!();
+    // assert!(ddb.iter().find(|x| **x == 0xffff).is_none());
+    eprintln!("done, max DTM {}", max_dtm);
     Ok(())
+}
+
+pub fn dtm_opt(
+    signature: Signature,
+    ddb: &mut [u16],
+    mdb: &mut [CPos],
+    e_hash: &mut EgtbMap,
+    m_hash: &mut MovesMap,
+    d_hash: &mut DtmMap,
+) -> Result<usize, String> {
+    // eprint!("{} looking for insane winning moves via moves ", signature);
+    // progress(0, 0);
+    let mut n_insane = 0usize;
+    let mut w_king = H8;
+
+    for n_item in 0..mdb.len() {
+        if n_item & 0x1_ffff == 0 {
+            progress(n_item, mdb.len());
+            if sigint_received.load(atomic::Ordering::SeqCst) {
+                eprintln!("\x08\x08 canceled.");
+                sigint_received.store(false, atomic::Ordering::SeqCst);
+                return Err("canceled".to_uppercase());
+            }
+        }
+        let mpos = mdb[n_item];
+        let winner = mpos.mpos_player();
+        let cpos = mpos.mpos_to_cpos().find_canonic(signature, e_hash)?;
+        let cpos_dtm = ddb[n_item];
+        let cpos_mv = cpos.mv_from_mpos(mpos);
+        let mut better_mv = cpos_mv;
+        let mut better_dtm = cpos_dtm;
+        for (lost, mv) in cpos.successors(winner) {
+            if lost.find_state(winner.opponent(), e_hash)? != LOST {
+                continue;
+            }
+            let dtm = if lost.signature() != signature {
+                lost.find_dtm(winner.opponent(), e_hash, m_hash, d_hash)?
+            } else {
+                let o = winner.opponent();
+                compute_lost_dtm(signature, lost, o, ddb, mdb, d_hash, m_hash, e_hash)?
+            };
+            if dtm + 1 < better_dtm {
+                better_mv = mv;
+                better_dtm = dtm + 1;
+            }
+        }
+        if better_dtm < cpos_dtm {
+            if mpos.white_king() != w_king {
+                eprintln!();
+                eprint!(
+                    "    {}  DTM {:2} by {} → DTM {:2} by {}            ",
+                    mpos.mpos_debug(),
+                    cpos_dtm,
+                    cpos_mv,
+                    better_dtm,
+                    better_mv
+                );
+                progress(n_item, mdb.len());
+                w_king = mpos.white_king();
+            }
+            n_insane += 1;
+            mdb[n_item] = cpos.mpos_from_mv(better_mv);
+            ddb[n_item] = better_dtm;
+        }
+    }
+    progress(999, 1000);
+    eprintln!(" {} optimized.", n_insane);
+    Ok(n_insane)
 }
