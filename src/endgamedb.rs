@@ -1801,7 +1801,43 @@ pub fn dtm_opt(
                 lost.find_dtm(winner.opponent(), e_hash, m_hash, d_hash)?
             } else {
                 let o = winner.opponent();
-                compute_lost_dtm(signature, lost, o, ddb, mdb, d_hash, m_hash, e_hash)?
+                {
+                    let mut lost_dtm = 0;
+                    // let winner = o.opponent();
+
+                    for (wins, _) in lost.successors(o) {
+                        let w_dtm = if wins.signature() == signature {
+                            let wins = wins.find(e_hash)?;
+                            let wmov = CPos {
+                                bits: if winner == WHITE { CPos::WHITE_BIT } else { 0 }
+                                    | (wins.bits & CPos::COMP_BITS),
+                            };
+                            let u = mdb
+                                .binary_search(&wmov)
+                                .map_err(|_| "NOT FOUND LOCALLY".to_string())?;
+                            if ddb[u] == 0xffff {
+                                ddb[u] = compute_wins_dtm(
+                                    signature, wins, winner, ddb, mdb, d_hash, m_hash, e_hash,
+                                )?;
+                            }
+                            ddb[u]
+                        } else {
+                            wins.find_dtm(winner, e_hash, m_hash, d_hash)?
+                        };
+
+                        if w_dtm > lost_dtm {
+                            lost_dtm = w_dtm;
+                        }
+                        if lost_dtm + 2 >= better_dtm {
+                            break;
+                        }
+                    }
+                    if lost_dtm > 0 {
+                        lost_dtm + 1
+                    } else {
+                        lost_dtm
+                    }
+                }
             };
             if dtm + 1 < better_dtm {
                 better_mv = mv;
