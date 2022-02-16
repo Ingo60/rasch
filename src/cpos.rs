@@ -18,14 +18,15 @@ use std::{
 };
 
 use super::{
-    basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece},
+    basic::{decode_str_sig, CPosState, Move, Piece, Player, PlayerPiece, ALLPIECES},
     cposio::{byte_ro_map, cpos_ro_map, mk_egtb_path, short_ro_map},
     cposmove::{CPosMoveIterator, CPosReverseMoveIterator, CPosSimpleReverseMoveIterator},
     fen::encodeFEN,
-    fieldset::{BitSet, Field},
+    fieldset::{BitSet, Field, ALLFIELDS},
     mdb,
     position::{
-        bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER, PAWN_FIELDS, WHITE_TO_MOVE,
+        bit, Position, A1D1D4_TRIANGLE, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER,
+        PAWN_FIELDS, WHITE_TO_MOVE,
     },
 };
 use CPosState::*;
@@ -600,6 +601,19 @@ impl NibbleAddr {
     }
 }
 
+/// possible impact of a Move
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MoveImpact {
+    /// The result of applying this move will have a different [Signature]
+    SIGNATURE,
+    /// The result of applying this move will be non-canonical (i.e. [KING] move to right/upper half)
+    CANONICALITY,
+    /// If applied to a canonic position, the resulting position will also be canonic
+    HARMLESS,
+}
+
+pub use MoveImpact::*;
+
 /// # Compressed position for the endgame tablebases.
 
 /// This is good for up to 6 pieces (kings included) and 12 bits worth of flags.
@@ -749,7 +763,7 @@ pub struct CPos {
 }
 
 // 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
-// -FFF -fff -shv AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
+// -FFF -fff shvd AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
 
 impl CPos {
     /// Mask the black flag bits in a CPos
@@ -764,13 +778,15 @@ impl CPos {
     pub const STATUS_SHIFT: u32 = CPos::STATUS_BITS.trailing_zeros();
 
     /// The `s` bit indicates when black and white have been swapped.
-    pub const S_BIT: u64 = 0x0040_0000_0000_0000u64;
+    pub const S_BIT: u64 = 0x0080_0000_0000_0000u64;
     /// The `h` bit indicates when the position has been mirrored horizontally.
-    pub const H_BIT: u64 = 0x0020_0000_0000_0000u64;
+    pub const H_BIT: u64 = 0x0040_0000_0000_0000u64;
     /// The `v` bit indicates when the position has been mirrored vertically.
-    pub const V_BIT: u64 = 0x0010_0000_0000_0000u64;
+    pub const V_BIT: u64 = 0x0020_0000_0000_0000u64;
+    /// The `d` bit indicates when the position has been mirrored diagonally.
+    pub const D_BIT: u64 = 0x0010_0000_0000_0000u64;
     /// Bitmask for the transformer bits.
-    pub const TRANS_BITS: u64 = CPos::S_BIT | CPos::H_BIT | CPos::V_BIT;
+    pub const TRANS_BITS: u64 = CPos::S_BIT | CPos::H_BIT | CPos::V_BIT | CPos::D_BIT;
 
     /// Indicate a move for `WHITE` in a move CPos
     pub const WHITE_BIT: u64 = 0x8000_0000_0000_0000u64;
@@ -790,6 +806,7 @@ impl CPos {
     pub const COMP_BITS: u64 = !0x7ff0_0000_0000_0000;
     /// Mask the code for piece 4
     pub const CODE4_BITS: u64 = CPos::CODE3_BITS >> 4;
+
     /// Mask the code for piece 3
     pub const CODE3_BITS: u64 = CPos::CODE2_BITS >> 4;
     /// Mask the code for piece 2
@@ -984,6 +1001,26 @@ impl CPos {
         CPosSimpleReverseMoveIterator::new(*self, player)
     }
 
+    /// Get all the predecessors from [self] in canonic form.  [self] must itself be canonical.
+    /// This excludes "undoing" [PAWN] promotions and captures as well as "uncapturing" pieces.
+    /// The positions will have clear transformation bits and the moves are already adapted for possible mirrorings.
+    pub fn canonic_predecessors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
+        let opponent = player.opponent();
+        self.simple_reverse_move_iterator(player)
+            .map(|omv| {
+                if omv.player() == WHITE && omv.piece() == KING {
+                    let neu = self.unapply_nc(omv).light_canonical();
+                    let dmv = if neu.canonic_was_mirrored_d() { omv.mirror_d() } else { omv };
+                    let hmv = if neu.canonic_was_mirrored_h() { dmv.mirror_h() } else { dmv };
+                    let vmv = if neu.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+                    (neu.clear_trans(), vmv)
+                } else {
+                    (self.unapply_nc(omv), omv)
+                }
+            })
+            .filter(move |(c, _)| c.valid(opponent))
+    }
+
     /// Iterator for all the predecessors of a [CPos] where it is [player]s move, that have the same signature as [CPos].
     /// This excludes "undoing" [PAWN] promotions and captures as well as "uncapturing" pieces.
     pub fn predecessors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
@@ -1002,7 +1039,14 @@ impl CPos {
 
     /// Get the player for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `BLACK`
-    pub fn player_at(&self, n: u64) -> Player {
+    #[inline]
+    pub const fn player_at(&self, n: u64) -> Player {
+        if ((self.bits >> ((3 - (n & 3) as u32) * 4 + CPos::CODE4_SHIFT)) & 15) > 8 {
+            WHITE
+        } else {
+            BLACK
+        }
+        /*
         match n & 3 {
             0 => {
                 if (self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT >= 8 {
@@ -1034,11 +1078,15 @@ impl CPos {
             }
             _ => BLACK,
         }
+        */
     }
 
     /// Get the piece for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `EMPTY`
-    pub fn piece_at(&self, n: u64) -> Piece {
+    #[inline]
+    pub const fn piece_at(&self, n: u64) -> Piece {
+        ALLPIECES[((self.bits >> ((3 - (n & 3) as u32) * 4 + CPos::CODE4_SHIFT)) & 7) as usize]
+        /*
         match n & 3 {
             0 => match ((self.bits & CPos::CODE1_BITS) >> CPos::CODE1_SHIFT) & 7 {
                 p => Piece::from(p as u32),
@@ -1054,6 +1102,7 @@ impl CPos {
             },
             _ => EMPTY,
         }
+        */
     }
 
     /// Get all information on piece [n].
@@ -1084,9 +1133,20 @@ impl CPos {
         }
     }
 
+    #[inline]
     /// Get the field for piece1, piece2, piece3 or piece4
     /// Wrong input values are masked away and if the index is not occupied, it will return `A1`
-    pub fn field_at(&self, index: u64) -> Field {
+    pub const fn field_at(&self, index: u64) -> Field {
+        // make it faster by using knowledge about order of bits.
+        // the general solution that works with any placement of bits is there below
+        // we need to shift right & mask with 0x3f
+        // the amount to shift is
+        // index==3 0     0*6
+        // index==2 6     1*6
+        // index==1 12    2*6
+        // index==0 18    3*6
+        ALLFIELDS[((self.bits >> (6 * (3 - (index & 3)))) & 0x3f) as usize]
+        /*
         match index & 3 {
             0 => Field::from((self.bits & CPos::FIELD1_BITS) >> CPos::FIELD1_SHIFT),
             1 => Field::from((self.bits & CPos::FIELD2_BITS) >> CPos::FIELD2_SHIFT),
@@ -1094,6 +1154,7 @@ impl CPos {
             3 => Field::from((self.bits & CPos::FIELD4_BITS) >> CPos::FIELD4_SHIFT),
             _other => A1, // be happy, rustc
         }
+        */
     }
 
     /// get the state from the CPos
@@ -1286,7 +1347,7 @@ impl CPos {
                 if self.player_at(u) == player {
                     let from = self.field_at(u);
                     match self.piece_at(u) {
-                        EMPTY => return true, /* no attacker can be found further left */
+                        EMPTY => return true, /* no attacker can be found further right */
                         QUEEN => {
                             if occupied.intersection(mdb::canBishop(from, his_king)).null()
                                 || occupied.intersection(mdb::canRook(from, his_king)).null()
@@ -1421,9 +1482,72 @@ impl CPos {
         new.ordered()
     }
 
+    /// Find out what impact the [Move] has when applied to this position.
+    pub fn mv_impact(&self, mv: Move) -> MoveImpact {
+        // if to is occupied or the move is a promotion, it'll change the signature
+        let to = mv.to();
+        let p0 = self.piece_at(0);
+        let p1 = self.piece_at(1);
+        let p2 = self.piece_at(2);
+        let p3 = self.piece_at(3);
+
+        if mv.promote() != EMPTY
+            || (p0 != EMPTY && self.field_at(0) == to)
+            || (p1 != EMPTY && self.field_at(1) == to)
+            || (p2 != EMPTY && self.field_at(2) == to)
+            || (p3 != EMPTY && self.field_at(3) == to)
+        {
+            SIGNATURE
+        } else if mv.player() == WHITE && mv.piece() == KING {
+            let area = if p0 == PAWN || p1 == PAWN || p2 == PAWN || p3 == PAWN {
+                LEFT_HALF
+            } else {
+                LOWER_LEFT_QUARTER
+            };
+            if area.member(to) {
+                HARMLESS
+            } else {
+                CANONICALITY
+            }
+        } else {
+            HARMLESS
+        }
+    }
+
+    /// Make a position that is known to be *almost* canonical fully so by performing the necessary mirrorings.
+    /// When the position was canonical, the trans bits get cleared.
+    pub fn light_canonical(&self) -> CPos {
+        let wk = self.white_king();
+        if A1D1D4_TRIANGLE.member(wk) {
+            self.clear_trans()
+        } else if LOWER_LEFT_QUARTER.member(wk) {
+            self.clear_trans()
+        } else {
+            if self.piece_at(0) == PAWN
+                || self.piece_at(1) == PAWN
+                || self.piece_at(2) == PAWN
+                || self.piece_at(3) == PAWN
+            {
+                if LEFT_HALF.member(wk) {
+                    self.clear_trans()
+                } else {
+                    self.clear_trans().mirror_v().ordered()
+                }
+            }
+            // no pawns
+            else if LEFT_HALF.member(wk) {
+                self.clear_trans().mirror_h().ordered()
+            } else if LOWER_HALF.member(wk) {
+                self.clear_trans().mirror_v().ordered()
+            } else {
+                self.clear_trans().mirror_v().mirror_h().ordered()
+            }
+        }
+    }
+
     /// make a `CPos` into a "move CPos" for a certain `Move`
     /// The move must have been computed for a `Position` that corresponds to this `CPos`,
-    /// or else it will all be garbage.
+    /// or else it will panic (in the best case).
     pub fn mpos_from_mv(&self, mv: Move) -> CPos {
         // check sanity
         if mv.piece() == KING && mv.from() != self.players_king(mv.player()) {
@@ -1458,7 +1582,7 @@ impl CPos {
             );
         }
         CPos {
-            bits: (self.bits & CPos::COMP_BITS)
+            bits: (self.bits & CPos::COMP_BITS & !CPos::WHITE_BIT)
                 | if mv.player() == WHITE { CPos::WHITE_BIT } else { 0 }
                 | if mv.piece() == KING { CPos::KING_MOVE_BIT } else { 0 }
                 | ((self.piece_index_by_mv(mv) & 3) << CPos::PIECE_INDEX_SHIFT)
@@ -1472,8 +1596,13 @@ impl CPos {
         }
     }
 
-    /// Given some `CPos` with S_BIT, V_BIT or H_BIT set and a move `CPos` found for it, reconstruct the `Move`
+    /// Given some `CPos` with S_BIT, V_BIT, H_BIT or D_BIT set and a move `CPos` found for it, reconstruct the `Move`
     /// The `self` is only needed for the flags.
+    ///
+    /// To get the unaltered move, do
+    /// ```rust
+    ///   mpos.cpos_from_mpos().mv_from_mpos(mpos)
+    /// ```
     pub fn mv_from_mpos(&self, mpos: CPos) -> Move {
         let player = if (mpos.bits & CPos::WHITE_BIT) != 0 { WHITE } else { BLACK };
         let piece = if (mpos.bits & CPos::KING_MOVE_BIT) != 0 {
@@ -1515,7 +1644,12 @@ impl CPos {
         } else {
             mv
         };
-        let hmv = if (self.bits & CPos::H_BIT) != 0 { smv.mirror_h() } else { smv };
+        // Transformations are performed in the opposite order as they were applied to the CPos
+        // In a game with PAWNs, only S and H bits can be set.
+        // The diagonal transformation is only done in a pawnless game when the KING is already in
+        // the lower left quarter.
+        let dmv = if (self.bits & CPos::D_BIT) != 0 { smv.mirror_d() } else { smv };
+        let hmv = if (self.bits & CPos::H_BIT) != 0 { dmv.mirror_h() } else { dmv };
         let rmv = if (self.bits & CPos::V_BIT) != 0 { hmv.mirror_v() } else { hmv };
         rmv
     }
@@ -1539,8 +1673,9 @@ impl CPos {
         }
     }
 
+    #[inline]
     /// clear the S, V and H bits
-    pub fn clear_trans(&self) -> CPos {
+    pub const fn clear_trans(&self) -> CPos {
         CPos { bits: self.bits & !CPos::TRANS_BITS }
     }
 
@@ -1602,6 +1737,11 @@ impl CPos {
         if !has_pawns && !LOWER_HALF.member(kf) {
             this = this.mirror_h();
             debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
+            /*
+            if !A1D1D4_TRIANGLE.member(this.white_king()) {
+                this = this.mirror_d();
+            }
+            */
         }
         // make sure this **is** ordered.
         this.ordered()
@@ -1628,11 +1768,18 @@ impl CPos {
         (self.bits & CPos::V_BIT) != 0
     }
 
+    /// Was this `CPos` mirrored diagonally?
+    ///
+    /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
+    pub const fn canonic_was_mirrored_d(&self) -> bool {
+        (self.bits & CPos::D_BIT) != 0
+    }
+
     /// Was this `CPos` mirrored?
     ///
     /// **Note**: the provided `CPos` must be canonical! Use for results of `find()` only.
     pub const fn canonic_was_mirrored(&self) -> bool {
-        (self.bits & (CPos::H_BIT | CPos::V_BIT)) != 0
+        (self.bits & (CPos::H_BIT | CPos::V_BIT | CPos::D_BIT)) != 0
     }
 
     /// convenience for `x.canonical(x.signature)`
@@ -2128,8 +2275,16 @@ impl CPos {
         }
     }
 
+    /// clear the flags and the WHITE bit.
     pub fn mpos_to_cpos(&self) -> CPos {
         CPos { bits: (self.bits & !CPos::WHITE_BIT) & CPos::COMP_BITS }
+    }
+
+    /// clears all flags and sets the WHITE bit, if needed.
+    pub fn cpos_to_mpos(&self, player: Player) -> CPos {
+        CPos {
+            bits: (if player == WHITE { CPos::WHITE_BIT } else { 0 }) | (self.bits & CPos::COMP_BITS),
+        }
     }
 
     /// Find the winning move for [Player].
@@ -2191,7 +2346,15 @@ impl CPos {
                 .successors(cplayer)
                 .map(|x| x.0.find_dtm(cplayer.opponent(), e_hash, m_hash, d_hash))
                 .fold(Ok(0x0u16), |acc, r| acc.and_then(|a| r.map(|x| x.max(a))))
-                .map(|r| if r == 0 { r } else { r + 1 })
+                .map(|r| {
+                    if r == 0 {
+                        r
+                    } else if r == 0xffff {
+                        0xfffe
+                    } else {
+                        r + 1
+                    }
+                })
         } else {
             if *self == canonic {
                 Err(format!("no DTM for {:?} in {:?}", cplayer, canonic))
@@ -2264,9 +2427,9 @@ impl CPos {
             },
             if self.piece_at(inx) == PAWN && !kingmv && (to.rank() == 1 || to.rank() == 8) {
                 format!(
-                    "→{}",
+                    "→ {}",
                     match (self.bits & CPos::PROMOTE_TO_BITS) >> CPos::PROMOTE_TO_SHIFT {
-                        0 => "K",
+                        0 => "N",
                         1 => "B",
                         2 => "R",
                         3 => "Q",
@@ -2274,7 +2437,7 @@ impl CPos {
                     }
                 )
             } else {
-                "--".to_string()
+                "---".to_string()
             },
             to,
             WWW(WHITE, KING, self.white_king()),
@@ -2312,12 +2475,13 @@ impl Iterator for CPos {
 impl fmt::Debug for CPos {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&format!(
-            "{:?}/{:?} {}{}{}  {} {} {} {} {} {}",
+            "{:?}/{:?} {}{}{}{}  {} {} {} {} {} {}",
             self.state(WHITE),
             self.state(BLACK),
             if self.canonic_has_bw_switched() { "s" } else { "-" },
             if self.canonic_was_mirrored_h() { "h" } else { "-" },
             if self.canonic_was_mirrored_v() { "v" } else { "-" },
+            if self.canonic_was_mirrored_d() { "d" } else { "-" },
             WWW(WHITE, KING, self.white_king()),
             WWW(BLACK, KING, self.black_king()),
             self.www_at(0),
@@ -2370,8 +2534,14 @@ pub trait Mirrorable
 where
     Self: Sized,
 {
+    /// Mirror on the horizontal axis so that all fields are mapped from the upper half to the lower half and vice versa.
     fn mirror_h(&self) -> Self;
+    /// Mirror on the vertical axis so that all fields are mapped from the left half to the right half and vice versa.
     fn mirror_v(&self) -> Self;
+    /// Mirror on the diagonal axis from [A1] to [H8]. For fields on the axis, this is the identity.
+    /// Fields in the triangle [A2] - [G8] - [A8] are mapped to the triangle [B1] - [H1] - [H7] and vice versa.
+    /// This can easily be done by exchanging the bits for rank and file.
+    fn mirror_d(&self) -> Self;
 }
 
 impl Mirrorable for Field {
@@ -2384,6 +2554,11 @@ impl Mirrorable for Field {
     /// Changes to corresponding file on the other side, e.g. c3 <-> f3
     fn mirror_v(&self) -> Field {
         Field::fromFR((b'h' as u8 - self.file() as u8 + b'a' as u8) as char, self.rank())
+    }
+    /// Mirror on the diagonal axis
+    fn mirror_d(&self) -> Field {
+        let rf = *self as u8;
+        Field::from((rf >> 3) | ((rf & 7) << 3))
     }
 }
 
@@ -2491,6 +2666,58 @@ impl Mirrorable for CPos {
         }
         CPos { bits: bits ^ CPos::V_BIT }
     }
+
+    /// NOTE! After calling this, the fields must be ordered by ascending field numbers,
+    /// (see `CPos::ordered`) **if** the position
+    /// takes part in comparisions (including hashing!).
+    /// ```
+    /// use rasch::cpos::CPos;
+    /// use rasch::cpos::Mirrorable;
+    /// let cpos = CPos { bits: 0x0001_2345_6789_ABCDu64 };
+    /// assert_eq!(cpos.ordered(), cpos.mirror_d().ordered().mirror_d().ordered());
+    /// ```
+    fn mirror_d(&self) -> CPos {
+        let mut bits = self.bits;
+        // for efficiency, we do this as an unrolled loop
+        if bits & CPos::CODE1_BITS != 0 {
+            let m = CPos::FIELD1_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits & CPos::CODE2_BITS != 0 {
+            let m = CPos::FIELD2_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits & CPos::CODE3_BITS != 0 {
+            let m = CPos::FIELD3_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        if bits & CPos::CODE4_BITS != 0 {
+            let m = CPos::FIELD4_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        // the kings must be done unconditionally as they are always valid
+        {
+            let m = CPos::BLACK_KING_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        {
+            let m = CPos::WHITE_KING_BITS;
+            let s = m.trailing_zeros();
+            let f = Field::from(((bits & m) >> s) as u8).mirror_d();
+            bits = (bits & !m) | ((f as u64) << s);
+        }
+        CPos { bits: bits ^ CPos::D_BIT }
+    }
 }
 
 impl Mirrorable for Move {
@@ -2503,5 +2730,14 @@ impl Mirrorable for Move {
         let from = self.from().mirror_v();
         let to = self.to().mirror_v();
         Move::new(self.player(), self.piece(), self.promote(), from, to)
+    }
+    fn mirror_d(&self) -> Self {
+        Move::new(
+            self.player(),
+            self.piece(),
+            self.promote(),
+            self.from().mirror_d(),
+            self.to().mirror_d(),
+        )
     }
 }
