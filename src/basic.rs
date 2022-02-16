@@ -40,11 +40,10 @@ impl Display for Player {
 impl Player {
     /// the color of the opponent
     #[inline]
-    pub fn opponent(self) -> Player {
-        if self == BLACK {
-            WHITE
-        } else {
-            BLACK
+    pub const fn opponent(self) -> Player {
+        match self {
+            BLACK => WHITE,
+            WHITE => BLACK,
         }
     }
 
@@ -56,7 +55,7 @@ impl Player {
     /// assert_eq!(P::BLACK.factor(), -1);
     /// ```
     #[inline]
-    pub fn factor(self) -> i32 {
+    pub const fn factor(self) -> i32 {
         2 * (self as i32) - 1
     }
 
@@ -101,6 +100,8 @@ impl Display for Piece {
     }
 }
 
+pub const ALLPIECES: [Piece; 8] = [EMPTY, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, EMPTY];
+
 impl From<u32> for Piece {
     /// The inverse of `piece as u32`.
     /// Will panic! if not in range 0..6
@@ -111,16 +112,7 @@ impl From<u32> for Piece {
     /// assert!((0..6).all(|u| Piece::from(u) as u32 == u));
     /// ```
     fn from(u: u32) -> Piece {
-        match u {
-            0 => EMPTY,
-            1 => PAWN,
-            2 => KNIGHT,
-            3 => BISHOP,
-            4 => ROOK,
-            5 => QUEEN,
-            6 => KING,
-            _ => panic!("can't cast {} to Piece", u),
-        }
+        ALLPIECES[(u & 7) as usize]
     }
 }
 
@@ -134,16 +126,7 @@ impl From<u64> for Piece {
     /// assert!((0..6).all(|u| Piece::from(u) as u64 == u));
     /// ```
     fn from(u: u64) -> Piece {
-        match u {
-            0 => EMPTY,
-            1 => PAWN,
-            2 => KNIGHT,
-            3 => BISHOP,
-            4 => ROOK,
-            5 => QUEEN,
-            6 => KING,
-            _ => panic!("can't cast {} to Piece", u),
-        }
+        ALLPIECES[(u & 7) as usize]
     }
 }
 
