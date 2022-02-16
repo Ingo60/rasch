@@ -53,7 +53,7 @@ pub enum Field {
 pub use Field::*;
 
 #[rustfmt::skip]
-static ALLFIELDS: [Field; 64] = [
+pub const ALLFIELDS: [Field; 64] = [
       Field::A1 , Field::B1 , Field::C1 , Field::D1 , Field::E1 , Field::F1 , Field::G1 , Field::H1
     , Field::A2 , Field::B2 , Field::C2 , Field::D2 , Field::E2 , Field::F2 , Field::G2 , Field::H2
     , Field::A3 , Field::B3 , Field::C3 , Field::D3 , Field::E3 , Field::F3 , Field::G3 , Field::H3
