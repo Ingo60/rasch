@@ -14,7 +14,7 @@ use super::{
     fen::encodeFEN,
     fieldset::{BitSet, Field},
     mdb,
-    position::{bit, pieceTargets, showMoves, showMovesSAN, Position},
+    position::{bit, pieceTargets, showMoves, showMovesSAN},
     util::formatted_h,
 };
 
@@ -771,24 +771,18 @@ pub fn test2(sig: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn test3(pos: &Position) -> Result<(), String> {
-    let cpos = pos.compressed();
-    print!("{:?} is result of one of:", cpos);
-    for mv in CPosReverseMoveIterator::new(cpos, pos.turn()) {
-        print!(" {}", mv);
-    }
-    println!();
-    for mv in cpos.reverse_move_iterator(pos.turn()) {
-        let unc = if mv.is_capture_by_pawn() { QUEEN } else { EMPTY };
-        let prev = cpos.unapply_general(mv, unc);
-        let v = prev.valid(pos.turn().opponent());
-        println!("unapplying {} yields {:?} (valid:{})", mv, prev, v);
-        if v {
-            let rpos = prev.apply(mv);
-            if rpos == cpos {
-                println!("re-applying {} yields original.", mv)
-            } else {
-                println!("re-applying {} yields different {:?}", mv, rpos);
+pub fn test3(sig: &str) -> Result<(), String> {
+    let signature = Signature::new_from_str_canonic(sig)?;
+    for cpos in signature.first() {
+        for p in [BLACK, WHITE] {
+            for (prev, mv) in cpos.canonic_predecessors(p) {
+                let rpos = prev.apply(mv).light_canonical();
+                if rpos != cpos {
+                    println!("{}  cpos {:5?} {:?}", signature, p, cpos);
+                    println!("{}  prev {:4}  {:?}", signature, mv, prev);
+                    println!("{}  result     {:?}", signature, rpos);
+                    return Err("failed".to_uppercase());
+                }
             }
         }
     }

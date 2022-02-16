@@ -426,6 +426,10 @@ pub const CASTLING_LONG_BLACK: Move = Move::new(BLACK, KING, QUEEN, E8, C8);
 
 /// Mask the lower left quarter fields (A..D, 1..4)
 pub const LOWER_LEFT_QUARTER :  BitSet = BitSet { bits: 0x0000_0000_0f0f_0f0f };
+
+/// Mask the fields in the triangle A1 - D1 - D4
+pub const A1D1D4_TRIANGLE: BitSet = BitSet { bits: 0x0000_0000_080c_0e0f};
+
 /// Mask the lower right quarter fields (E..H, 1..4)
 pub const LOWER_RIGHT_QUARTER : BitSet = BitSet { bits: 0x0000_0000_f0f0_f0f0 };
 /// Mask the fields in the lower half A1..H4
