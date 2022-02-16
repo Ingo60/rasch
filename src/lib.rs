@@ -1,3 +1,4 @@
+#![allow(uncommon_codepoints)]
 pub mod basic;
 pub mod common;
 pub mod computing;

@@ -1,3 +1,4 @@
+#![allow(uncommon_codepoints)]
 #![allow(non_snake_case)]
 
 use std::cmp::{max, min, Ordering};
@@ -85,7 +86,13 @@ fn main() {
             }
         }
     } else if argv[1] == "debug" && argv.len() > 2 {
-        E::debug(&argv[2..]);
+        match E::debug(&argv[2..]) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1)
+            }
+        }
     } else if argv[1] == "test1" && argv.len() >= 3 {
         match CM::test1(&argv[2]) {
             Ok(_) => {}
@@ -102,16 +109,12 @@ fn main() {
                 std::process::exit(1)
             }
         }
-    } else if argv[1] == "test3" && argv.len() == 8 {
-        let mut fen = String::from(argv[2].clone());
-        for i in 3..8 {
-            fen.push(' ');
-            fen.push_str(&argv[i]);
-        }
-        match decodeFEN(&fen).and_then(|p| CM::test3(&p)) {
+    } else if argv[1] == "test3" && argv.len() >= 3 {
+        match CM::test3(&argv[2]) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);
+                std::process::exit(1)
             }
         }
     } else if argv[1] == "test4" {
@@ -153,10 +156,19 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    } else if argv[1] == "dtm" && argv.len() >= 3 {
-        match E::dtm_command(&argv[2]) {
+    } else if argv[1] == "dtm-fwd" && argv.len() >= 3 {
+        match E::dtm_command(&argv[2], true) {
             Ok(_) => {}
             Err(s) => {
+                eprintln!("error: {}", s);
+                std::process::exit(1);
+            }
+        }
+    } else if argv[1] == "dtm-bck" && argv.len() >= 3 {
+        match E::dtm_command(&argv[2], false) {
+            Ok(_) => {}
+            Err(s) => {
+                eprintln!();
                 eprintln!("error: {}", s);
                 std::process::exit(1);
             }
@@ -232,10 +244,12 @@ fn main() {
             \n    {0} [negamin|negamax|pvs|bns|mtdf]     # default is `negamin`
             \nDeveloper tools:\
             \n    {0} flamegraph [N]    # used to get data for cargo flamegraph\
-            \n    {0} gen  sig          # genereate end game table\
-            \n    {0} make sig          # make end game table\
-            \n    {0} stats sig         # check end game table & print statistics\
-            \n    {0} check sig         # check moves table\
+            \n    {0} gen     sig       # genereate end game table\
+            \n    {0} make    sig       # make end game table after its predecessors\
+            \n    {0} stats   sig       # check end game table & print statistics\
+            \n    {0} check   sig       # check moves table\
+            \n    {0} dtm-fwd sig       # make the DTM table and optimize moves\
+            \n    {0} dtm-bck sig       # make the DTM table and optimize moves\
             \n    {0} play 'fen'        # simulate end game from position given in FEN notation\
             \n    {0} move 'fen'        # like \"play\", but only one move\
             \n    {0} win  'fen'        # list all winning variants for the given position\
