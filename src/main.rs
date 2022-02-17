@@ -29,7 +29,6 @@ use rasch::position::Position;
 // use rasch::zobrist as Z;
 use rasch::cposmove as CM;
 use rasch::endgamedb as E;
-use rasch::sortegtb as S;
 use sysinfo::SystemExt;
 
 fn main() {
@@ -217,13 +216,6 @@ fn main() {
             fen.push_str(&argv[i]);
         }
         match decodeFEN(&fen).and_then(|p| E::findEndgameMove(&p)) {
-            Ok(_) => {}
-            Err(s) => {
-                eprintln!("error: {}", s);
-            }
-        }
-    } else if argv[1].starts_with("sort") && argv.len() >= 3 {
-        match S::sort(&String::from(argv[2].clone())) {
             Ok(_) => {}
             Err(s) => {
                 eprintln!("error: {}", s);

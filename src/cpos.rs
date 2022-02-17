@@ -759,6 +759,8 @@ pub struct CPos {
     pub bits: u64,
 }
 
+pub type MPos = CPos;
+
 // 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111 0000 1111
 // -FFF -fff shvd AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
 
@@ -2111,12 +2113,6 @@ impl CPos {
 
     /// write a CPos at the current file position
     pub fn write(&self, file: &mut File) -> Result<(), std::io::Error> {
-        let buf = self.bits.to_ne_bytes();
-        file.write_all(&buf)
-    }
-
-    /// write a CPos all sequentially
-    pub fn write_seq(&self, file: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
         let buf = self.bits.to_ne_bytes();
         file.write_all(&buf)
     }

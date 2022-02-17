@@ -26,50 +26,7 @@ use std::{
 
 use crossbeam::thread::scope;
 
-/// Sort a file with compressed positions
-///
-/// Usage: sort("KP-KP") sorts `$EGTB/KP-KP.unsorted` into `$EGTB/KP-KP.sorted`
-/// if this doesn't exist. After succesfull sort, the input file will be remove.
-///
-/// This is basically a merge sort, so it needs at least 3 times as much free space on the disk as the unsorted file uses.
-///
-/// Can be run independently with `rasch sort sig'
-pub fn sort(sig: &str) -> Result<(), String> {
-    let s_path = format!(
-        "{}/{}.sorted",
-        env::var("EGTB").unwrap_or(String::from("egtb")),
-        sig
-    );
-    let u_path = format!(
-        "{}/{}.unsorted",
-        env::var("EGTB").unwrap_or(String::from("egtb")),
-        sig
-    );
-    let c_path = format!(
-        "{}/{}.chunk",
-        env::var("EGTBTEMP")
-            .or(env::var("EGTB"))
-            .unwrap_or(String::from("egtb")),
-        sig
-    );
-    let path = Path::new(&s_path);
-    if path.is_file() {
-        return Err(format!("Destination file {} already exists.", &path.display()));
-    }
-    /*
-    split(&u_path, &c_path).and_then(|v| {
-        let mut x = v;
-        merge(&mut x, &c_path, &s_path)
-    })
-    */
-    split_parallel(&u_path, &c_path, &s_path).and_then(|_| {
-        remove_file(Path::new(&u_path))
-            .map_err(|ioerror| format!("couldn't remove unsorted file {} ({})", u_path, ioerror))
-    })
-    // Ok(())
-}
-
-pub fn sort_from_to(signature: Signature, u_path: &str, s_path: &str) -> Result<(), String> {
+pub fn sort_from_to(signature: Signature, u_path: &str, m_path: &str, d_path: &str) -> Result<(), String> {
     let c_path = format!(
         "{}/{}.chunk",
         env::var("EGTBTEMP")
@@ -77,37 +34,15 @@ pub fn sort_from_to(signature: Signature, u_path: &str, s_path: &str) -> Result<
             .unwrap_or(String::from("./egtb")),
         signature
     );
-    if Path::new(s_path).is_file() {
-        return Err(format!("destination file {} already exists.", s_path));
+    if Path::new(m_path).is_file() {
+        return Err(format!("destination file {} already exists.", m_path));
+    }
+    if Path::new(d_path).is_file() {
+        return Err(format!("destination file {} already exists.", d_path));
     }
     // do the work
-    split_parallel(u_path, &c_path, s_path).and_then(|_| {
+    split_parallel(u_path, &c_path, m_path, d_path).and_then(|_| {
         remove_file(Path::new(u_path))
-            .map_err(|ioerror| format!("couldn't remove unsorted file {} ({})", u_path, ioerror))
-    })
-}
-
-pub fn sort_moves(sig: &str) -> Result<(), String> {
-    let s_path = format!(
-        "{}/{}.moves",
-        env::var("EGTB").unwrap_or(String::from("egtb")),
-        sig
-    );
-    let u_path = format!("{}/{}.um", env::var("EGTB").unwrap_or(String::from("egtb")), sig);
-    let c_path = format!(
-        "{}/{}.chunk",
-        env::var("EGTBTEMP")
-            .or(env::var("EGTB"))
-            .unwrap_or(String::from("egtb")),
-        sig
-    );
-    let path = Path::new(&s_path);
-    if path.is_file() {
-        return Err(format!("destination file {} already exists.", &path.display()));
-    }
-    // do the work
-    split_parallel(&u_path, &c_path, &s_path).and_then(|_| {
-        remove_file(Path::new(&u_path))
             .map_err(|ioerror| format!("couldn't remove unsorted file {} ({})", u_path, ioerror))
     })
 }
@@ -309,8 +244,8 @@ pub fn merge(chunks: &mut Vec<String>, c_path: &str, s_path: &str) -> Result<(),
 /// - n_pos: how many items to read
 /// postconditions
 fn split_step(
-    posa: &mut Vec<CPos>,
-    posb: &mut Vec<CPos>,
+    posa: &mut Vec<MPosDTM>,
+    posb: &mut Vec<MPosDTM>,
     unsorted: &str,
     c_name: &str,
     bufr: &mut BufReader<File>,
@@ -323,7 +258,7 @@ fn split_step(
                 eprintln!("    sorting chunk ... ");
                 posa.sort_unstable();
                 eprintln!("    ... sorting done.");
-                to_disk(c_name, &mut posa.iter().copied(), |c| c.bits.to_ne_bytes())
+                to_disk(c_name, &mut posa.iter().copied())
             })
         };
 
@@ -335,14 +270,13 @@ fn split_step(
     .unwrap()
 }
 
-/// Split an unsorted file into sorted chunks.
-/// Returns a vector of `CPosIterator`s.
-pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), String> {
+/// Sort a file with MPos, DTM tuples and split the sorted data into 2 files for MPos and DTM
+pub fn split_parallel(unsorted: &str, c_path: &str, sorted_m: &str, sorted_d: &str) -> Result<(), String> {
     let file =
         File::open(unsorted).map_err(|ioe| format!("Can't read source file {} ({})", unsorted, ioe))?;
     let mut bufr = BufReader::with_capacity(BUFSZ, file);
-    let mut pos1: Vec<CPos> = Vec::with_capacity(0);
-    let mut pos2: Vec<CPos> = Vec::with_capacity(0);
+    let mut pos1: Vec<MPosDTM> = Vec::with_capacity(0);
+    let mut pos2: Vec<MPosDTM> = Vec::with_capacity(0);
     let mut n_pos = CHUNK / 2;
     let mut chunks: Vec<String> = Vec::new();
 
@@ -414,22 +348,22 @@ pub fn split_parallel(unsorted: &str, c_path: &str, sorted: &str) -> Result<(), 
     }
 
     // merge this to the disk
-    let vbox: CPosIterator = Box::new(if firstbuffer {
-        CPosVector::new(Box::new(pos1))
+    let vbox: DataIterator<MPosDTM> = Box::new(if firstbuffer {
+        DataVector::new(Box::new(pos1))
     } else {
-        CPosVector::new(Box::new(pos2))
+        DataVector::new(Box::new(pos2))
     });
 
     chunks
         .iter()
-        .fold(Ok(vbox), |acc: Result<CPosIterator, String>, a| {
-            let cpr = CPosReader::new(&a)?;
-            acc.and_then(|boxa: CPosIterator| {
-                let mbox: CPosIterator = Box::new(MergeIterator::new(boxa, Box::new(cpr)));
+        .fold(Ok(vbox), |acc: Result<DataIterator<MPosDTM>, String>, a| {
+            let cpr = MPosDTMReader::new(&a)?;
+            acc.and_then(|boxa: DataIterator<MPosDTM>| {
+                let mbox: DataIterator<MPosDTM> = Box::new(MergeIterator::new(boxa, Box::new(cpr)));
                 Ok(mbox)
             })
         })
-        .and_then(|mut m: CPosIterator| to_disk(&sorted, &mut m, |c| c.bits.to_ne_bytes()))
+        .and_then(|mut m: DataIterator<MPosDTM>| to_disk_mpos_dtm(sorted_m, sorted_d, &mut m))
         .and_then(|_| {
             chunks.iter().fold(Ok(()), |_, s| {
                 remove_file(Path::new(s)).map_err(|ioe| format!("couldn't remove temp file {} ({})", s, ioe))

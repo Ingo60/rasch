@@ -110,11 +110,11 @@
 
 use super::{
     basic::{CPosState, Move, Player},
-    cpos::{CPos, DtmMap, EgtbMap, Mirrorable, MoveImpact, MovesMap, Signature},
+    cpos::{CPos, DtmMap, EgtbMap, MPos, Mirrorable, MoveImpact, MovesMap, Signature},
     cposio::{
         byte_anon_map, byte_ro_map, byte_rw_map, cpos_anon_map, cpos_append_writer, cpos_create_writer,
         cpos_file_size, cpos_open_reader, cpos_ro_map, cpos_rw_map, mk_egtb_path, mk_temp_path,
-        short_anon_map, short_ro_map, short_rw_map, CPosReader,
+        short_anon_map, short_ro_map, short_rw_map, CPosReader, WSeq,
     },
     fen::{decodeFEN, encodeFEN},
     fieldset::Field,
@@ -164,7 +164,12 @@ static handler_installed: atomic::AtomicBool = atomic::AtomicBool::new(false);
 /// Sort the um file, if present.
 ///
 /// results in `Done`
-fn make_moves(signature: Signature, um_path: &str, moves_path: &str) -> Result<MakeState, String> {
+fn make_moves(
+    signature: Signature,
+    um_path: &str,
+    moves_path: &str,
+    dtm_path: &str,
+) -> Result<MakeState, String> {
     let um_exists = Path::new(um_path).is_file();
     let moves_exists = Path::new(moves_path).is_file();
     if um_exists {
@@ -175,7 +180,7 @@ fn make_moves(signature: Signature, um_path: &str, moves_path: &str) -> Result<M
                 um_path, moves_path, signature
             ))
         } else {
-            sort_from_to(signature, um_path, moves_path).map(|_| Done)
+            sort_from_to(signature, um_path, moves_path, dtm_path).map(|_| Done)
         }
     } else {
         if moves_exists {
@@ -846,7 +851,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 eprintln!("{}  Pass {:2} - sorting moves", signature, pass);
                 std::mem::drop(um_writer);
                 um_writer = cpos_append_writer("/dev/null")?;
-                make_moves(signature, &um_path, &moves_path)?;
+                make_moves(signature, &um_path, &moves_path, &dtm_path)?;
                 // check_egtb(&signature.display())?;
                 // check_moves(&signature.display())?;
                 remove_file(Path::new(&dtm_path)).unwrap_or_default();
@@ -2237,7 +2242,6 @@ fn make_looser_dtm(
     }
 }
 
-type MPos = CPos;
 type LooserSet = BTreeSet<MPos>;
 
 fn current_looser_dtm(

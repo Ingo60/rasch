@@ -1,22 +1,35 @@
 use std::{
     env,
     fs::{metadata, File, OpenOptions},
-    io::{BufReader, BufWriter, ErrorKind::UnexpectedEof, SeekFrom, Write},
+    io,
+    io::{BufReader, BufWriter, ErrorKind::UnexpectedEof, Read, SeekFrom, Write},
     path::Path,
     slice,
 };
 
 use memmap2::{Mmap, MmapMut};
 
-use crate::cpos::{CPos, Signature};
+use crate::cpos::{CPos, MPos, Signature};
 use crate::util::*;
 
-/// A [CPos] together with its DTM as u16
+/// A [MPos] together with its DTM as u16
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MPosDTM {
-    pub mpos: CPos,
+    pub mpos: MPos,
     pub dtm: u16,
 }
+
+impl MPosDTM {
+    pub fn read_seq(reader: &mut BufReader<File>) -> io::Result<Self> {
+        let mut buf = [0u8; 2];
+        MPos::read_seq(reader).and_then(|mpos| {
+            reader
+                .read_exact(&mut buf)
+                .and_then(|_x| Ok(MPosDTM { mpos, dtm: u16::from_ne_bytes(buf) }))
+        })
+    }
+}
+
 /// An iterator over elements of some type `T: Ord` that merges two of the same kind.
 pub struct MergeIterator<T>
 where
@@ -79,11 +92,23 @@ pub struct CPosReader {
     rdr: BufReader<File>,
 }
 
+pub struct MPosDTMReader {
+    rdr: BufReader<File>,
+}
+
 impl CPosReader {
     pub fn new(path: &str) -> Result<CPosReader, String> {
         let file = File::open(path).map_err(|ioe| format!("Can't open file {} ({})", path, ioe))?;
         let bufr = BufReader::with_capacity(BUFSZ, file);
         Ok(CPosReader { rdr: bufr })
+    }
+}
+
+impl MPosDTMReader {
+    pub fn new(path: &str) -> Result<Self, String> {
+        let file = File::open(path).map_err(|ioe| format!("Can't open file {} ({})", path, ioe))?;
+        let bufr = BufReader::with_capacity(BUFSZ, file);
+        Ok(MPosDTMReader { rdr: bufr })
     }
 }
 
@@ -99,19 +124,29 @@ impl Iterator for CPosReader {
     }
 }
 
-pub struct CPosVector {
-    vec: Box<Vec<CPos>>,
+impl Iterator for MPosDTMReader {
+    type Item = MPosDTM;
+    fn next(&mut self) -> Option<Self::Item> {
+        MPosDTM::read_seq(&mut self.rdr).ok()
+    }
+}
+
+pub struct DataVector<T> {
+    vec: Box<Vec<T>>,
     index: usize,
 }
 
-impl CPosVector {
-    pub fn new(vec: Box<Vec<CPos>>) -> Self {
+impl<T> DataVector<T> {
+    pub fn new(vec: Box<Vec<T>>) -> Self {
         Self { vec, index: 0 }
     }
 }
 
-impl Iterator for CPosVector {
-    type Item = CPos;
+impl<T> Iterator for DataVector<T>
+where
+    T: Copy,
+{
+    type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.vec.len() {
             self.index += 1;
@@ -122,13 +157,34 @@ impl Iterator for CPosVector {
     }
 }
 
+pub type CPosVector = DataVector<CPos>;
 pub type CPosIterator = Box<dyn Iterator<Item = CPos>>;
+pub type DataIterator<T> = Box<dyn Iterator<Item = T>>;
+
+pub trait WSeq {
+    fn write_seq(&self, writer: &mut BufWriter<File>) -> io::Result<()>;
+}
+
+impl WSeq for CPos {
+    /// write a CPos all sequentially
+    fn write_seq(&self, writer: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
+        let buf = self.bits.to_ne_bytes();
+        writer.write_all(&buf)
+    }
+}
+
+impl WSeq for MPosDTM {
+    /// write it all sequentially
+    fn write_seq(&self, writer: &mut std::io::BufWriter<File>) -> Result<(), std::io::Error> {
+        let buf = self.dtm.to_ne_bytes();
+        self.mpos.write_seq(writer).and_then(|_| writer.write_all(&buf))
+    }
+}
 
 /// flush the contents of an `CPos` yielding Iterator to the disk
-pub fn to_disk<T, F>(path: &str, iter: &mut dyn Iterator<Item = T>, to_bytes: F) -> Result<usize, String>
+pub fn to_disk<T>(path: &str, iter: &mut impl Iterator<Item = T>) -> Result<usize, String>
 where
-    T: Sized + Copy,
-    F: Fn(T) -> [u8; 8],
+    T: Sized + Copy + WSeq,
 {
     let file = File::create(path).map_err(|ioe| format!("Can't create file {} ({})", path, ioe))?;
     let mut bufw = BufWriter::with_capacity(BUFSZ + BUFSZ / 2, file);
@@ -137,10 +193,8 @@ where
     while match iter.next() {
         None => false,
         Some(cp) => {
-            let bytes = to_bytes(cp);
-            // cp.write_seq(&mut bufw)
-            bufw.write_all(&bytes)
-                .map_err(|ioe| format!("unexpected error ({}) while writing to {}", ioe, path))?;
+            cp.write_seq(&mut bufw)
+                .map_err(|ioe| format!("write error on {} ({})", path, ioe))?;
             true
         }
     } {
@@ -156,11 +210,44 @@ where
     Ok(written)
 }
 
+pub fn to_disk_mpos_dtm(
+    m_path: &str,
+    d_path: &str,
+    iter: &mut impl Iterator<Item = MPosDTM>,
+) -> Result<usize, String> {
+    let mut m_writer = cpos_create_writer(m_path)?;
+    let mut d_writer = cpos_create_writer(d_path)?;
+
+    eprint!("    writing to {} and {} ... ", m_path, d_path);
+    let mut written = 0;
+    while match iter.next() {
+        None => false,
+        Some(cp) => {
+            let buf = cp.dtm.to_ne_bytes();
+            cp.mpos
+                .write_seq(&mut m_writer)
+                .and_then(|_| d_writer.write_all(&buf))
+                .map_err(|ioe| format!("write error on {} or {} ({})", m_path, d_path, ioe))?;
+            true
+        }
+    } {
+        written += 1;
+    }
+    m_writer.flush().and_then(|_| d_writer.flush()).map_err(|ioe| {
+        format!(
+            "unexpected error ({}) while flushing buffer for {} or {}, file may be corrupt",
+            ioe, m_path, d_path
+        )
+    })?;
+    eprintln!("done, {} items written.", formatted_sz(written));
+    Ok(written)
+}
+
 /// Read a number of CPos from a buffered reader.
 ///
 /// Return **true** if end-of-file was reached.
 pub fn read_a_chunk(
-    pos: &mut Vec<CPos>,
+    pos: &mut Vec<MPosDTM>,
     from_path: &str,
     n_pos: usize,
     bufr: &mut BufReader<File>,
@@ -168,7 +255,7 @@ pub fn read_a_chunk(
     pos.clear();
     eprintln!("    reading from {} ...", from_path);
     while pos.len() < n_pos {
-        match CPos::read_seq(bufr) {
+        match MPosDTM::read_seq(bufr) {
             Ok(it) => {
                 pos.push(it);
             }
