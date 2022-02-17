@@ -8,18 +8,18 @@ use std::{
 };
 
 use super::{
-    basic::{CPosState, Move, Piece, Player},
+    basic::{Move, Piece, Player},
     cpos::{CPos, Signature},
-    cposio::{cpos_file_size, mk_egtb_path, CPosReader},
-    fen::encodeFEN,
+    // cposio::{cpos_file_size, mk_egtb_path, CPosReader},
+    // fen::encodeFEN,
     fieldset::{BitSet, Field},
     mdb,
-    position::{bit, pieceTargets, showMoves, showMovesSAN},
+    position::{bit, pieceTargets},
     util::formatted_h,
 };
 
-use CPosState::*;
-use Field::*;
+// use CPosState::*;
+// use Field::*;
 use Piece::*;
 use Player::*;
 
@@ -648,118 +648,6 @@ impl Iterator for CPosSimpleReverseMoveIterator {
     }
 }
 
-pub fn test1(sig: &str) -> Result<(), String> {
-    let signature = Signature::new_from_str_canonic(sig)?;
-    let egtb_path = mk_egtb_path(signature, "egtb");
-    let unsorted_path = mk_egtb_path(signature, "unsorted");
-    let mut path: &str = &egtb_path;
-    let rdr = CPosReader::new(&egtb_path).or_else(|_| {
-        path = &unsorted_path;
-        CPosReader::new(&unsorted_path)
-    })?;
-    let expected = cpos_file_size(path)?;
-    let mut done = 0;
-    eprint!("{} Pass  1 - test1 CPos {}    0‰ ", signature, path);
-    for cpos in rdr {
-        done += 1;
-        if done % (1024 * 1024) == 0 || done + 1 == expected {
-            eprint!("\x08\x08\x08\x08\x08\x08{:4}‰ ", (done + 1) * 1000 / expected);
-        }
-
-        for player in [BLACK, WHITE] {
-            // let cpm = CPosMoveIterator::new(cpos, pl);
-            // let v = cpm.valid();
-            let v = cpos.valid(player);
-            let s = cpos.state(player);
-            if v && s == INVP || !v && s != INVP {
-                eprintln!("failed.");
-                println!("valid={}, state={:?}", v, s);
-                // println!("CPMG={:?}", cpm);
-                println!("CPOS={:?}", cpos);
-                return Err("failed".to_string());
-            }
-
-            if v {
-                let pos = cpos.uncompressed(player);
-                let mut pmoves = pos.moves();
-                pmoves.sort_unstable();
-                let mut cmoves = Vec::with_capacity(pmoves.len());
-                for m in cpos.move_iterator(player) {
-                    if cpos.apply(m).valid(player.opponent()) {
-                        cmoves.push(m);
-                    }
-                }
-                cmoves.sort_unstable();
-                let mut pi = 0;
-                let mut ci = 0;
-                while pi < pmoves.len() || ci < cmoves.len() {
-                    if pi >= pmoves.len() {
-                        eprintln!("failed.");
-                        println!(
-                            "extra cpos moves  {}  {} ",
-                            encodeFEN(&pos),
-                            showMoves(&cmoves[ci..cmoves.len()])
-                        );
-                        return Err("extra CPos moves".to_string());
-                    }
-                    if ci >= cmoves.len() {
-                        eprintln!("failed.");
-                        println!(
-                            "missing cpos moves  {}  {} ",
-                            encodeFEN(&pos),
-                            showMovesSAN(&pmoves[pi..pmoves.len()], pos)
-                        );
-                        return Err("missing CPos moves".to_string());
-                    }
-                    if pmoves[pi] < cmoves[pi] {
-                        eprintln!("failed.");
-                        println!(
-                            "missing cpos move  {}  {} ",
-                            encodeFEN(&pos),
-                            pmoves[pi].showSAN(pos)
-                        );
-                        println!("p-moves: {}", showMoves(&pmoves));
-                        println!("c-moves: {}", showMoves(&cmoves));
-                        println!(
-                            "targets of black pawn standing on a3: {}",
-                            pieceTargets(PAWN, BLACK, A3)
-                        );
-
-                        for m in cpos.move_iterator(BLACK) {
-                            println!(
-                                "iterator yields {}, result {:?}, valid={}",
-                                m,
-                                cpos.apply(m),
-                                cpos.apply(m).valid(WHITE)
-                            );
-                        }
-                        println!("move-iterator: {:#?}", cpos.move_iterator(BLACK));
-                        let mut miter = cpos.move_iterator(BLACK);
-                        match miter.next() {
-                            None => {}
-                            Some(_) => {}
-                        }
-                        return Err("missing CPos move".to_string());
-                    }
-                    if pmoves[pi] > cmoves[pi] {
-                        eprintln!("failed.");
-                        println!(
-                            "extra cpos move  {}  {} ",
-                            encodeFEN(&pos),
-                            cmoves[ci].algebraic()
-                        );
-                        return Err("extra CPos move".to_string());
-                    }
-                    pi += 1;
-                    ci += 1;
-                }
-            }
-        }
-    }
-    eprintln!("done");
-    Ok(())
-}
-
 pub fn test2(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
     println!("{} predecessors:", signature);
@@ -773,9 +661,11 @@ pub fn test2(sig: &str) -> Result<(), String> {
 
 pub fn test3(sig: &str) -> Result<(), String> {
     let signature = Signature::new_from_str_canonic(sig)?;
+    let mut n_items = 0;
     for cpos in signature.first() {
         for p in [BLACK, WHITE] {
-            for (prev, mv) in cpos.canonic_predecessors(p) {
+            n_items += 1;
+            for (prev, mv) in cpos.predecessors(p) {
                 let rpos = prev.apply(mv).light_canonical();
                 if rpos != cpos {
                     println!("{}  cpos {:5?} {:?}", signature, p, cpos);
@@ -786,6 +676,7 @@ pub fn test3(sig: &str) -> Result<(), String> {
             }
         }
     }
+    println!("{}  items tried: {}", signature, n_items);
     Ok(())
 }
 

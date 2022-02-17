@@ -454,6 +454,23 @@ impl Debug for BitSet {
     }
 }
 
+/// short form of BitSet::singleton
+pub const fn bit(f: Field) -> BitSet {
+    BitSet::singleton(f)
+}
+
+/// Mask the fields in the triangle A1 - D1 - D4
+/// ```
+/// use rasch::fieldset::{bit, A1D1D4_TRIANGLE};
+/// use rasch::fieldset::BitSet;
+/// use rasch::fieldset::Field::*;
+/// assert_eq!(A1D1D4_TRIANGLE,         bit(D4)
+///                         + bit(C3) + bit(D3)
+///               + bit(B2) + bit(C2) + bit(D2)
+///     + bit(A1) + bit(B1) + bit(C1) + bit(D1));
+/// ```
+pub const A1D1D4_TRIANGLE: BitSet = BitSet { bits: 0x0000_0000_080c_0e0f };
+
 #[cfg(test)]
 mod tests {
     use super::*;

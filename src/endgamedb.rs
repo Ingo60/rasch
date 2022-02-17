@@ -328,9 +328,9 @@ pub fn findEndgameMove(pos: &Position) -> Result<Move, String> {
                 } else {
                     rmv
                 };
-                let dmv = if rpos.canonic_was_mirrored_d() { cmv.mirror_d() } else { cmv };
-                let hmv = if rpos.canonic_was_mirrored_h() { dmv.mirror_h() } else { dmv };
-                let mv = if rpos.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+                let vmv = if rpos.canonic_was_mirrored_v() { cmv.mirror_v() } else { cmv };
+                let hmv = if rpos.canonic_was_mirrored_h() { vmv.mirror_h() } else { vmv };
+                let mv = if rpos.canonic_was_mirrored_d() { hmv.mirror_d() } else { hmv };
                 println!(
                     "# {:?} to move cannot avoid mate, but makes it hard with {} DTM {}",
                     pos.turn(),
@@ -642,8 +642,8 @@ pub fn check_egtb(sig: &str) -> Result<(), String> {
             }
             if c.state(p) == LOST {
                 match c
-                    .canonic_predecessors(p)
-                    .map(|(c, mv)| (c.lookup_canonic(edb).unwrap(), mv))
+                    .predecessors(p)
+                    .map(|(c, mv)| (c.lookup_light(edb).unwrap(), mv))
                     .find(|(c, _)| c.state(p.opponent()) != WINS)
                 {
                     Some((w, mv)) if winners_missing == 0 => {
@@ -985,7 +985,16 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     pass,
                     fmt_human(edb.len(), 0)
                 );
-                let result = scan_mates_aliens(signature, at, &mut um_writer, edb, &mut e_hash, true)?;
+                let result = scan_mates_aliens(
+                    signature,
+                    at,
+                    &mut um_writer,
+                    edb,
+                    &mut e_hash,
+                    &mut m_hash,
+                    &mut d_hash,
+                    true,
+                )?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -1010,7 +1019,16 @@ pub fn gen(sig: &str) -> Result<(), String> {
                     pass,
                     fmt_human(edb.len(), 0)
                 );
-                let result = scan_mates_aliens(signature, at, &mut um_writer, edb, &mut e_hash, false)?;
+                let result = scan_mates_aliens(
+                    signature,
+                    at,
+                    &mut um_writer,
+                    edb,
+                    &mut e_hash,
+                    &mut m_hash,
+                    &mut d_hash,
+                    false,
+                )?;
                 um_writer
                     .flush()
                     .map_err(|e| format!("error while flushing {} ({})", um_path, e))?;
@@ -1086,6 +1104,7 @@ fn register_winner(
     signature: Signature,
     can: CPos,
     umv: Move,
+    _dtm: u16,
     writer: &mut BufWriter<File>,
     db: &mut [u8],
 ) -> Result<usize, String> {
@@ -1094,9 +1113,9 @@ fn register_winner(
         eprint!(" \x08");
     }
     let c = canonic.lookup_canonic(db)?;
-    let dmv = if canonic.canonic_was_mirrored_d() { umv.mirror_d() } else { umv };
-    let hmv = if canonic.canonic_was_mirrored_h() { dmv.mirror_h() } else { dmv };
-    let mv = if canonic.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
+    let vmv = if canonic.canonic_was_mirrored_v() { umv.mirror_v() } else { umv };
+    let hmv = if canonic.canonic_was_mirrored_h() { vmv.mirror_h() } else { vmv };
+    let mv = if canonic.canonic_was_mirrored_d() { hmv.mirror_d() } else { hmv };
     let mpos = c.mpos_from_mv(mv);
     if c.state(mv.player()) == DRAW {
         c.with_db_state_for(mv.player(), WINS, db);
@@ -1118,7 +1137,9 @@ fn scan_mates_aliens(
     at: CPos,
     um_writer: &mut BufWriter<File>,
     db: &mut [u8],
-    hash: &mut EgtbMap,
+    e_hash: &mut EgtbMap,
+    _m_hash: &mut MovesMap,
+    _d_hash: &mut DtmMap,
     mate_only: bool,
 ) -> Result<Option<CPos>, String> {
     let mut wins = 0usize;
@@ -1149,6 +1170,7 @@ fn scan_mates_aliens(
             if cp.state(player) == DRAW {
                 let mut all_successors_can_mate = true;
                 let mut no_moves = true;
+                let mut max_dtm = 0;
                 for (succ, mv) in cp.successors(player) {
                     no_moves = false;
                     if mate_only {
@@ -1162,20 +1184,19 @@ fn scan_mates_aliens(
                         continue /* next move */;
                     }
                     // it's an alien
-                    let succ = succ.find(hash).map(|x| {
-                        if x.canonic_has_bw_switched() {
-                            x.flipped_flags()
-                        } else {
-                            x
-                        }
-                    })?;
-                    match succ.state(player.opponent()) {
+                    let succ = succ.find(e_hash)?;
+                    let opponent = if succ.canonic_has_bw_switched() { player } else { player.opponent() };
+                    match succ.state(opponent) {
                         LOST => {
-                            let newwin = register_winner(signature, cp, mv, um_writer, db)?;
+                            let dtm = 0; // succ.find_dtm(opponent, e_hash, m_hash, d_hash)?;
+                            let newwin = register_winner(signature, cp, mv, dtm + 1, um_writer, db)?;
                             wins += newwin;
                             continue 'next_player;
                         }
-                        WINS => continue, /* with next move */
+                        WINS => {
+                            let dtm = 0; // succ.find_dtm(opponent, e_hash, m_hash, d_hash)?;
+                            max_dtm = max_dtm.max(dtm);
+                        }
                         DRAW | INVP => {
                             all_successors_can_mate = false;
                         }
@@ -1198,7 +1219,7 @@ fn scan_mates_aliens(
                     // find all moves from same signature (no captures, no promotions) that come here
                     // they all CAN_MATE
                     for (pred, mv) in cp.predecessors(player) {
-                        let found = register_winner(signature, pred, mv, um_writer, db)?;
+                        let found = register_winner(signature, pred, mv, max_dtm + 2, um_writer, db)?;
                         wins += found;
                     }
                 }
@@ -1314,8 +1335,14 @@ fn scan_um(
                             n_looser += 1;
                             // this may also give rise to new can mates
                             for (canm, umv) in dbu.predecessors(player.opponent()) {
-                                let w = register_winner(signature, canm, umv, writer, db)?;
+                                let w = register_winner(
+                                    signature, canm, umv, 2, /* + dtm of originating move */
+                                    writer, db,
+                                )?;
                                 n_winner += w;
+                                if n_winner > 0 || n_winner < 1 {
+                                    todo!(); // berechne die richtige DTM
+                                }
                             }
                         }
                     }
@@ -1459,7 +1486,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                 let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(e_hash)?;
                 w += 3;
                 let signature = wpos.signature();
-                for (pred, _mv) in wpos.canonic_predecessors(player) {
+                for (pred, _mv) in wpos.predecessors(player) {
                     let wins = pred.find(e_hash)?;
                     let dtm = pred.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
                     let mpos = wins.find_canonic_mpos(wins.signature(), player.opponent(), &mut m_hash)?;
@@ -1508,7 +1535,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                 let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(e_hash)?;
                 w += 3;
                 let signature = wpos.signature();
-                for (pred, _mv) in wpos.canonic_predecessors(player) {
+                for (pred, _mv) in wpos.predecessors(player) {
                     if pred.find_state(player.opponent(), e_hash) == Ok(LOST) {
                         let loos = pred.find(e_hash)?;
                         let dtm = pred.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
@@ -2269,16 +2296,16 @@ fn inspect_loss_backwd(
         return Ok(());
     }
 
-    let preds: Vec<(CPos, Move)> = lost.canonic_predecessors(looser).collect();
+    let preds: Vec<(CPos, Move)> = lost.predecessors(looser).collect();
 
     // we must first mark all winners and then explore them further
     for (wins, mv) in preds {
         assert_eq!(mv.player(), winner);
-        let cwin = wins.lookup_canonic(edb)?;
+        let cwin = wins.light_canonical().lookup_canonic(edb)?;
         if optimal_winner(cwin, mv, dtm + 1, ddb, mdb, e_hash, m_hash, d_hash)? {
             stack.extend(
-                cwin.canonic_predecessors(winner)
-                    .map(|(c, _mv)| c.lookup_canonic(edb).unwrap())
+                cwin.predecessors(winner)
+                    .map(|(c, _mv)| c.light_canonical().lookup_canonic(edb).unwrap())
                     .filter(|c| c.state(looser) == LOST)
                     .map(|c| c.cpos_to_mpos(looser)),
             );

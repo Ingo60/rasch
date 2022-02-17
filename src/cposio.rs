@@ -11,6 +11,12 @@ use memmap2::{Mmap, MmapMut};
 use crate::cpos::{CPos, Signature};
 use crate::util::*;
 
+/// A [CPos] together with its DTM as u16
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MPosDTM {
+    pub mpos: CPos,
+    pub dtm: u16,
+}
 /// An iterator over elements of some type `T: Ord` that merges two of the same kind.
 pub struct MergeIterator<T>
 where

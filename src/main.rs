@@ -93,14 +93,6 @@ fn main() {
                 std::process::exit(1)
             }
         }
-    } else if argv[1] == "test1" && argv.len() >= 3 {
-        match CM::test1(&argv[2]) {
-            Ok(_) => {}
-            Err(s) => {
-                eprintln!("error: {}", s);
-                std::process::exit(1)
-            }
-        }
     } else if argv[1] == "test2" && argv.len() >= 3 {
         match CM::test2(&argv[2]) {
             Ok(_) => {}

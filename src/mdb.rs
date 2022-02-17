@@ -129,10 +129,16 @@ static mut whitePawnComeTo: [u64; 64] = [0; 64];
 static mut blackPawnComeTo: [u64; 64] = [0; 64];
 
 /// Gives the ordinal number - 1 for a canonical king configuration
+/// in a game with pawns.
 /// For example, WK a1 BK c1 is the first hence it gets 0
 /// while WK d8 BK h8 is the last (of 1806) hence 1805
-static mut kingConf: [u16; 64 * 64] = [0xffff; 64 * 64];
+static mut kingPawnConf: [u16; 64 * 64] = [0xffff; 64 * 64];
 
+/// Gives the ordinal number - 1 for a canonical king configuration
+/// in a game without pawns.
+/// For example, WK a1 BK c1 is the first hence it gets 0
+/// while WK d4 BK h8 is the last (of 564) hence 563
+static mut kingWithoutPawnConf: [u16; 64 * 64] = [0xffff; 64 * 64];
 /**
      tell if we can go into a certain direction from some field
 */
@@ -343,14 +349,26 @@ unsafe fn genKing() {
     for wk in 0..64 {
         for bk in 0..64 {
             if wk != bk && wk % 8 < 4 && kingTo[wk] & (1 << bk) == 0 {
-                kingConf[(wk << 6) + bk] = goodconfs;
+                kingPawnConf[(wk << 6) + bk] = goodconfs;
                 goodconfs += 1;
             } else {
-                kingConf[(wk << 6) + bk] = 0xffff;
+                kingPawnConf[(wk << 6) + bk] = 0xffff;
             }
         }
     }
     assert_eq!(goodconfs, 1806);
+    goodconfs = 0;
+    for wk in 0..64 {
+        for bk in 0..64 {
+            if A1D1D4_TRIANGLE.member(Field::from(wk as u64)) && wk != bk && kingTo[wk] & (1 << bk) == 0 {
+                kingWithoutPawnConf[(wk << 6) + bk] = goodconfs;
+                goodconfs += 1;
+            } else {
+                kingWithoutPawnConf[(wk << 6) + bk] = 0xffff;
+            }
+        }
+    }
+    assert_eq!(goodconfs, 564);
 }
 
 /**
@@ -467,7 +485,21 @@ pub fn targetOfBlackPawns(to: Field) -> BitSet {
     unsafe { BitSet::from(blackPawnFrom[to as usize]) }
 }
 
-/// The ordinal number assigned to king configuration (wk, bk)
-pub fn kingConfig(wk: Field, bk: Field) -> usize {
-    unsafe { kingConf[((wk as usize) << 6) + (bk as usize)] as usize }
+/// The ordinal number assigned to king configuration (wk, bk) in a game with pawns
+fn kingPawnConfig(wk: Field, bk: Field) -> usize {
+    unsafe { kingPawnConf[((wk as usize) << 6) + (bk as usize)] as usize }
+}
+
+/// The ordinal number assigned to king configuration (wk, bk) in a game with pawns
+fn kingWithoutPawnConfig(wk: Field, bk: Field) -> usize {
+    unsafe { kingWithoutPawnConf[((wk as usize) << 6) + (bk as usize)] as usize }
+}
+
+/// The ordinal number assigned to king configuration (wk, bk) with (true) or without (false) pawns
+pub fn kingConfig(wk: Field, bk: Field, pawns: bool) -> usize {
+    if pawns {
+        kingPawnConfig(wk, bk)
+    } else {
+        kingWithoutPawnConfig(wk, bk)
+    }
 }

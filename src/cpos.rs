@@ -22,12 +22,9 @@ use super::{
     cposio::{byte_ro_map, cpos_ro_map, mk_egtb_path, short_ro_map},
     cposmove::{CPosMoveIterator, CPosReverseMoveIterator, CPosSimpleReverseMoveIterator},
     fen::encodeFEN,
-    fieldset::{BitSet, Field, ALLFIELDS},
+    fieldset::{BitSet, Field, A1D1D4_TRIANGLE, ALLFIELDS},
     mdb,
-    position::{
-        bit, Position, A1D1D4_TRIANGLE, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, LOWER_LEFT_QUARTER,
-        PAWN_FIELDS, WHITE_TO_MOVE,
-    },
+    position::{bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, PAWN_FIELDS, WHITE_TO_MOVE},
 };
 use CPosState::*;
 use Field::*;
@@ -1001,26 +998,6 @@ impl CPos {
         CPosSimpleReverseMoveIterator::new(*self, player)
     }
 
-    /// Get all the predecessors from [self] in canonic form.  [self] must itself be canonical.
-    /// This excludes "undoing" [PAWN] promotions and captures as well as "uncapturing" pieces.
-    /// The positions will have clear transformation bits and the moves are already adapted for possible mirrorings.
-    pub fn canonic_predecessors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
-        let opponent = player.opponent();
-        self.simple_reverse_move_iterator(player)
-            .map(|omv| {
-                if omv.player() == WHITE && omv.piece() == KING {
-                    let neu = self.unapply_nc(omv).light_canonical();
-                    let dmv = if neu.canonic_was_mirrored_d() { omv.mirror_d() } else { omv };
-                    let hmv = if neu.canonic_was_mirrored_h() { dmv.mirror_h() } else { dmv };
-                    let vmv = if neu.canonic_was_mirrored_v() { hmv.mirror_v() } else { hmv };
-                    (neu.clear_trans(), vmv)
-                } else {
-                    (self.unapply_nc(omv), omv)
-                }
-            })
-            .filter(move |(c, _)| c.valid(opponent))
-    }
-
     /// Iterator for all the predecessors of a [CPos] where it is [player]s move, that have the same signature as [CPos].
     /// This excludes "undoing" [PAWN] promotions and captures as well as "uncapturing" pieces.
     pub fn predecessors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
@@ -1302,7 +1279,7 @@ impl CPos {
         {
             3
         } else {
-            0
+            42
         }
     }
 
@@ -1327,7 +1304,9 @@ impl CPos {
             }
         });
         let pieces = (0..4).fold(2, |a, e| if self.piece_at(e) != EMPTY { a + 1 } else { a });
-        occupied.card() == pieces && pawns_ok && mdb::kingConfig(self.white_king(), self.black_king()) < 1806
+        occupied.card() == pieces
+            && pawns_ok
+            && mdb::kingConfig(self.white_king(), self.black_king(), true) < 1806
     }
 
     /// Return true iff, assuming it is `players` turn, the opponent's `KING` is **not** in check
@@ -1502,7 +1481,7 @@ impl CPos {
             let area = if p0 == PAWN || p1 == PAWN || p2 == PAWN || p3 == PAWN {
                 LEFT_HALF
             } else {
-                LOWER_LEFT_QUARTER
+                A1D1D4_TRIANGLE
             };
             if area.member(to) {
                 HARMLESS
@@ -1520,8 +1499,6 @@ impl CPos {
         let wk = self.white_king();
         if A1D1D4_TRIANGLE.member(wk) {
             self.clear_trans()
-        } else if LOWER_LEFT_QUARTER.member(wk) {
-            self.clear_trans()
         } else {
             if self.piece_at(0) == PAWN
                 || self.piece_at(1) == PAWN
@@ -1533,14 +1510,19 @@ impl CPos {
                 } else {
                     self.clear_trans().mirror_v().ordered()
                 }
-            }
-            // no pawns
-            else if LEFT_HALF.member(wk) {
-                self.clear_trans().mirror_h().ordered()
-            } else if LOWER_HALF.member(wk) {
-                self.clear_trans().mirror_v().ordered()
             } else {
-                self.clear_trans().mirror_v().mirror_h().ordered()
+                // no pawns
+                let mut this = self.clear_trans();
+                if !LEFT_HALF.member(wk) {
+                    this = this.mirror_h();
+                }
+                if !LOWER_HALF.member(this.white_king()) {
+                    this = this.mirror_h();
+                }
+                if !A1D1D4_TRIANGLE.member(this.white_king()) {
+                    this = this.mirror_d();
+                }
+                this.ordered()
             }
         }
     }
@@ -1565,7 +1547,8 @@ impl CPos {
         }
         let inx = self.piece_index_by_mv(mv) & 3;
         if mv.piece() != KING
-            && (self.piece_at(inx) != mv.piece()
+            && (inx > 3
+                || self.piece_at(inx) != mv.piece()
                 || self.player_at(inx) != mv.player()
                 || self.field_at(inx) != mv.from())
         {
@@ -1585,7 +1568,7 @@ impl CPos {
             bits: (self.bits & CPos::COMP_BITS & !CPos::WHITE_BIT)
                 | if mv.player() == WHITE { CPos::WHITE_BIT } else { 0 }
                 | if mv.piece() == KING { CPos::KING_MOVE_BIT } else { 0 }
-                | ((self.piece_index_by_mv(mv) & 3) << CPos::PIECE_INDEX_SHIFT)
+                | (inx << CPos::PIECE_INDEX_SHIFT)
                 | (match mv.promote() {
                     BISHOP => 1,
                     ROOK => 2,
@@ -1728,20 +1711,18 @@ impl CPos {
                 self.switch_black_and_white()
             }
         };
-        let kf = this.white_king();
-        if !LEFT_HALF.member(kf) {
+
+        if !LEFT_HALF.member(this.white_king()) {
             this = this.mirror_v();
         }
-        debug_assert!(LEFT_HALF.member(this.white_king()));
+
         // the king is now in the left half
-        if !has_pawns && !LOWER_HALF.member(kf) {
+        if !has_pawns && !LOWER_HALF.member(this.white_king()) {
             this = this.mirror_h();
-            debug_assert!(LOWER_LEFT_QUARTER.member(this.white_king()));
-            /*
-            if !A1D1D4_TRIANGLE.member(this.white_king()) {
-                this = this.mirror_d();
-            }
-            */
+        }
+
+        if !A1D1D4_TRIANGLE.member(this.white_king()) {
+            this = this.mirror_d();
         }
         // make sure this **is** ordered.
         this.ordered()
@@ -1893,15 +1874,17 @@ impl CPos {
     pub fn canonic_addr(&self) -> NibbleAddr {
         let wK = self.white_king();
         let bK = self.black_king();
-        let ord_k = mdb::kingConfig(wK, bK) as u64;
         let www0 = self.www_at(0);
         let www1 = self.www_at(1);
         let www2 = self.www_at(2);
         let www3 = self.www_at(3);
+
         // let n_pawns0 = 0;
         let n_pawns1 = if www0.1 == PAWN { 1 } else { 0 };
         let n_pawns2 = n_pawns1 + if www1.1 == PAWN { 1 } else { 0 };
         let n_pawns3 = n_pawns2 + if www2.1 == PAWN { 1 } else { 0 };
+        let n_pawns = n_pawns3 + if www3.1 == PAWN { 1 } else { 0 };
+        let ord_k = mdb::kingConfig(wK, bK, n_pawns > 0) as u64;
         let p_max0 = match www0.1 {
             EMPTY => 1,
             PAWN => 48,
@@ -2018,8 +2001,8 @@ impl CPos {
         // any index other than 0,1,2,3 requests next king config
         if u > 3 {
             // make next king configuration
-            let ord_k = mdb::kingConfig(self.white_king(), self.black_king());
-            let max = if pawns { 1805 } else { 902 };
+            let ord_k = mdb::kingConfig(self.white_king(), self.black_king(), pawns);
+            let max = if pawns { 1805 } else { 563 };
             if ord_k >= max {
                 return None;
             }
@@ -2027,7 +2010,7 @@ impl CPos {
             while kinx < 64 * 64 {
                 let w = Field::from(kinx >> 6);
                 let b = Field::from(kinx & 0x3f);
-                if mdb::kingConfig(w, b) <= max {
+                if mdb::kingConfig(w, b, pawns) <= max {
                     return Some(self.move_king(WHITE, w).move_king(BLACK, b).bits);
                 }
                 kinx += 1;
@@ -2215,19 +2198,27 @@ impl CPos {
     pub fn lookup_canonic(&self, array: &[u8]) -> Result<CPos, String> {
         let addr = self.canonic_addr();
         if addr.bytes() > array.len() {
-            Err(format!(
+            // Err(format!(
+            panic!(
                 "array length {} < {} for {:?}  {:?}",
                 array.len(),
                 addr.bytes(),
                 addr,
                 self
-            ))
+            );
         } else {
             let nibble = addr.get_nibble(array);
             let ws = nibble >> 2;
             let bs = nibble & 3;
             Ok(self.with_state(CPosState::from(ws), CPosState::from(bs)))
         }
+    }
+
+    /// Look up a light canonic CPos in an u8 slice and set the state flags accordingly in the result
+    pub fn lookup_light(&self, array: &[u8]) -> Result<CPos, String> {
+        self.light_canonical()
+            .lookup_canonic(array)
+            .map(|r| self.with_state(r.state(WHITE), r.state(BLACK)))
     }
 
     /// Constructs a nibble from the state information and puts it in an array.

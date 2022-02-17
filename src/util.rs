@@ -7,10 +7,10 @@ use sysinfo::SystemExt;
 /// We try to use 8 GB for in-place sort.
 /// Why 8 GB? Because my computer has only 16GB memory and I want to do
 /// some other things while the sort runs for hours.
-pub const CHUNK: usize = 1024 * 1024 * 1024;
+pub const CHUNK: usize = 1000 * 1000 * 1000;
 
 /// Use a higher buffer size for our files
-pub const BUFSZ: usize = 16 * 1024 * 1024;
+pub const BUFSZ: usize = 20 * 1024 * 1024;
 
 /// Helper to print big numbers nicely
 pub fn formatted64(u: u64) -> String {
