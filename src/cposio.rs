@@ -19,6 +19,10 @@ pub struct MPosDTM {
     pub dtm: u16,
 }
 
+pub fn mk_mpos_dtm(mpos: MPos, dtm: u16) -> MPosDTM {
+    MPosDTM { mpos, dtm }
+}
+
 impl MPosDTM {
     pub fn read_seq(reader: &mut BufReader<File>) -> io::Result<Self> {
         let mut buf = [0u8; 2];

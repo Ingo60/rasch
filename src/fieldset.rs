@@ -460,6 +460,7 @@ pub const fn bit(f: Field) -> BitSet {
 }
 
 /// Mask the fields in the triangle A1 - D1 - D4
+/// In a pawnless endgame, the white king will be constrained to this triangle
 /// ```
 /// use rasch::fieldset::{bit, A1D1D4_TRIANGLE};
 /// use rasch::fieldset::BitSet;
@@ -470,6 +471,41 @@ pub const fn bit(f: Field) -> BitSet {
 ///     + bit(A1) + bit(B1) + bit(C1) + bit(D1));
 /// ```
 pub const A1D1D4_TRIANGLE: BitSet = BitSet { bits: 0x0000_0000_080c_0e0f };
+
+/// The diagonal where we mirror
+/// ```
+/// use rasch::fieldset::{bit, A1H8_DIAGONAL};
+/// use rasch::fieldset::BitSet;
+/// use rasch::fieldset::Field::*;
+/// assert_eq!(A1H8_DIAGONAL, BitSet::empty()
+///                                                                           + bit(H8)
+///                                                                 + bit(G7)
+///                                                       + bit(F6)
+///                                             + bit(E5)
+///                                   + bit(D4)
+///                         + bit(C3)
+///               + bit(B2)
+///     + bit(A1));
+/// ```
+pub const A1H8_DIAGONAL: BitSet = BitSet { bits: 0x8040_2010_0804_0201 };
+
+/// In a pawnless game, when the white KING is A1, B2, C3 or D4,
+/// the black king will always be in the A1 - H1 - H8 triangle.
+/// ```
+/// use rasch::fieldset::{bit, A1H1H8_TRIANGLE};
+/// use rasch::fieldset::BitSet;
+/// use rasch::fieldset::Field::*;
+/// assert_eq!(A1H1H8_TRIANGLE, BitSet::empty()
+///                                                                           + bit(H8)
+///                                                                 + bit(G7) + bit(H7)
+///                                                       + bit(F6) + bit(G6) + bit(H6)
+///                                             + bit(E5) + bit(F5) + bit(G5) + bit(H5)
+///                                   + bit(D4) + bit(E4) + bit(F4) + bit(G4) + bit(H4)
+///                         + bit(C3) + bit(D3) + bit(E3) + bit(F3) + bit(G3) + bit(H3)
+///               + bit(B2) + bit(C2) + bit(D2) + bit(E2) + bit(F2) + bit(G2) + bit(H2)
+///     + bit(A1) + bit(B1) + bit(C1) + bit(D1) + bit(E1) + bit(F1) + bit(G1) + bit(H1));
+/// ```
+pub const A1H1H8_TRIANGLE: BitSet = BitSet { bits: 0x80C0_E0F0_F8FC_FEFF };
 
 #[cfg(test)]
 mod tests {

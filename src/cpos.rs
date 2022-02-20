@@ -22,7 +22,7 @@ use super::{
     cposio::{byte_ro_map, cpos_ro_map, mk_egtb_path, short_ro_map},
     cposmove::{CPosMoveIterator, CPosReverseMoveIterator, CPosSimpleReverseMoveIterator},
     fen::encodeFEN,
-    fieldset::{BitSet, Field, A1D1D4_TRIANGLE, ALLFIELDS},
+    fieldset::{BitSet, Field, A1D1D4_TRIANGLE, A1H1H8_TRIANGLE, A1H8_DIAGONAL, ALLFIELDS},
     mdb,
     position::{bit, Position, EN_PASSANT_BITS, LEFT_HALF, LOWER_HALF, PAWN_FIELDS, WHITE_TO_MOVE},
 };
@@ -1480,12 +1480,29 @@ impl CPos {
         {
             SIGNATURE
         } else if mv.player() == WHITE && mv.piece() == KING {
-            let area = if p0 == PAWN || p1 == PAWN || p2 == PAWN || p3 == PAWN {
-                LEFT_HALF
+            if p0 == PAWN || p1 == PAWN || p2 == PAWN || p3 == PAWN {
+                if LEFT_HALF.member(to) {
+                    HARMLESS
+                } else {
+                    CANONICALITY
+                }
             } else {
-                A1D1D4_TRIANGLE
-            };
-            if area.member(to) {
+                // no pawns
+                if !A1D1D4_TRIANGLE.member(to) || A1H8_DIAGONAL.member(to)
+                // && !A1H1H8_TRIANGLE.member(self.black_king())
+                {
+                    CANONICALITY
+                } else {
+                    HARMLESS
+                }
+            }
+        } else if mv.player() == BLACK && mv.piece() == KING {
+            if p0 == PAWN
+                || p1 == PAWN
+                || p2 == PAWN
+                || p3 == PAWN
+                || (A1H1H8_TRIANGLE.member(to) && !A1H8_DIAGONAL.member(to))
+            {
                 HARMLESS
             } else {
                 CANONICALITY
@@ -1499,33 +1516,37 @@ impl CPos {
     /// When the position was canonical, the trans bits get cleared.
     pub fn light_canonical(&self) -> CPos {
         let wk = self.white_king();
-        if A1D1D4_TRIANGLE.member(wk) {
-            self.clear_trans()
-        } else {
-            if self.piece_at(0) == PAWN
-                || self.piece_at(1) == PAWN
-                || self.piece_at(2) == PAWN
-                || self.piece_at(3) == PAWN
-            {
-                if LEFT_HALF.member(wk) {
-                    self.clear_trans()
-                } else {
-                    self.clear_trans().mirror_v().ordered()
-                }
+        if self.piece_at(0) == PAWN
+            || self.piece_at(1) == PAWN
+            || self.piece_at(2) == PAWN
+            || self.piece_at(3) == PAWN
+        {
+            if LEFT_HALF.member(wk) {
+                self.clear_trans()
             } else {
-                // no pawns
-                let mut this = self.clear_trans();
-                if !LEFT_HALF.member(wk) {
-                    this = this.mirror_h();
-                }
-                if !LOWER_HALF.member(this.white_king()) {
-                    this = this.mirror_h();
-                }
-                if !A1D1D4_TRIANGLE.member(this.white_king()) {
-                    this = this.mirror_d();
-                }
-                this.ordered()
+                self.clear_trans().mirror_v().ordered()
             }
+        } else {
+            // no pawns
+            let mut this = self.clear_trans();
+            if !LEFT_HALF.member(wk) {
+                this = this.mirror_v();
+            }
+            if !LOWER_HALF.member(this.white_king()) {
+                this = this.mirror_h();
+            }
+            // bring the white king in the small triangle a1-d1-d4
+            // bring the black king in the big triangle a1-h1-h8
+            // if both kings are already there, choose the one with the greater value
+            if !A1D1D4_TRIANGLE.member(this.white_king())
+                || (A1H8_DIAGONAL.member(this.white_king())
+                    && (!A1H1H8_TRIANGLE.member(this.black_king())
+                        || A1H8_DIAGONAL.member(this.black_king())
+                            && this.mirror_d().ordered() > this.ordered()))
+            {
+                this = this.mirror_d();
+            }
+            this.ordered()
         }
     }
 
@@ -1691,7 +1712,9 @@ impl CPos {
     /// Make a canonical CPos for lookup in the DB
     /// A canonical CPos has a canonic signature and
     /// the white king is in the left half and,
-    /// if there are now pawns, in the lower half.
+    /// if there are now pawns, in the A1 - D1 - D4 triangle.
+    /// In addition, if there are no pawns and if the white king is on the diagonal A1, B2, C3, D4,
+    /// the black king will get forced to the right lower triangle A1 - H1 - H8.
     ///
     /// We pass the signature here explicitely to save calls to signature(), this way
     /// a client can store it when it is needed more than once.
@@ -1719,12 +1742,23 @@ impl CPos {
         }
 
         // the king is now in the left half
-        if !has_pawns && !LOWER_HALF.member(this.white_king()) {
-            this = this.mirror_h();
-        }
+        // More must be done only if there are no pawns!
+        if !has_pawns {
+            if !LOWER_HALF.member(this.white_king()) {
+                this = this.mirror_h();
+            }
 
-        if !A1D1D4_TRIANGLE.member(this.white_king()) {
-            this = this.mirror_d();
+            // When the white king is not in his triangle, flip it in.
+            // Also, when it is already there but is on the diagonal, make sure the black king is in the a1-h1-h8 triangle
+            // When both KINGS are on the diagonal, retain the one that is greater
+            if !A1D1D4_TRIANGLE.member(this.white_king())
+                || (A1H8_DIAGONAL.member(this.white_king())
+                    && (!A1H1H8_TRIANGLE.member(this.black_king())
+                        || A1H8_DIAGONAL.member(this.black_king())
+                            && this.mirror_d().ordered() > this.ordered()))
+            {
+                this = this.mirror_d();
+            }
         }
         // make sure this **is** ordered.
         this.ordered()
@@ -1828,7 +1862,7 @@ impl CPos {
     }
 
     /// Return a CPos with the pieces ordered in such a way that white pieces come before black ones,
-    /// better pieces before not so good ones, but among equal pieces of the same player the fields are ascending.
+    /// better pieces before not so good ones, but among equal pieces of the same player the fields are descending.
     pub fn ordered(&self) -> CPos {
         let mut bits = self.bits;
         if CPos::need_swap(CPos::ccval_A(bits), CPos::ccval_B(bits)) {
@@ -2004,7 +2038,7 @@ impl CPos {
         if u > 3 {
             // make next king configuration
             let ord_k = mdb::kingConfig(self.white_king(), self.black_king(), pawns);
-            let max = if pawns { 1805 } else { 563 };
+            let max = if pawns { 1805 } else { 461 };
             if ord_k >= max {
                 return None;
             }
@@ -2019,7 +2053,7 @@ impl CPos {
             }
             panic!("big oops for ord_k={} max={} {:?}", ord_k, max, self);
         }
-
+        // at this point u must be one of 0,1,2 or 3
         let prev_u = if u == 0 { 42 } else { u - 1 };
         // is it empty, perhaps?
         if self.piece_at(u) == EMPTY {
@@ -2067,6 +2101,11 @@ impl CPos {
             let f0 = next.field_at(0);
             let f1 = next.field_at(1);
             let f2 = next.field_at(2);
+            // if the kings and are on the diagonal,
+            // it must be made sure that ordered diagonal mirroring
+            // doesn't yield a greater CPos
+            let diag =
+                !pawns && A1H8_DIAGONAL.member(next.white_king()) && A1H8_DIAGONAL.member(next.black_king());
 
             if f != next.white_king()
                 && f != next.black_king()
@@ -2074,6 +2113,7 @@ impl CPos {
                     || u == 1 && f != f0
                     || u == 2 && f != f0 && f != f1
                     || u == 3 && f != f0 && f != f1 && f != f2)
+                && (!diag || next >= next.mirror_d().ordered())
             {
                 return Some(next.bits);
             }

@@ -359,8 +359,16 @@ unsafe fn genKing() {
     assert_eq!(goodconfs, 1806);
     goodconfs = 0;
     for wk in 0..64 {
+        let fwk = Field::from(wk as u64);
+        let ondiag = A1H8_DIAGONAL.member(fwk);
+        let intriangle = A1D1D4_TRIANGLE.member(fwk);
         for bk in 0..64 {
-            if A1D1D4_TRIANGLE.member(Field::from(wk as u64)) && wk != bk && kingTo[wk] & (1 << bk) == 0 {
+            let fbk = Field::from(bk as u64);
+            if intriangle
+                && wk != bk
+                && kingTo[wk] & (1 << bk) == 0
+                && (!ondiag || A1H1H8_TRIANGLE.member(fbk))
+            {
                 kingWithoutPawnConf[(wk << 6) + bk] = goodconfs;
                 goodconfs += 1;
             } else {
@@ -368,7 +376,7 @@ unsafe fn genKing() {
             }
         }
     }
-    assert_eq!(goodconfs, 564);
+    assert_eq!(goodconfs, 462);
 }
 
 /**
