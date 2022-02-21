@@ -1028,6 +1028,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
 
             ScanUM(at) => {
                 eprint!("{}  Pass {:2} - retrograde analysis    0‰    0 ", signature, pass);
+                m_hash.clear(); // reduce the virtual memory load
                 let mut um_reader = cpos_open_reader(&um_path)?;
                 um_reader
                     .seek(SeekFrom::Start(at as u64 * 10))
@@ -1162,6 +1163,9 @@ fn scan_mates_aliens(
                 let mut all_successors_can_mate = true;
                 let mut no_moves = true;
                 let mut max_dtm = 0;
+                if !mate_only && cp.alien_successors(player).next().is_none() {
+                    continue 'next_player;
+                }
                 for (succ, mv) in cp.successors(player) {
                     no_moves = false;
                     if mate_only {
@@ -1254,14 +1258,23 @@ fn scan_um(
 
     let mut n_winner = 0usize;
     let mut n_looser = 0usize;
+    let mut w_pos = writer
+        .flush()
+        .and_then(|_| writer.stream_position())
+        .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
+        / 10;
+    let w_pos0 = w_pos;
 
     loop {
         // make sure the reader can "see" the changes that happened
-        let w_pos = writer
-            .flush()
-            .and_then(|_| writer.stream_position())
-            .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
-            / 10;
+        if r_pos + 1 >= w_pos {
+            w_pos = writer
+                .flush()
+                .and_then(|_| writer.stream_position())
+                .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
+                / 10;
+            progress(r_pos, w_pos0 + n_winner);
+        }
 
         match MPosDTM::read_seq(reader) {
             Err(some) if some.kind() == UnexpectedEof => break,
@@ -1274,7 +1287,7 @@ fn scan_um(
                         sigint_received.store(false, atomic::Ordering::SeqCst);
                         return Ok(Some(r_pos));
                     }
-                    progress(r_pos, w_pos);
+                    progress(r_pos, w_pos0 + n_winner);
                 }
                 let cpos = item.mpos.mpos_to_cpos();
                 if cpos == DEBUG_POSITION {
@@ -1314,26 +1327,6 @@ fn scan_um(
                             if dbu == DEBUG_POSITION {
                                 eprintln!(" \x08");
                             }
-                            /*
-                            if no_pawns
-                                // without pawns, the white king must for sure be in its triangle for a canonic position
-                                && A1H8_DIAGONAL.member(dbu.white_king())
-                                && A1H8_DIAGONAL.member(dbu.black_king())
-                            {
-                                // the diagonal mirror must also be lost
-                                let dbx = dbu.mirror_d().ordered().lookup_canonic(edb)?;
-                                if dbx.state(player.opponent()) == DRAW {
-                                    dbx.with_db_state_for(player.opponent(), LOST, edb);
-                                    n_looser += 1;
-                                    // this may also give rise to new can mates
-                                    for (canm, umv) in dbx.predecessors(player.opponent()) {
-                                        let w =
-                                            register_winner(signature, canm, umv, item.dtm + 2, writer, edb)?;
-                                        n_winner += w;
-                                    }
-                                }
-                            }
-                            */
                         }
                     }
                 }

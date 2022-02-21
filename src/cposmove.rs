@@ -14,7 +14,7 @@ use super::{
     // fen::encodeFEN,
     fieldset::{BitSet, Field},
     mdb,
-    position::{bit, pieceTargets},
+    position::{bit, pieceTargets, PAWN_FIELDS},
     util::formatted_h,
 };
 
@@ -74,6 +74,8 @@ pub struct CPosMoveIterator {
     whites: BitSet,
     occupied: BitSet,
     targets: BitSet,
+    /// only capturing moves and PAWN promotions
+    capturing: bool,
 }
 
 /// Find raw `Move`s of the opponent of `player` that could have resulted in the given `cpos`.
@@ -133,7 +135,7 @@ pub struct CPosSimpleReverseMoveIterator {
 }
 
 impl CPosMoveIterator {
-    pub fn new(p: CPos, player: Player) -> CPosMoveIterator {
+    pub fn new(p: CPos, player: Player, capturing_only: bool) -> CPosMoveIterator {
         let mut this = CPosMoveIterator {
             cpos: p,
             player,
@@ -142,6 +144,7 @@ impl CPosMoveIterator {
             occupied: BitSet::empty(),
             index: 4,
             targets: BitSet::empty(),
+            capturing: capturing_only,
         };
         let wkbit = bit(p.white_king());
         this.occupied = this.occupied + wkbit;
@@ -163,10 +166,21 @@ impl CPosMoveIterator {
                 }
             }
         }
-        this.targets = if this.index < 4 {
-            pieceTargets(p.piece_at(this.index), player, p.field_at(this.index))
+        let restrict = if this.capturing {
+            if p.piece_at(this.index) == PAWN {
+                // capture or promote
+                !PAWN_FIELDS + this.occupied_by_him()
+            } else {
+                // capture
+                this.occupied_by_him()
+            }
         } else {
-            pieceTargets(KING, player, p.players_king(player))
+            BitSet::all()
+        };
+        this.targets = if this.index < 4 {
+            pieceTargets(p.piece_at(this.index), player, p.field_at(this.index)) * restrict
+        } else {
+            pieceTargets(KING, player, p.players_king(player)) * restrict
         };
         this
     }
@@ -209,14 +223,25 @@ impl Iterator for CPosMoveIterator {
                 None => {
                     // continue with next piece, if any, or the king
                     self.index += 1;
+                    let restrict = if self.capturing {
+                        if self.cpos.piece_at(self.index) == PAWN {
+                            !PAWN_FIELDS + self.occupied_by_him()
+                        } else {
+                            self.occupied_by_him()
+                        }
+                    } else {
+                        BitSet::all() // unrestricted
+                    };
                     if self.index < 4 {
                         let pc = self.cpos.piece_at(self.index);
                         if pc != EMPTY && self.cpos.player_at(self.index) == self.player {
                             // found next piece
-                            self.targets = pieceTargets(pc, self.player, self.cpos.field_at(self.index));
+                            self.targets =
+                                pieceTargets(pc, self.player, self.cpos.field_at(self.index)) * restrict;
                         };
                     } else if self.index == 4 {
-                        self.targets = pieceTargets(KING, self.player, self.cpos.players_king(self.player));
+                        self.targets =
+                            pieceTargets(KING, self.player, self.cpos.players_king(self.player)) * restrict;
                     } else
                     /* if self.index > 4 */
                     {

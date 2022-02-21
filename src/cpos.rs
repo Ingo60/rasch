@@ -955,7 +955,12 @@ impl CPos {
 
     /// make a move iterator from this CPos
     pub fn move_iterator(&self, player: Player) -> CPosMoveIterator {
-        CPosMoveIterator::new(*self, player)
+        CPosMoveIterator::new(*self, player, false)
+    }
+
+    /// make a move iterator from this CPos that returns only moves that capture or promote a PAWN
+    pub fn alien_move_iterator(&self, player: Player) -> CPosMoveIterator {
+        CPosMoveIterator::new(*self, player, true)
     }
 
     /// make a reverse move iterator from this CPos
@@ -1012,6 +1017,13 @@ impl CPos {
     /// All sorts of moves are considered, so beware of successors with different signatures.
     pub fn successors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
         self.move_iterator(player)
+            .map(|mv| (self.apply(mv), mv))
+            .filter(move |(c, _)| c.valid(player.opponent()))
+    }
+
+    /// Iterator for the alien successors of a [CPos] assuming it is [player]s move.
+    pub fn alien_successors(&'_ self, player: Player) -> impl Iterator<Item = (CPos, Move)> + '_ {
+        self.alien_move_iterator(player)
             .map(|mv| (self.apply(mv), mv))
             .filter(move |(c, _)| c.valid(player.opponent()))
     }
