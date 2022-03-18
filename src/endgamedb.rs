@@ -900,6 +900,7 @@ pub fn gen(sig: &str) -> Result<(), String> {
                 let (xmap, xdb) = byte_anon_map(1)?;
                 e_map = xmap;
                 edb = xdb;
+                e_hash.clear();
                 rename(Path::new(&work_path), Path::new(&egtb_path))
                     .map_err(|e| format!("mv {} {} failed ({})", work_path, egtb_path, e))?;
                 state = EgtbPresent;
@@ -1029,11 +1030,19 @@ pub fn gen(sig: &str) -> Result<(), String> {
             ScanUM(at) => {
                 eprint!("{}  Pass {:2} - retrograde analysis    0‰    0 ", signature, pass);
                 m_hash.clear(); // reduce the virtual memory load
+                d_hash.clear();
                 let mut um_reader = cpos_open_reader(&um_path)?;
                 um_reader
                     .seek(SeekFrom::Start(at as u64 * 10))
                     .map_err(|e| format!("Can't seek {} to index {} ({})", um_path, at, e))?;
-                let r = scan_um(signature, &mut um_reader, &mut um_writer, edb, &mut e_hash)?;
+                let r = scan_um(
+                    signature,
+                    &um_path,
+                    &mut um_reader,
+                    &mut um_writer,
+                    edb,
+                    &mut e_hash,
+                )?;
                 eprint!("    Flushing {} and {} ... ", work_path, um_path);
                 e_map
                     .flush()
@@ -1244,13 +1253,12 @@ fn scan_mates_aliens(
 /// Returns Ok(Some(position)) if interrupted, otherwise Ok(None)
 fn scan_um(
     signature: Signature,
+    um_path: &str,
     reader: &mut BufReader<File>,
     writer: &mut BufWriter<File>,
     edb: &mut [u8],
     e_hash: &mut EgtbMap,
 ) -> Result<Option<usize>, String> {
-    // let no_pawns = !signature.has_pawns();
-    let um_path = mk_temp_path(signature, "um");
     let mut r_pos = reader
         .stream_position()
         .map_err(|e| format!("seek reader {} ({})", um_path, e))? as usize
@@ -1258,21 +1266,24 @@ fn scan_um(
 
     let mut n_winner = 0usize;
     let mut n_looser = 0usize;
-    let mut w_pos = writer
+
+    writer
         .flush()
-        .and_then(|_| writer.stream_position())
-        .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
-        / 10;
-    let w_pos0 = w_pos;
+        .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))?;
+
+    let w_pos0 = std::fs::metadata(Path::new(um_path))
+        .map_err(|e| format!("can't stat {} ({})", um_path, e))
+        .map(|m| (m.len() / 10) as usize)?;
+    let mut w_pos = w_pos0;
 
     loop {
         // make sure the reader can "see" the changes that happened
         if r_pos + 1 >= w_pos {
-            w_pos = writer
+            writer
                 .flush()
-                .and_then(|_| writer.stream_position())
-                .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))? as usize
-                / 10;
+                // .and_then(|_| writer.stream_position())
+                .map_err(|e| format!("flush/seek writer {} ({})", um_path, e))?;
+            w_pos = w_pos0 + n_winner;
             progress(r_pos, w_pos0 + n_winner);
         }
 
@@ -1281,7 +1292,7 @@ fn scan_um(
             Err(other) => Err(format!("read error on {} ({})", um_path, other))?,
             Ok(item) => {
                 r_pos += 1;
-                if w_pos > 0 && (r_pos % (32 * 1024) == 0 || r_pos + 1 == w_pos) {
+                if w_pos0 + n_winner > 0 && (r_pos % (32 * 1024) == 0 || r_pos + 1 == w_pos0 + n_winner) {
                     if sigint_received.load(atomic::Ordering::SeqCst) {
                         eprintln!("\x08\x08 canceled.");
                         sigint_received.store(false, atomic::Ordering::SeqCst);
@@ -1343,10 +1354,9 @@ fn scan_um(
 /// (as the vscode debugger displays only raw decimal values)
 pub fn debug(args: &[String]) -> Result<(), String> {
     let mut w = 0;
-    let mut ehash = HashMap::new();
+    let mut e_hash = HashMap::new();
     let mut m_hash = HashMap::new();
     let mut d_hash = HashMap::new();
-    let e_hash = &mut ehash;
 
     let decode_pos = |s: &str| {
         if s.starts_with("0x") {
@@ -1393,23 +1403,23 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                     mpos.mpos_debug()
                 );
                 let cpos = mpos.mpos_to_cpos();
-                let succ = cpos.apply(cpos.mv_from_mpos(mpos)).find(e_hash).unwrap();
+                let succ = cpos.apply(cpos.mv_from_mpos(mpos)).find(&mut e_hash).unwrap();
                 eprintln!("succ  {}  0x{:016x}  {:?} ", succ.signature(), succ.bits, succ);
                 w += 2;
             }
             "dtm" => {
                 let cpos = decode_pos(&args[w + 1]);
-                match cpos.find_state(WHITE, e_hash) {
+                match cpos.find_state(WHITE, &mut e_hash) {
                     Err(s) => eprintln!("{}", s),
-                    Ok(ws) => match cpos.find_state(BLACK, e_hash) {
+                    Ok(ws) => match cpos.find_state(BLACK, &mut e_hash) {
                         Err(s) => eprintln!("{}", s),
                         Ok(bs) => {
                             let xpos = cpos.with_state(ws, bs);
                             let wdtm = xpos
-                                .find_dtm(WHITE, e_hash, &mut m_hash, &mut d_hash)
+                                .find_dtm(WHITE, &mut e_hash, &mut m_hash, &mut d_hash)
                                 .map_err(|_| "NO DTM".to_string());
                             let bdtm = xpos
-                                .find_dtm(BLACK, e_hash, &mut m_hash, &mut d_hash)
+                                .find_dtm(BLACK, &mut e_hash, &mut m_hash, &mut d_hash)
                                 .map_err(|_| "NO DTM".to_string());
                             eprintln!(
                                 "cpos  {}  0x{:016x}  {:?}  DTM(w) {:?} DTM(b) {:?}",
@@ -1428,7 +1438,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
             "succ" => {
                 let cpos = decode_pos(&args[w + 1]);
                 eprint!("cpos  {}  0x{:016x}  {:?}  ", cpos.signature(), cpos.bits, cpos);
-                match cpos.find(e_hash) {
+                match cpos.find(&mut e_hash) {
                     Err(s) => eprintln!("not found in EGTB {}", s),
                     Ok(epos) => {
                         if epos == cpos {
@@ -1448,7 +1458,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                                         succ.bits,
                                         succ
                                     );
-                                    match succ.find(e_hash) {
+                                    match succ.find(&mut e_hash) {
                                         Err(s) => eprintln!("    error {}", s),
                                         Ok(esuc) => eprintln!(
                                             "    canonic         {}  0x{:016x}  {:?}",
@@ -1464,17 +1474,146 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                 }
                 w += 2;
             }
+            "opt" => {
+                let mut player = if args[w + 1].starts_with("w") { WHITE } else { BLACK };
+                let mut wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(&mut e_hash)?;
+                // let winner = if wpos.state(player) == WINS { player } else { player.opponent() };
+                // let looser = winner.opponent();
+                w += 3;
+
+                while wpos.state(player) == WINS || wpos.state(player) == LOST {
+                    let signature = wpos.signature();
+                    if wpos.state(player) == WINS {
+                        let mpos = wpos.find_canonic_mpos(signature, player, &mut m_hash)?;
+                        let dtm = wpos.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
+                        eprintln!(
+                            "wins    0x{:013x}  {}  {}  DTM {:5}  {}",
+                            mpos.mpos_to_cpos().bits,
+                            mpos.mpos_debug(),
+                            mpos.signature(),
+                            dtm,
+                            encodeFEN(&mpos.uncompressed(player))
+                        );
+                        let mut min_mv = wpos.clear_trans().mv_from_mpos(mpos);
+                        let next = wpos.mpos_to_cpos().apply(min_mv).mk_canonical();
+                        let mut min = next.find(&mut e_hash)?;
+                        let mut min_dtm = min.find_dtm(
+                            mpos.mpos_player().opponent(),
+                            &mut e_hash,
+                            &mut m_hash,
+                            &mut d_hash,
+                        )?;
+                        for (succ, mv) in wpos.clear_trans().successors(player) {
+                            if succ.find_state(player.opponent(), &mut e_hash) == Ok(LOST) {
+                                let lost = succ.find(&mut e_hash)?;
+                                let looser =
+                                    if lost.canonic_has_bw_switched() { player } else { player.opponent() };
+                                let ldtm =
+                                    succ.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
+                                if ldtm < min_dtm {
+                                    min_dtm = ldtm;
+                                    min = lost;
+                                    min_mv = mv;
+                                }
+                                if ldtm <= dtm || lost == next {
+                                    eprintln!(
+                                        "{} {: <5} 0x{:013x}  {:?}  {}  DTM {:5}  {}",
+                                        if lost == next { '→' } else { ' ' },
+                                        mv.algebraic(),
+                                        lost.mpos_to_cpos().bits,
+                                        lost,
+                                        lost.signature(),
+                                        dtm,
+                                        encodeFEN(&lost.uncompressed(looser))
+                                    );
+                                }
+                            }
+                        }
+                        if next != min {
+                            let better = wpos.mpos_from_mv(min_mv);
+                            eprintln!(
+                                "better  0x{:013x}  {}  {}  DTM {:5}  {}",
+                                better.mpos_to_cpos().bits,
+                                better.mpos_debug(),
+                                better.signature(),
+                                min_dtm + 1,
+                                encodeFEN(&better.uncompressed(player))
+                            );
+                        }
+                        if dtm != min_dtm + 1 {
+                            eprintln!("    DTM {} was incorrect, should have been {}", dtm, min_dtm + 1);
+                        }
+                        player = if min.canonic_has_bw_switched() { player } else { player.opponent() };
+                        wpos = min;
+                    } else {
+                        // looser
+                        let dtm = wpos.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
+
+                        eprintln!(
+                            "lost    0x{:013x}  {:?}  {}  DTM {:5}  {}",
+                            wpos.mpos_to_cpos().bits,
+                            wpos,
+                            signature,
+                            dtm,
+                            encodeFEN(&wpos.uncompressed(player))
+                        );
+                        let mut worst = None;
+                        let mut dtm_max = 0;
+                        for (succ, _mv) in wpos.clear_trans().successors(player) {
+                            let wins = succ.find(&mut e_hash)?;
+                            let dtm =
+                                wins.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
+                            match worst {
+                                None => {
+                                    worst = Some(wins);
+                                    dtm_max = dtm;
+                                }
+                                Some(_) if dtm > dtm_max => {
+                                    worst = Some(wins);
+                                    dtm_max = dtm;
+                                }
+                                _ => {}
+                            }
+                        }
+                        match worst {
+                            None => return Ok(()),
+                            Some(pos) => {
+                                wpos = pos;
+                                player =
+                                    if wpos.canonic_has_bw_switched() { player } else { player.opponent() };
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "pos     0x{:013x}  {:?}  {}  neither winner nor looser",
+                    wpos.mpos_to_cpos().bits,
+                    wpos,
+                    wpos.signature()
+                );
+                // return Err("not winner, not looser".to_uppercase());
+            }
             "looser" => {
                 let player = if args[w + 1].starts_with("w") { WHITE } else { BLACK };
-                let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(e_hash)?;
+                let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(&mut e_hash)?;
                 w += 3;
                 let signature = wpos.signature();
                 for (pred, _mv) in wpos.predecessors(player) {
-                    let wins = pred.find(e_hash)?;
-                    let dtm = pred.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
+                    let wins = pred.find(&mut e_hash)?;
+                    let dtm = pred.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
                     let mpos = wins.find_canonic_mpos(wins.signature(), player.opponent(), &mut m_hash)?;
                     eprintln!(
-                        "pred    0x{:013x}  {}  {}  DTM {:5}",
+                        "wins{}   0x{:013x}  {}  {}  DTM {:5}  ",
+                        if wins
+                            .mpos_to_cpos()
+                            .apply(wins.mpos_to_cpos().mv_from_mpos(mpos))
+                            .light_canonical()
+                            == wpos
+                        {
+                            '→'
+                        } else {
+                            ' '
+                        },
                         wins.mpos_to_cpos().bits,
                         mpos.mpos_debug(),
                         wins.signature(),
@@ -1488,7 +1627,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                     signature
                 );
                 if wpos.state(player) == LOST {
-                    let dtm = wpos.find_dtm(player, e_hash, &mut m_hash, &mut d_hash)?;
+                    let dtm = wpos.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
                     eprintln!("  DTM {:5}  {}", dtm, encodeFEN(&wpos.uncompressed(player)));
                 } else {
                     eprintln!("  not a looser");
@@ -1498,12 +1637,12 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                 // .filter(|(c, m)| c.find_state(player.opponent(), e_hash) == Ok(LOST))
                 {
                     // if succ.find_state(player.opponent(), e_hash) == Ok(LOST) {
-                    let wins = { succ.find(e_hash) }?;
+                    let wins = { succ.find(&mut e_hash) }?;
                     let winner = if wins.canonic_has_bw_switched() { player } else { player.opponent() };
-                    let dtm = succ.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
+                    let dtm = succ.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
                     eprintln!(
-                        "by {:5} 0x{:013x}  {:?}  {}  DTM {:5}  {}",
-                        mv,
+                        "  {:5} 0x{:013x}  {:?}  {}  DTM {:5}  {}",
+                        mv.algebraic(),
                         wins.mpos_to_cpos().bits,
                         wins,
                         wins.signature(),
@@ -1515,13 +1654,13 @@ pub fn debug(args: &[String]) -> Result<(), String> {
             }
             "winner" => {
                 let player = if args[w + 1].starts_with("w") { WHITE } else { BLACK };
-                let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(e_hash)?;
+                let wpos = decode_pos(&args[w + 2]).mpos_to_cpos().find(&mut e_hash)?;
                 w += 3;
                 let signature = wpos.signature();
                 for (pred, _mv) in wpos.predecessors(player) {
-                    if pred.find_state(player.opponent(), e_hash) == Ok(LOST) {
-                        let loos = pred.find(e_hash)?;
-                        let dtm = pred.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
+                    if pred.find_state(player.opponent(), &mut e_hash) == Ok(LOST) {
+                        let loos = pred.find(&mut e_hash)?;
+                        let dtm = pred.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
                         // let mpos = wins.find_canonic_mpos(wins.signature(), player.opponent(), &mut m_hash)?;
                         eprintln!(
                             "pred    0x{:013x}  {:?}  {}  DTM {:5}",
@@ -1539,7 +1678,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                     signature
                 );
                 if wpos.state(player) == WINS {
-                    let dtm = wpos.find_dtm(player, e_hash, &mut m_hash, &mut d_hash)?;
+                    let dtm = wpos.find_dtm(player, &mut e_hash, &mut m_hash, &mut d_hash)?;
                     eprintln!("  DTM {:5}  {}", dtm, encodeFEN(&wpos.uncompressed(player)));
                 } else {
                     eprintln!("  not a winner");
@@ -1554,10 +1693,10 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                 for (succ, mv) in wpos.successors(player)
                 // .filter(|(c, m)| c.find_state(player.opponent(), e_hash) == Ok(LOST))
                 {
-                    if succ.find_state(player.opponent(), e_hash) == Ok(LOST) {
-                        let lost = { succ.find(e_hash) }?;
+                    if succ.find_state(player.opponent(), &mut e_hash) == Ok(LOST) {
+                        let lost = { succ.find(&mut e_hash) }?;
                         let looser = if lost.canonic_has_bw_switched() { player } else { player.opponent() };
-                        let dtm = succ.find_dtm(player.opponent(), e_hash, &mut m_hash, &mut d_hash)?;
+                        let dtm = succ.find_dtm(player.opponent(), &mut e_hash, &mut m_hash, &mut d_hash)?;
                         eprintln!(
                             "by {:5} 0x{:013x}  {:?}  {}  DTM {:5}  {}",
                             mv,
@@ -1580,7 +1719,7 @@ pub fn debug(args: &[String]) -> Result<(), String> {
                     if n_item >= upto {
                         break;
                     }
-                    let cc = cp.find(e_hash)?;
+                    let cc = cp.find(&mut e_hash)?;
                     assert_eq!(cc, cp);
                     if n_item >= start {
                         println!("{:6}  {}  0x{:016x}  {:?} ", n_item, cc.signature(), cc.bits, cc);

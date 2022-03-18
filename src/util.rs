@@ -7,7 +7,7 @@ use sysinfo::SystemExt;
 /// We try to use 8 GB for in-place sort.
 /// Why 8 GB? Because my computer has only 16GB memory and I want to do
 /// some other things while the sort runs for hours.
-pub const CHUNK: usize = 1000 * 1000 * 1000;
+pub const CHUNK: usize = 256 * 1024 * 1024;
 
 /// Use a higher buffer size for our files
 pub const BUFSZ: usize = 20 * 1024 * 1024;
