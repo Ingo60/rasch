@@ -90,9 +90,12 @@ e2e4 e7e5   g1f3 b8c6   f1b5 a7a6   b5a4 b7b5,f8c5,g8e7,g7g6,f7f5,d7d6,g8f6
 e2e4 e7e5   f1c4 g8f6   b1c3,d2d3,d2d4,g1f3,f2f4!
 e2e4 e7e5   f1c4 f8c5   b2b4,c2c3,b1c3,d2d3,g1f3,d1g4
 
+# Sicilian
+e2e4 c7c5   d2d4 c5d4   c2c3 d4c3
+
 # Vienna game
-e2e4 e7e5   b1c3! g8f6   f2f4!,f1c4,g2g3
-e2e4 e7e5   b1c3 g8f6   f2f4! e5f4  d2d4
+e2e4 e7e5   b1c3! g8f6?   f2f4!,f1c4,g2g3
+e2e4 e7e5   b1c3 g8f6?   f2f4! e5f4  e4e5
 b1c3! g8f6  e2e4 e7e5   f2f4!,f1c4,g2g3
 e2e4 e7e5   b1c3 b8c6
 e2e4 e7e5   b1c3 b8c6   f2f4! e5f4  g1f3 g7g5   f1c4 g5g4   e1g1 g4f3   d1f3
@@ -110,6 +113,7 @@ d2d4 d7d5   b1c3 g8f6   c1g5 b8d7,e7e6,c8f5,c7c6,c7c5
 d2d4 g8f6   c2c4 g7g6   b1c3 d7d5
 d2d4 g8f6   c2c4 e7e6   b1c3 f8b4
 d2d4 g8f6   f2f3 
+d2d4 g8f6   c2c4 g7g6   b1c3 f8g7
 
 # Modern semi opened
 d2d4 g7g6   e2e4 c7c6   g1f3,b1c3
@@ -125,6 +129,7 @@ d2d4 e7e6? c2c4!,g1f3,e2e4
 
 # Mieses Opening
 d2d3? d7d5,e7e5
+
 
 # Scandinavian Defense
 e2e4 d7d5   e4d5 d8d5   b1c3 d5a5
