@@ -507,11 +507,11 @@ impl GameState {
                 for p in &self.history {
                     hist.insert(p);
                 }
-                let mut n = size as i32 - 2_500_000;
-                if size > 2_500_000 {
+                let mut n = size as i32 - 5_000_000;
+                if size > 5_000_000 {
                     hash.retain(|p, t| {
                         n -= 1;
-                        n < 0 || hist.contains(p) || t.halfmove < 30 || t.halfmove == u32::MAX
+                        n < 0 || hist.contains(p) || t.halfmove < 50 || t.halfmove == u32::MAX
                     });
                     // hash.retain(|p, t| hist.contains(p) || t.halfmove
                     // >= limit && t.halfmove < 30);

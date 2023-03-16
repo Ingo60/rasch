@@ -867,6 +867,23 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     let myMoves = myPos.moves();
     let mut pvs: Variations = Vec::with_capacity(myMoves.len());
     let mut nodes = 0;
+
+    // remove forbidden moves for this position
+    let mut forbidden: HashSet<Move> = HashSet::new();
+    {
+        let openings = state.openings.lock().unwrap();
+        match openings.get(&myPos) {
+            None => (),
+            Some(rs) => for r in rs {
+                if r.ntimes == 0 {
+                    forbidden.insert(r.mv);
+                    println!("# excluded move: {}", r.mv.showSAN(myPos));
+                }
+            },
+        }
+    };
+    let myMoves : Vec<Move> = myMoves.iter().copied().filter(|m| !forbidden.contains(m)).collect();
+
     // for increasing depth
     loop
     /* forever! */
