@@ -58,6 +58,37 @@ pub const BLACK_IS_MATE: i32 = 32768;
 /// score when WHITE is mate
 pub const WHITE_IS_MATE: i32 = -BLACK_IS_MATE;
 
+/// Maximale Anzahl an Zügen pro Position
+pub const MAX_MOVES: usize = 256;
+
+/// Stack-basierter Puffer für Züge
+pub struct MoveList {
+    pub moves: [Move; MAX_MOVES],
+    pub len: usize,
+}
+
+impl MoveList {
+    pub fn as_slice(&self) -> &[Move] {
+        &self.moves[..self.len]
+    }
+}
+
+pub trait MoveCollector {
+    fn push(&mut self, m: Move);
+}
+
+impl MoveCollector for Vec<Move> {
+    fn push(&mut self, m: Move) { self.push(m); }
+}
+
+impl MoveCollector for MoveList {
+    fn push(&mut self, m: Move) {
+        if self.len < MAX_MOVES {
+            self.moves[self.len] = m;
+            self.len += 1;
+        }
+    }
+}
 
 
 
@@ -1154,7 +1185,7 @@ impl Position {
     }
 
     /// generate the castling moves possible in this position
-    fn castlingMoves(&self, vec: &mut Vec<Move>) {
+    fn castlingMoves<C: MoveCollector>(&self, collector: &mut C) {
         match self.turn() {
             WHITE => {
                 let short = self.flags.member(G1)                   // short castling permitted, implies ROOK is on H1
@@ -1168,10 +1199,10 @@ impl Position {
                             && self.isNotAttacked(D1, BLACK)
                             && self.isNotAttacked(C1, BLACK);
                 if short {
-                    vec.push(CASTLING_SHORT_WHITE);
+                    collector.push(CASTLING_SHORT_WHITE);
                 }
                 if long {
-                    vec.push(CASTLING_LONG_WHITE);
+                    collector.push(CASTLING_LONG_WHITE);
                 }
             }
             BLACK => {
@@ -1186,10 +1217,10 @@ impl Position {
                             && self.isNotAttacked(D8, WHITE)
                             && self.isNotAttacked(C8, WHITE);
                 if short {
-                    vec.push(CASTLING_SHORT_BLACK);
+                    collector.push(CASTLING_SHORT_BLACK);
                 }
                 if long {
-                    vec.push(CASTLING_LONG_BLACK);
+                    collector.push(CASTLING_LONG_BLACK);
                 }
             }
         };
@@ -1199,7 +1230,7 @@ impl Position {
     /// the piece standing there.
     /// 
     /// The generated moves may still be illegal because they expose the king for check!
-    fn genMove(&self, vec: &mut Vec<Move>, from: Field) {
+    fn genMove<C: MoveCollector>(&self, collector: &mut C, from: Field) {
         let piece = self.pieceOn(from);
         let player = self.turn();
         let validTargets = pieceTargets(piece, player, from) - self.occupiedByActive();
@@ -1222,28 +1253,28 @@ impl Position {
                                     || (self.flags*EN_PASSANT_BITS).member(to));
                     if valid {
                         if promotion {                            
-                            vec.push(Move::new(player, PAWN, QUEEN, from, to)); 
-                            vec.push(Move::new(player, PAWN, ROOK, from, to));
-                            vec.push(Move::new(player, PAWN, BISHOP, from, to));
-                            vec.push(Move::new(player, PAWN, KNIGHT, from, to));
+                            collector.push(Move::new(player, PAWN, QUEEN, from, to)); 
+                            collector.push(Move::new(player, PAWN, ROOK, from, to));
+                            collector.push(Move::new(player, PAWN, BISHOP, from, to));
+                            collector.push(Move::new(player, PAWN, KNIGHT, from, to));
                         }
                         else if es.null() && self.isEmpty(to) {  // capturing en-passant
                             let mv = Move::new(player, PAWN, PAWN, from, to);
-                            vec.push(mv);
+                            collector.push(mv);
                         }
                         else {
-                            vec.push(mv);
+                            collector.push(mv);
                         }
                     };
                 },
                 BISHOP => if self.areEmpty(mdb::canBishop(from, to)) 
-                              { vec.push(mv); },
+                              { collector.push(mv); },
                 ROOK   => if self.areEmpty(mdb::canRook(from, to)) 
-                              { vec.push(mv); },
+                              { collector.push(mv); },
                 QUEEN  => if   self.areEmpty(mdb::canBishop(from, to)) 
                             || self.areEmpty(mdb::canRook(from, to))
-                              { vec.push(mv); },
-                _other => vec.push(mv),
+                              { collector.push(mv); },
+                _other => collector.push(mv),
             };
         }
     }
@@ -1252,24 +1283,24 @@ impl Position {
     /// 
     /// **Note** Moves who are in fact invalid because they leave the king in check
     ///  are not yet filtered out.
-    fn rawMoves(&self, vec: &mut Vec<Move>) {
+    fn rawMoves<C: MoveCollector>(&self, collector: &mut C) {
         let mut occ = self.occupiedByActive().bits; 
         while occ != 0 {
             let from = Field::from(occ.trailing_zeros() as u8);
             occ ^= 1 << from as u64;
-            self.genMove(vec, from);
+            self.genMove(collector, from);
         }
     }
 
     /// List of possible moves in a given position.
     /// Verified to not leave the king of the moving player in check.
     pub fn moves(&self) -> Vec<Move> {
-        let mut vec = Vec::with_capacity(64);
-        self.castlingMoves(&mut vec);
-        self.rawMoves(&mut vec);
-        // vec
-        let mut result = Vec::with_capacity(64);
-        for m in vec {
+        let mut ml = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.castlingMoves(&mut ml);
+        self.rawMoves(&mut ml);
+        
+        let mut result = Vec::with_capacity(ml.len);
+        for &m in ml.as_slice() {
             if self.apply(m).notInCheck() { result.push(m); }
         }
         result
@@ -1537,26 +1568,27 @@ impl Position {
     /// draw by repetition or draw by the 50 moves rule.
     pub fn eval(&self) -> i32 {
         // the raw moves for player
-        let mut pMoves = Vec::with_capacity(64);
+        let mut pMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.rawMoves(&mut pMoves);
-        self.eval_have_moves(&pMoves)
+        self.eval_have_moves(pMoves.as_slice())
     }
 
     /// A faster version of eval that is given the current moves
-    pub fn eval_have_moves(&self, pMoves: &Vec<Move>) -> i32 {
+    pub fn eval_have_moves(&self, pMoves: &[Move]) -> i32 {
         let matWhite = self.scoreMaterial(WHITE);
         let matBlack = self.scoreMaterial(BLACK);
         let matDelta = matWhite - matBlack;
         // The delta increases when the difference gets greater
         // This should result in an unwillingness to exchange pieces by the weaker party
-        let matRelation = percent((max(matWhite, matBlack)*100) / min(matWhite, matBlack), matDelta);
+        let divisor = min(matWhite, matBlack).max(1000); // Mindestens den Wert eines Königs annehmen
+        let matRelation = percent((max(matWhite, matBlack)*100) / divisor, matDelta);
         let check = self.inCheck(self.turn());
         let checkBonus = if check { 20 } else { 0 };
         let playerMoves = pMoves.len() as i32;
         // the raw moves for opponent
-        let mut oMoves = Vec::with_capacity(64);
+        let mut oMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.applyNull().rawMoves(&mut oMoves);
-        let opponentMoves = oMoves.len() as i32;
+        let opponentMoves = oMoves.len as i32;
         // gives for each field the least WHITE attacker
         let mut attacksByWhite = [EMPTY; 64];
         // gives for each field the least BLACK attacker
@@ -1579,7 +1611,7 @@ impl Position {
                 }
             }
         }
-        for m in oMoves {
+        for m in oMoves.as_slice() {
             let wo = m.to() as usize;
             let was = m.piece();
             if was == PAWN && self.isEmpty(m.to()) {
