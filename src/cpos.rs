@@ -661,7 +661,7 @@ pub use MoveImpact::*;
 /// -FFF -fff -shv AAAA BBBB CCCC DDDD KKKK KKkk kkkk aaaa aabb bbbb cccc ccdd dddd
 /// ```
 /// where
-/// - FFF the position state ([DRAW], [LOSS], [WINS], [BAD]) for [WHITE]
+/// - FFF the position state ([DRAW], [LOST], [WINS], [INVP]) for [WHITE]
 /// - fff the position state for [BLACK]
 /// - shv applied transformations relative to a non-canonic [CPos] (see below)
 /// - AAAA player and piece kind of piece A
@@ -1731,7 +1731,7 @@ impl CPos {
     /// We pass the signature here explicitely to save calls to signature(), this way
     /// a client can store it when it is needed more than once.
     /// It is to be understood that only calls semantically equivalent to
-    /// ```java
+    /// ```
     /// x.canonical(x.signature)
     /// ```
     /// make any sense.
