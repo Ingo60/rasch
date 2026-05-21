@@ -20,6 +20,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
+use serde::{Serialize, Deserialize};
 
 
 
@@ -37,7 +38,8 @@ use super::zobrist;
 pub use super::basic::{Player, Piece, Move, showMoves, showMovesSAN, NO_MOVE};
 pub use super::basic::Player::*;
 pub use super::basic::Piece::*;
-pub use super::cpos::CPos;
+pub use super::cpos::{CPos, Mirrorable};
+use super::fieldset::ALLFIELDS;
 
 
 /// short form of BitSet::singleton
@@ -87,6 +89,116 @@ impl MoveCollector for MoveList {
             self.moves[self.len] = m;
             self.len += 1;
         }
+    }
+}
+
+/// Hilfsmodul für die Serialisierung von 64-Element-Arrays
+mod big_array {
+    use serde::{Serialize, Serializer, Deserialize, Deserializer};
+    pub fn serialize<S>(array: &[i32; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        array.as_slice().serialize(serializer)
+    }
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i32; 64], D::Error>
+    where D: Deserializer<'de> {
+        let v: Vec<i32> = Vec::deserialize(deserializer)?;
+        let len = v.len();
+        v.try_into().map_err(|_| {
+            serde::de::Error::custom(format!("Erwartete PST-Tabelle mit 64 Elementen, fand {}", len))
+        })
+    }
+}
+
+
+/// Gewichte für die Evaluation
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EvalWeights {
+    pub mat_pawn: i32,
+    pub mat_knight: i32,
+    pub mat_bishop: i32,
+    pub mat_rook: i32,
+    pub mat_queen: i32,
+    pub mat_king: i32,
+    pub mobility: i32,
+    pub check: i32,
+    pub castling: i32,
+    pub covered_king_opp: i32,
+    pub covered_king_own: i32,
+    pub blocked_bishop_pawn: i32,
+    pub bad_bishop: i32,
+    pub lazy_officer: i32,
+    #[serde(with = "big_array")]
+    pub pst_pawn: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_knight: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_bishop: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_rook: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_queen: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_king: [i32; 64],
+}
+
+impl EvalWeights {
+    /// Serialisiert die Gewichte nach JSON
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Deserialisiert die Gewichte aus JSON
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    pub fn piece_score(&self, p: Piece) -> i32 {
+        match p {
+            EMPTY => 0,
+            PAWN => self.mat_pawn,
+            KNIGHT => self.mat_knight,
+            BISHOP => self.mat_bishop,
+            ROOK => self.mat_rook,
+            QUEEN => self.mat_queen,
+            KING => self.mat_king,
+        }
+    }
+
+    /// Liefert den PST-Wert für eine Figur auf einem bestimmten Feld.
+    /// Für Schwarz wird das Feld gespiegelt, um die Tabelle symmetrisch zu nutzen.
+    pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> i32 {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        match piece {
+            PAWN => self.pst_pawn[idx],
+            KNIGHT => self.pst_knight[idx],
+            BISHOP => self.pst_bishop[idx],
+            ROOK => self.pst_rook[idx],
+            QUEEN => self.pst_queen[idx],
+            KING => self.pst_king[idx],
+            EMPTY => 0,
+        }
+    }
+}
+
+impl Default for EvalWeights {
+    fn default() -> Self {
+        let mut w = EvalWeights {
+            mat_pawn: 100, mat_knight: 300, mat_bishop: 305, mat_rook: 550, mat_queen: 875, mat_king: 1000,
+            mobility: 4, check: 20, castling: 25,
+            covered_king_opp: 5, covered_king_own: 6,
+            blocked_bishop_pawn: 21, bad_bishop: 43, lazy_officer: 30,
+            pst_pawn: [0; 64], pst_knight: [0; 64], pst_bishop: [0; 64],
+            pst_rook: [0; 64], pst_queen: [0; 64], pst_king: [0; 64],
+        };
+
+        // Initialisierung mit dem bisherigen "Zone"-Bonus als Standardwert
+        for f in ALLFIELDS {
+            let val = (f.zone() as i32 + 1) * 5;
+            let idx = f as usize;
+            w.pst_pawn[idx] = val; w.pst_knight[idx] = val; w.pst_bishop[idx] = val;
+            w.pst_rook[idx] = val; w.pst_queen[idx] = val;  w.pst_king[idx] = val;
+        }
+        w
     }
 }
 
@@ -1393,12 +1505,8 @@ impl Position {
             }
         };
         let busyQueen = match player {
-            WHITE => {
-                mine.member(D1) && self.pieceOn(D1) != QUEEN
-            }
-            BLACK => {
-                mine.member(D8) && self.pieceOn(D8) != QUEEN
-            }
+            WHITE => !mine.member(D1) || self.pieceOn(D1) != QUEEN,
+            BLACK => !mine.member(D8) || self.pieceOn(D8) != QUEEN,
         };
         if busyQueen && lazyOfficers > 2 { 150 } else { lazyOfficers * 30 }
     }
@@ -1641,6 +1749,145 @@ impl Position {
         - self.penaltyLazyOfficers(WHITE) + self.penaltyLazyOfficers(BLACK)
     }
 
+    /// Alternative Evaluation mit variablen Gewichten
+    pub fn eval_weighted(&self, weights: &EvalWeights) -> i32 {
+        let mut pMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.rawMoves(&mut pMoves);
+        self.eval_have_moves_weighted(pMoves.as_slice(), weights)
+    }
+
+    /// Version von eval_have_moves, die Gewichte berücksichtigt
+    pub fn eval_have_moves_weighted(&self, pMoves: &[Move], weights: &EvalWeights) -> i32 {
+        let matWhite = self.scoreMaterial_weighted(WHITE, weights);
+        let matBlack = self.scoreMaterial_weighted(BLACK, weights);
+        let matDelta = matWhite - matBlack;
+        let divisor = min(matWhite, matBlack).max(1000);
+        let matRelation = percent((max(matWhite, matBlack)*100) / divisor, matDelta);
+        
+        let check = self.inCheck(self.turn());
+        let checkBonus = if check { weights.check } else { 0 };
+        let playerMoves = pMoves.len() as i32;
+        
+        let mut oMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.applyNull().rawMoves(&mut oMoves);
+        let opponentMoves = oMoves.len as i32;
+        
+        let mut attacksByWhite = [EMPTY; 64];
+        let mut attacksByBlack = [EMPTY; 64];
+        
+        for m in pMoves {
+            let wo = m.to() as usize;
+            let was = m.piece();
+            if was == PAWN && self.isEmpty(m.to()) { continue; }
+            if m.player() == WHITE {
+                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was { attacksByWhite[wo] = was; }
+            } else {
+                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was { attacksByBlack[wo] = was; }
+            }
+        }
+        for m in oMoves.as_slice() {
+            let wo = m.to() as usize;
+            let was = m.piece();
+            if was == PAWN && self.isEmpty(m.to()) { continue; }
+            if m.player() == WHITE {
+                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was { attacksByWhite[wo] = was; }
+            } else {
+                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was { attacksByBlack[wo] = was; }
+            }
+        } 
+        
+        matRelation
+        - self.penalizeHanging_weighted(WHITE, &attacksByBlack, &attacksByWhite, weights) 
+        + self.penalizeHanging_weighted(BLACK, &attacksByWhite, &attacksByBlack, weights)
+        + self.turn().opponent().forP(checkBonus + weights.mobility * opponentMoves)
+        + self.turn().forP(weights.mobility * playerMoves)
+        + self.scoreCastling_weighted(WHITE, weights) - self.scoreCastling_weighted(BLACK, weights)
+        + self.coveredKing_weighted(WHITE, weights)   - self.coveredKing_weighted(BLACK, weights)
+        - self.penaltyBlockedBishopBlockingPawns_weighted(WHITE, weights) + self.penaltyBlockedBishopBlockingPawns_weighted(BLACK, weights)
+        - self.penaltyBadBishops_weighted(WHITE, weights) + self.penaltyBadBishops_weighted(BLACK, weights)
+        - self.penaltyLazyOfficers_weighted(WHITE, weights) + self.penaltyLazyOfficers_weighted(BLACK, weights)
+    }
+
+    pub fn scoreMaterial_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let mut bits = self.occupiedBy(player).bits;
+        let mut sum  = 0;
+        while bits != 0 {
+            let from = Field::from(bits.trailing_zeros() as u8);
+            bits ^= 1 << from as u64;
+            let piece = self.pieceOn(from);
+            sum += weights.piece_score(piece) + weights.pst_value(piece, player, from);
+            match piece {
+                ROOK | QUEEN | KING if self.inEndgame() => {
+                    let file = from.file();
+                    let prank = if player == WHITE { 8 } else { 1 };
+                    let pto = Field::fromFR(file, prank);
+                    let pawns = mdb::canRook(from, pto) * self.pawns() * self.occupiedBy(player);
+                    if pawns.some() && (mdb::canRook(from, pawns.bitIndex())*self.occupiedBy(player.opponent())).null() {
+                        sum += 50;
+                    }
+                }
+                PAWN => {
+                    let file = from.file();
+                    let prank = if player == WHITE { 8 } else { 1 };
+                    let pto = Field::fromFR(file, prank);
+                    let togo = mdb::canRook(from, pto) + bit(pto);
+                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 3 } else { 1 };
+                    sum += freeFactor * ((1 << (7 - togo.card())) - 2);
+                }
+                _other => (),
+            }
+        }
+        sum
+    }
+
+    fn coveredKing_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let kingIndex = fld(self.kings() * self.occupiedBy(player));
+        let targets   = mdb::kingTargets(kingIndex);
+        (self.occupiedBy(player.opponent()) * targets).card() as i32 * weights.covered_king_opp
+        + (self.occupiedBy(player) * targets).card() as i32 * weights.covered_king_own
+    }
+
+    fn penaltyBlockedBishopBlockingPawns_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let pawns = self.pawns() * match player { WHITE => WHITE_BISHOP_BLOCKING_PAWNS, BLACK => BLACK_BISHOP_BLOCKING_PAWNS };
+        let myPawns = match player { WHITE => pawns * self.whites, BLACK => pawns - self.whites };
+        let before = match player { WHITE => BitSet { bits: myPawns.bits << 8 }, BLACK => BitSet { bits: myPawns.bits >> 8 } };
+        (before * self.occupied()).card() as i32 * weights.blocked_bishop_pawn
+    }
+
+    fn penaltyBadBishops_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let bishops = self.bishops() * self.occupiedBy(player);
+        let mut count = 0;
+        for from in bishops {
+            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) { count += weights.bad_bishop; }
+        };
+        count
+    }
+
+    fn penaltyLazyOfficers_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let mine = self.occupiedBy(player);
+        let lazyOfficers = match player {
+            WHITE => (self.rooks()*mine).member(A1) as i32 + (self.knights()*mine).member(B1) as i32 + (self.bishops()*mine).member(C1) as i32 + (self.bishops()*mine).member(F1) as i32 + (self.knights()*mine).member(G1) as i32 + (self.rooks()*mine).member(H1) as i32,
+            BLACK => (self.rooks()*mine).member(A8) as i32 + (self.knights()*mine).member(B8) as i32 + (self.bishops()*mine).member(C8) as i32 + (self.bishops()*mine).member(F8) as i32 + (self.knights()*mine).member(G8) as i32 + (self.rooks()*mine).member(H8) as i32,
+        }.min(4); // max 4 Officers
+        lazyOfficers * weights.lazy_officer
+    }
+
+    fn penalizeHanging_weighted(&self, player: Player, byOther: &[Piece;64], bySelf: &[Piece;64], weights: &EvalWeights) -> i32 {
+        let mut score = 0;
+        for f in self.occupiedBy(player) {
+            let p = hangingPenalty_weighted(self.pieceOn(f), byOther[f as usize], bySelf[f as usize] != EMPTY, weights);
+            let val = if player == self.turn() { percent(33, p) } else { p };
+            if val > 0 { score = if score > 0 { percent(110, max(score, val)) } else { val }; }
+        }
+        score
+    }
+
+    fn scoreCastling_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+        let hasCastled = (self.flags * if player == WHITE { WHITE_HAS_CASTLED_BITS } else { BLACK_HAS_CASTLED_BITS }).some();
+        if hasCastled { weights.castling }
+        else { (self.flags * if player == WHITE { WHITE_CASTLING_RIGHTS } else { BLACK_CASTLING_RIGHTS }).card() as i32 * weights.castling - (3 * weights.castling) }
+    }
+
     /// compresses this position
     pub fn compressed(&self) -> CPos { CPos::new(self) }
 
@@ -1664,6 +1911,22 @@ impl Position {
     /// 3. No en-passant capturing is possible.
     pub fn validEndgame(&self) -> bool {
         self.occupied().card() < 7 && (self.flags * CASTLING_BITS).null() && (self.flags * EN_PASSANT_BITS).null()
+    }
+}
+
+/// Gewichtete Version der hangingPenalty
+pub fn hangingPenalty_weighted(hang: Piece, att: Piece, defended: bool, weights: &EvalWeights) -> i32 {
+    let scoreh = weights.piece_score(hang);
+    let scorea = weights.piece_score(att);
+    match att {
+        EMPTY => if defended { percent(10, scoreh) } else { 0 },
+        KING if defended => 0,
+        _hking if hang == KING => 0,
+        _otherwise => match defended {
+            false => percent(70, scoreh), 
+            true if scoreh > scorea => percent(70, scoreh - scorea),
+            _other => 0  
+        }
     }
 }
 

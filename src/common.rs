@@ -244,7 +244,12 @@ impl Display for State {
             PLAYING => write!(f, "PLAYING"),
             TERMINATED => write!(f, "TERMINATED"),
             THINKING(since, Some(mv)) => {
-                write!(f, "PONDERING({}ms on {})", since.elapsed().as_millis(), mv.algebraic())
+                write!(
+                    f,
+                    "PONDERING({}ms on {})",
+                    since.elapsed().as_millis(),
+                    mv.algebraic()
+                )
             }
             THINKING(since, None) => write!(f, "THINKING({}ms)", since.elapsed().as_millis()),
         }
@@ -569,7 +574,10 @@ impl GameState {
                                     }
                                 }
                                 if choices.len() > 0 {
-                                    println!("# match from opening book, choices are {}", P::showMoves(&choices[..]));
+                                    println!(
+                                        "# match from opening book, choices are {}",
+                                        P::showMoves(&choices[..])
+                                    );
                                     let choice = rand::thread_rng().gen::<usize>() % choices.len();
                                     Some(choices[choice])
                                 } else {
@@ -931,8 +939,10 @@ impl GameState {
                 let mate = ms.len() == 0 && pos.inCheck(pos.turn());
                 let stalemate = ms.len() == 0 && !mate;
                 let moves50 = !mate && !stalemate && pos.getPlyCounter() > 100;
-                let repetition =
-                    !mate && !stalemate && !moves50 && self.history.iter().filter(|&p| *p == pos).count() >= 3;
+                let repetition = !mate
+                    && !stalemate
+                    && !moves50
+                    && self.history.iter().filter(|&p| *p == pos).count() >= 3;
                 let finished = mate || stalemate || moves50;
                 if stalemate {
                     println!("1/2-1/2 {{Stalemate}}");
@@ -1069,7 +1079,8 @@ impl GameState {
                                         // continue regular thinking
                                         // make it appear as if we just consumed 1/2 of our time
                                         THINKING(
-                                            Instant::now().sub(Duration::from_millis(self.timePerMove() as u64 / 2)),
+                                            Instant::now()
+                                                .sub(Duration::from_millis(self.timePerMove() as u64 / 2)),
                                             None,
                                         )
                                     }
