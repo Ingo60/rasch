@@ -174,7 +174,7 @@ impl Variation {
 }
 
 /// Data structure to be found in the transposition table
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Transp {
     /// To what half-move does this correspond, or is it an permanent
     /// entry? Used in hash cleaning, only entries that relate to
@@ -194,14 +194,12 @@ pub struct Transp {
     pub pvMoves: [Move; VariationMoves],
     /// number of valid moves in pvMoves
     pub pvLength: u32,
-    /// (ordered) moves of the associated position
-    pub posMoves: Vec<Move>,
 }
 
 /// Data structure for simple transposition table
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SimpleTransp {
-    /// To what half-move does this correspond, or is it an permanent
+    /// To what half-move does this correspond, or is it a permanent
     /// entry? Used in hash cleaning, only entries that relate to
     /// positions reached earlier are removed. Also, if the value is
     /// the maximum value, it is permanent and never removed.
@@ -210,7 +208,7 @@ pub struct SimpleTransp {
     /// pv.depth and pv.length > 0
     pub pv: Variation,
     /// The (ordered) moves in this position
-    pub moves: Vec<Move>,
+    pub moves: P::MoveList,
 }
 
 /// Data structure to be sent over the Protocol Channel

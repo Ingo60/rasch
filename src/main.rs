@@ -10,8 +10,8 @@ use std::sync::MutexGuard;
 // use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use rasch::common;
 use rasch::common::GameState;
+use rasch::{common, position::MoveCollector};
 // use rasch::common::Protocol;
 use rasch::common::Protocol::*;
 // use rasch::common::StrategyState;
@@ -305,8 +305,8 @@ pub fn strategy_resign(mut state: StrategyState) {
 
 pub fn strategy_best(mut state: StrategyState) {
     let p = state.current();
-    let moves = p.moves();
-    for mv in moves {
+    let moves = p.moves(); // This is a MoveList
+    for mv in moves.iter().copied() {
         let p2 = p.apply(mv);
         state
             .sender
@@ -344,7 +344,7 @@ pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
     let castling = if mv.piece() == KING && mv.promote() != EMPTY           {  3 } else { 0 };
     let checking = if rpos.inCheck(rpos.turn())                             {  1 } else { 0 };
     let attacked = if rpos.isAttacked(mv.to(), rpos.turn())                 { -2 } else { 0 };
-    let hanging  = if rpos.isAttacked(mv.to(), pos.turn()) && attacked != 0 { -5 } else { 0 };
+    let hanging  = if !rpos.isAttacked(mv.to(), pos.turn()) && attacked != 0 { -5 } else { 0 };
     
     let attacking_before = (P::pieceTargets(before, mv.player(), mv.from()) 
                             * pos.occupiedBy(mv.player().opponent())).card() as i32;
@@ -361,12 +361,22 @@ pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
 
 /// order a bunch of moves so that the most useful one will processed
 /// first
-pub fn orderMoves(pos: &Position, killers: &mut KillerSet, moves: &[Move]) -> Vec<Move> {
-    let ratings = moves.iter().copied().map(|mv| moveRating(pos, killers, mv));
-    let mut tuples = ratings.zip(moves.iter().copied()).collect::<Vec<_>>();
-    tuples.sort_unstable_by(|(r1, _), (r2, _)| r2.cmp(r1)); // descending
+pub fn orderMoves(pos: &Position, killers: &mut KillerSet, ml: &mut P::MoveList) {
+    let mut ratings = [0i32; P::MAX_MOVES];
+    let moves = ml.as_mut_slice();
+    for (i, &mv) in moves.iter().enumerate() {
+        ratings[i] = moveRating(pos, killers, mv);
+    }
 
-    tuples.iter().copied().map(|(_, m)| m).collect()
+    // Einfache In-Place Sortierung (Insertion Sort ist bei kleinen Listen oft schneller)
+    for i in 1..moves.len() {
+        let mut j = i;
+        while j > 0 && ratings[j] > ratings[j - 1] {
+            moves.swap(j, j - 1);
+            ratings.swap(j, j - 1);
+            j -= 1;
+        }
+    }
 }
 
 /// Correct a variation score of mate to slightly smaller value
@@ -425,19 +435,13 @@ pub fn exactScore(n: i32) -> i32 {
 
 /// Helper functin for negaMax
 pub fn negaMaxGo(
-    hist: &mut Positions,
-    hash: &mut TransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha0: i32,
-    beta: i32,
-    moves: &Vec<Move>,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha0: i32,
+    beta: i32, moves: &P::MoveList,
 ) -> Variation {
     let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = *hist.last().unwrap();
     let mut alpha = alpha0;
-    for m in moves.iter().copied() {
+    for m in moves.as_slice().iter().copied() {
         let pos = current.apply(m);
         let capture = !ext
             && depth == 1
@@ -472,19 +476,13 @@ pub fn negaMaxGo(
 
 /// Helper function for PVS
 pub fn pvsGo(
-    hist: &mut Positions,
-    hash: &mut TransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha0: i32,
-    beta: i32,
-    moves: &[Move],
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha0: i32,
+    beta: i32, moves: &P::MoveList,
 ) -> Variation {
     let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = *hist.last().unwrap();
     let mut alpha = alpha0;
-    for &m in moves.iter() {
+    for m in moves.as_slice().iter().copied() {
         let first = best.score == -999_999_999;
         let nullWindow = !ext && !first && depth > 3;
         let pos = current.apply(m);
@@ -536,14 +534,7 @@ pub fn pvsGo(
 /// It is guaranteed that only variations with at least one move are
 /// collected.
 pub fn insertPV(
-    hash: &mut TransTable,
-    pos: Position,
-    pv: Variation,
-    moves: Vec<Move>,
-    depth: u32,
-    alpha: i32,
-    beta: i32,
-    halfmove: u32,
+    hash: &mut TransTable, pos: Position, pv: Variation, depth: u32, alpha: i32, beta: i32, halfmove: u32,
 ) {
     if pv.score != 0
         && pv.length > 0
@@ -558,14 +549,7 @@ pub fn insertPV(
         } else {
             upperBound(pv.score)
         };
-        let tr = common::Transp {
-            halfmove,
-            depth,
-            score: bound,
-            pvLength: pv.length,
-            pvMoves: pv.moves,
-            posMoves: moves,
-        };
+        let tr = common::Transp { halfmove, depth, score: bound, pvLength: pv.length, pvMoves: pv.moves };
         hash.insert(pos, tr);
     };
 }
@@ -577,12 +561,7 @@ pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool
 
 /// Move searching with NegaMax
 pub fn negaMax(
-    hist: &mut Positions,
-    hash: &mut TransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha: i32,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha: i32,
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
@@ -598,64 +577,66 @@ pub fn negaMax(
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
-    let maybe: Option<common::Transp> = match hash.get(&pos) {
-        Some(te) => Some(te.clone()),
-        None => None,
-    };
+    let maybe: Option<common::Transp> = hash.get(&pos).copied();
+
     let rpv = match maybe {
-        Some(te) => {
-            let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
-            let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
-            ordered.push(hashmove);
-            ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
-            match checkBound(te.score) {
-                Ordering::Equal if te.depth >= depth => Variation {
-                    length: te.pvLength,
-                    moves: te.pvMoves,
-                    score: te.score >> 2,
-                    nodes: 1,
-                    depth,
-                },
+        Some(te) => match checkBound(te.score) {
+            Ordering::Equal if te.depth >= depth => {
+                Variation { length: te.pvLength, moves: te.pvMoves, score: te.score >> 2, nodes: 1, depth }
+            }
 
-                Ordering::Less if te.depth >= depth => {
-                    let alpha2 = max(alpha, (te.score - 1) >> 2);
-                    if alpha2 > beta {
-                        Variation { length: te.pvLength, moves: te.pvMoves, score: alpha2, nodes: 1, depth }
-                    } else {
-                        let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
-                        if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta, halfmoves);
-                        };
-                        pv
-                    }
-                }
+            Ordering::Less if te.depth >= depth => {
+                let alpha2 = max(alpha, (te.score - 1) >> 2);
+                if alpha2 > beta {
+                    Variation { length: te.pvLength, moves: te.pvMoves, score: alpha2, nodes: 1, depth }
+                } else {
+                    let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
+                    let mut ml = pos.moves();
+                    P::reorderHashMove(&mut ml, hashmove);
 
-                Ordering::Greater if te.depth >= depth => {
-                    let beta2 = min(beta, (te.score + 1) >> 2);
-                    if alpha >= beta2 {
-                        Variation { length: te.pvLength, moves: te.pvMoves, score: beta2, nodes: 1, depth }
-                    } else {
-                        let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
-                        if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2, halfmoves);
-                        };
-                        pv
-                    }
-                }
-
-                _other => {
-                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
-                    if !ext {
-                        insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
+                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ml);
+                    if depth >= te.depth && !ext {
+                        insertPV(hash, pos, pv, depth, alpha2, beta, halfmoves);
                     };
                     pv
                 }
             }
-        }
+
+            Ordering::Greater if te.depth >= depth => {
+                let beta2 = min(beta, (te.score + 1) >> 2);
+                if alpha >= beta2 {
+                    Variation { length: te.pvLength, moves: te.pvMoves, score: beta2, nodes: 1, depth }
+                } else {
+                    let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
+                    let mut ml = pos.moves();
+                    P::reorderHashMove(&mut ml, hashmove);
+
+                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ml);
+                    if depth >= te.depth && !ext {
+                        insertPV(hash, pos, pv, depth, alpha, beta2, halfmoves);
+                    };
+                    pv
+                }
+            }
+
+            _other => {
+                let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
+                let mut ml = pos.moves();
+                P::reorderHashMove(&mut ml, hashmove);
+
+                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
+                if !ext {
+                    insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
+                };
+                pv
+            }
+        },
         None => {
-            let moves = pos.moves();
-            let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
-            if ordered.len() == 0 {
+            let mut ml = pos.moves();
+            if depth > 1 {
+                orderMoves(&pos, killers, &mut ml)
+            }
+            if ml.len == 0 {
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
                         score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
@@ -666,9 +647,9 @@ pub fn negaMax(
                     DRAW
                 }
             } else {
-                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
                 if !ext {
-                    insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
+                    insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
                 };
                 pv
             }
@@ -724,25 +705,25 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
 /// search with the *negamin* algorithm
 pub fn strategy_negamin(state: StrategyState) {
     let mut killers = HashSet::with_capacity(2048);
-    let allMoves = orderMoves(&state.current(), &mut killers, &state.current().moves());
+    let mut allMoves = state.current().moves();
+    orderMoves(&state.current(), &mut killers, &mut allMoves);
     println!(
         "# Started strategy negamin {}, we have {} moves to consider.",
-        state.sid,
-        allMoves.len()
+        state.sid, allMoves.len
     );
     io::stdout().flush().unwrap_or_default();
 
     // if there's just 1 move left, we have no choice
-    if allMoves.len() == 0 {
+    if allMoves.len == 0 {
         // are you kidding?
         state.tellNoMore();
     }
-    if allMoves.len() == 1 {
+    if allMoves.len == 1 {
         if state.talkPV(Variation {
             depth: 1,
             nodes: 1,
             score: -9999,
-            moves: [allMoves[0]; VariationMoves as usize],
+            moves: [allMoves.moves[0]; VariationMoves as usize],
             length: 1,
         }) {
             state.tellNoMore();
@@ -754,12 +735,7 @@ pub fn strategy_negamin(state: StrategyState) {
 
 /// Principal Variation Search
 pub fn pvsSearch(
-    hist: &mut Positions,
-    hash: &mut TransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha: i32,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha: i32,
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
@@ -776,15 +752,12 @@ pub fn pvsSearch(
     // the follwoing is needed because else there is an immutable reference
     // to the hash
     let maybe: Option<common::Transp> = match hash.get(&pos) {
-        Some(te) => Some(te.clone()),
-        None => None,
+        Some(te) => Some(*te), // Transp is Copy now
+        None => None,          // Can be simplified to hash.get(&pos).copied()
     };
     let rpv = match maybe {
         Some(te) => {
             let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
-            let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
-            ordered.push(hashmove);
-            ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
             match checkBound(te.score) {
                 Ordering::Equal if te.depth >= depth => Variation {
                     length: te.pvLength,
@@ -799,9 +772,12 @@ pub fn pvsSearch(
                     if alpha2 > beta {
                         Variation { length: te.pvLength, moves: te.pvMoves, score: alpha2, nodes: 1, depth }
                     } else {
-                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha2, beta, &ordered);
+                        let mut ml = pos.moves();
+                        P::reorderHashMove(&mut ml, hashmove);
+
+                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha2, beta, &ml);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha2, beta, halfmoves);
+                            insertPV(hash, pos, pv, depth, alpha2, beta, halfmoves);
                         };
                         pv
                     }
@@ -812,27 +788,35 @@ pub fn pvsSearch(
                     if alpha >= beta2 {
                         Variation { length: te.pvLength, moves: te.pvMoves, score: beta2, nodes: 1, depth }
                     } else {
-                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta2, &ordered);
+                        let mut ml = pos.moves();
+                        P::reorderHashMove(&mut ml, hashmove);
+
+                        let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta2, &ml);
                         if depth >= te.depth && !ext {
-                            insertPV(hash, pos, pv, ordered, depth, alpha, beta2, halfmoves);
+                            insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
                         };
                         pv
                     }
                 }
 
                 _other => {
-                    let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                    let mut ml = pos.moves();
+                    P::reorderHashMove(&mut ml, hashmove);
+
+                    let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
                     if !ext {
-                        insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
+                        insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
                     };
                     pv
                 }
             }
         }
         None => {
-            let moves = pos.moves();
-            let ordered = if depth > 1 { orderMoves(&pos, killers, &moves[..]) } else { moves };
-            if ordered.len() == 0 {
+            let mut ml = pos.moves();
+            if depth > 1 {
+                orderMoves(&pos, killers, &mut ml)
+            }
+            if ml.len == 0 {
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
                         score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
@@ -843,9 +827,9 @@ pub fn pvsSearch(
                     DRAW
                 }
             } else {
-                let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ordered);
+                let pv = pvsGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
                 if !ext {
-                    insertPV(hash, pos, pv, ordered, depth, alpha, beta, halfmoves);
+                    insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
                 };
                 pv
             }
@@ -863,9 +847,13 @@ pub fn pvsSearch(
 pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     let mut depth = depth;
     let mut killers = HashSet::with_capacity(4096);
-    let myPos = state.current();
-    let myMoves = myPos.moves();
-    let mut pvs: Variations = Vec::with_capacity(myMoves.len());
+
+    let myPos = state.current(); // Copy of the current position
+    let all_raw_moves = myPos.moves(); // Get the MoveList
+    let mut pvs = Vec::with_capacity(all_raw_moves.len);
+    let mut filtered_moves = P::MoveList::default();
+    let mut current_iteration_moves: Vec<Move>; // Will hold moves for the current iteration
+
     let mut nodes = 0;
 
     // remove forbidden moves for this position
@@ -874,15 +862,23 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
         let openings = state.openings.lock().unwrap();
         match openings.get(&myPos) {
             None => (),
-            Some(rs) => for r in rs {
-                if r.ntimes == 0 {
-                    forbidden.insert(r.mv);
-                    println!("# excluded move: {}", r.mv.showSAN(myPos));
+            Some(rs) => {
+                for r in rs {
+                    if r.ntimes == 0 {
+                        forbidden.insert(r.mv);
+                        println!("# excluded move: {}", r.mv.showSAN(myPos));
+                    }
                 }
-            },
+            }
         }
     };
-    let myMoves : Vec<Move> = myMoves.iter().copied().filter(|m| !forbidden.contains(m)).collect();
+    for i in 0..all_raw_moves.len {
+        let m = all_raw_moves.moves[i];
+        if !forbidden.contains(&m) {
+            filtered_moves.moves[filtered_moves.len] = m;
+            filtered_moves.len += 1;
+        }
+    }
 
     // for increasing depth
     loop
@@ -890,29 +886,31 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     {
         println!("# iterDeep{} depth {}", state.sid, depth);
         let myOrderedMoves = if pvs.len() == 0 {
-            // first iteration
-            orderMoves(&myPos, &mut killers, &myMoves[..])
+            // First iteration: sort the initial filtered moves
+            orderMoves(&myPos, &mut killers, &mut filtered_moves);
+            filtered_moves.to_vec() // MoveList implements Deref<Target=[Move]>
         } else {
             // subsequent iterations, order the PVs by decreasing score and extract
             // our moves
-            pvs.sort_unstable_by(|p1, p2| p2.score.cmp(&p1.score));
+            pvs.sort_unstable_by(|p1: &Variation, p2: &Variation| p2.score.cmp(&p1.score));
             // the unwrap should be safe as we pushed our move into the PV before
             pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
         };
+        current_iteration_moves = myOrderedMoves; // Use this for the loop
         pvs.clear();
         println!(
             "# iterDeep{} we have {} ordered moves {}",
             state.sid,
-            myOrderedMoves.len(),
-            P::showMoves(&myOrderedMoves[..])
+            current_iteration_moves.len(),
+            P::showMoves(&current_iteration_moves[..])
         );
-        if myOrderedMoves.len() == 0 {
+        if current_iteration_moves.len() == 0 {
             state.tellNoMore();
             return;
         }
-        let mut alpha = P::WHITE_IS_MATE;
-        // for all moves
-        for m in myOrderedMoves {
+        let mut alpha = P::WHITE_IS_MATE; // Reset alpha for each depth iteration
+                                          // for all moves in the current iteration
+        for m in current_iteration_moves {
             let opos = myPos.apply(m);
             let mut hist = state.history.clone();
             hist.push(opos);
@@ -987,19 +985,21 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
 pub fn iterPVS(state: StrategyState, depth: u32) {
     let mut depth = depth;
     let mut killers = HashSet::with_capacity(4096);
-    let myPos = state.current();
-    let myMoves = myPos.moves();
-    let mut pvs: Variations = Vec::with_capacity(myMoves.len());
+    let myPos = state.current(); // Copy of the current position
+    let mut myMoves = myPos.moves(); // Get the MoveList
+    let mut pvs: Variations = Vec::with_capacity(myMoves.len);
     let mut best = Variation { depth: 0, length: 0, moves: NONE, nodes: 0, score: P::WHITE_IS_MATE };
     let mut nodes = 0;
-    // for increasing depth
+    let mut current_iteration_moves: Vec<Move>; // Will hold moves for the current iteration
+                                                // for increasing depth
     loop
     /* forever! */
     {
         println!("# iterPVS{} depth {}", state.sid, depth);
         let myOrderedMoves = if pvs.len() == 0 {
-            // first iteration
-            orderMoves(&myPos, &mut killers, &myMoves[..])
+            // First iteration: sort the initial moves
+            orderMoves(&myPos, &mut killers, &mut myMoves);
+            myMoves.as_slice().to_vec() // Convert to Vec for iteration
         } else {
             // subsequent iterations, order the PVs by decreasing score and extract
             // our moves
@@ -1007,20 +1007,21 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
             // the unwrap should be safe as we pushed our move into the PV before
             pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
         };
+        current_iteration_moves = myOrderedMoves; // Use this for the loop
         pvs.clear();
         println!(
             "# iterPVS{} we have {} ordered moves {}",
             state.sid,
-            myOrderedMoves.len(),
-            P::showMoves(&myOrderedMoves[..])
+            current_iteration_moves.len(),
+            P::showMoves(&current_iteration_moves[..])
         );
-        if myOrderedMoves.len() == 0 {
+        if current_iteration_moves.len() == 0 {
             state.tellNoMore();
             return;
         }
         let mut alpha = P::WHITE_IS_MATE;
         // for all moves
-        for m in myOrderedMoves {
+        for m in current_iteration_moves {
             let opos = myPos.apply(m);
             let mut hist = state.history.clone();
             hist.push(opos);
@@ -1203,8 +1204,8 @@ pub fn strategy_pvs(state: StrategyState) {
                 Some(userMv) => match state.trtable.try_lock() {
                     Ok(hash) => match hash.get(&usrPos) {
                         Some(tr)
-                            if tr.halfmove < u32::MAX && tr.pvMoves.len() > 0 && userMv != tr.pvMoves[0]
-                                || tr.posMoves.iter().all(|m| userMv != *m) =>
+                            if tr.halfmove < u32::MAX && tr.pvLength > 0 && userMv != tr.pvMoves[0]
+                                || usrPos.moves().iter().all(|&m| userMv != m) =>
                         {
                             if tr.halfmove < u32::MAX {
                                 println!(
@@ -1266,18 +1267,20 @@ pub fn strategy_simple(state: StrategyState) {
 pub fn iterSimple(state: StrategyState, depth: u32) {
     let mut depth = depth;
     let mut killers = HashSet::with_capacity(4096);
-    let myPos = state.current();
-    let myMoves = myPos.moves();
-    let mut pvs: Variations = Vec::with_capacity(myMoves.len());
+    let myPos = state.current(); // Copy of the current position
+    let mut myMoves = myPos.moves(); // Get the MoveList
+    let mut pvs: Variations = Vec::with_capacity(myMoves.len);
     let mut nodes = 0;
-    // for increasing depth
+    let mut current_iteration_moves: Vec<Move>; // Will hold moves for the current iteration
+                                                // for increasing depth
     loop
     /* forever! */
     {
         println!("# iterSimple{} depth {}", state.sid, depth);
         let myOrderedMoves = if pvs.len() == 0 {
-            // first iteration
-            orderMoves(&myPos, &mut killers, &myMoves[..])
+            // First iteration: sort the initial moves
+            orderMoves(&myPos, &mut killers, &mut myMoves);
+            myMoves.as_slice().to_vec() // Convert to Vec for iteration
         } else {
             // subsequent iterations, order the PVs by decreasing score and extract
             // our moves
@@ -1285,20 +1288,21 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             // the unwrap should be safe as we pushed our move into the PV before
             pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
         };
+        current_iteration_moves = myOrderedMoves; // Use this for the loop
         pvs.clear();
         println!(
             "# iterSimple{} we have {} ordered moves {}",
             state.sid,
-            myOrderedMoves.len(),
-            P::showMoves(&myOrderedMoves[..])
+            current_iteration_moves.len(),
+            P::showMoves(&current_iteration_moves[..])
         );
-        if myOrderedMoves.len() == 0 {
+        if current_iteration_moves.len() == 0 {
             state.tellNoMore();
             return;
         }
         let mut alpha = P::WHITE_IS_MATE;
         // for all moves
-        for m in myOrderedMoves {
+        for m in current_iteration_moves {
             let opos = myPos.apply(m);
             let mut hist = state.history.clone();
             hist.push(opos);
@@ -1438,13 +1442,8 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
 
 /// Move searching with SimpleTransTable
 pub fn simpleMax(
-    hist: &mut Positions,
-    hash: &mut SimpleTransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha0: i32,
-    beta: i32,
+    hist: &mut Positions, hash: &mut SimpleTransTable, killers: &mut KillerSet, ext: bool, depth: u32,
+    alpha0: i32, beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
     if depth > 2 && computing::thinkingFinished() {
@@ -1454,9 +1453,14 @@ pub fn simpleMax(
     let ordered = match maybeTE {
         Some(te) => {
             let hashmove = te.pv.last().unwrap();
-            let mut aux: Vec<Move> = Vec::with_capacity(te.moves.len());
+            let mut aux: P::MoveList = P::MoveList { moves: [P::NO_MOVE; P::MAX_MOVES], len: 0 };
             aux.push(hashmove);
-            aux.extend(te.moves.iter().copied().filter(|&m| m != hashmove));
+            // te.moves is a MoveList, need to iterate its slice
+            for &m in te.moves.as_slice() {
+                if m != hashmove {
+                    aux.push(m);
+                }
+            }
             // if we have a match, insert the answer to the proposed move as killer
             if te.pv.length > 1 {
                 killers.insert(te.pv.moves[(te.pv.length - 2) as usize]);
@@ -1465,10 +1469,12 @@ pub fn simpleMax(
         }
         None => {
             let moves = pos.moves();
+            let mut ml = moves; // Make it mutable for orderMoves
             if depth > 1 {
-                orderMoves(&pos, killers, &moves[..])
+                orderMoves(&pos, killers, &mut ml);
+                ml // Return the sorted MoveList
             } else {
-                moves
+                ml // Return the original MoveList
             }
         }
     };
@@ -1532,7 +1538,7 @@ pub fn simpleMax(
                 hash.insert(
                     current,
                     SimpleTransp {
-                        halfmove: hist.len() as u32,
+                        halfmove: hist.len() as u32, // This is fine
                         moves: ordered,
                         pv: Variation { nodes: 1, ..best },
                     },
@@ -1579,20 +1585,24 @@ pub fn iterBNS(state: StrategyState) {
     let score0 = pos.eval() * pos.turn().factor();
     let mut beta = score0 + 50;
     let mut alpha = score0 - 50;
-    let moves = pos.moves();
-    let mut pvs: Vec<Variation> = Vec::with_capacity(moves.len());
+    let mut all_raw_moves = pos.moves(); // Get MoveList
+    let mut pvs: Vec<Variation> = Vec::with_capacity(all_raw_moves.len);
     let mut nodes = 0;
     let mut best = DRAW;
-    // for increasing depth
+    let mut current_iteration_moves: Vec<Move>; // Will hold moves for the current iteration
+                                                // for increasing depth
     while alpha < beta
     /* && pvs.len() != 1 */
     {
-        let ordered = if pvs.len() > 0 {
+        current_iteration_moves = if pvs.len() > 0 {
             pvs.iter().copied().map(|pv| pv.last().unwrap()).collect()
         } else {
-            orderMoves(&pos, &mut killers, &moves[..])
+            orderMoves(&pos, &mut killers, &mut all_raw_moves); // Sort in-place
+            all_raw_moves.to_vec() // Convert to Vec for iteration
         };
 
+        // Die `current_iteration_moves` Variable ist nun korrekt als Vec<Move> typisiert
+        // und wird für die Ausgabe und Iteration verwendet.
         println!(
             "# iterBNS{} depth {}, score {}, alpha {}, beta {}, {} {} ",
             state.sid,
@@ -1601,14 +1611,14 @@ pub fn iterBNS(state: StrategyState) {
             alpha,
             beta,
             if pvs.len() > 0 { "variations" } else { "moves" },
-            ordered.len(),
+            current_iteration_moves.len(),
         );
 
         println!(
             "# iterBNS{} we have {} ordered moves {}",
             state.sid,
-            ordered.len(),
-            P::showMoves(&ordered[..])
+            current_iteration_moves.len(),
+            P::showMoves(&current_iteration_moves[..])
         );
 
         let mut hash: TransTable = state.trtable.lock().unwrap();
@@ -1617,7 +1627,7 @@ pub fn iterBNS(state: StrategyState) {
         pvs.clear();
         best.score = 2 * P::WHITE_IS_MATE;
         // for all moves
-        for m in ordered {
+        for m in current_iteration_moves {
             let opos = pos.apply(m);
             let mut hist = state.history.clone();
             hist.push(opos);
@@ -1694,12 +1704,7 @@ pub fn iterBNS(state: StrategyState) {
 
 /// Move searching with NegaMax for BNS
 pub fn mtdfMax(
-    hist: &mut Positions,
-    hash: &mut TransTable,
-    killers: &mut KillerSet,
-    ext: bool,
-    depth: u32,
-    alpha: i32,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha: i32,
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
@@ -1710,30 +1715,27 @@ pub fn mtdfMax(
 
     // the follwoing is needed because else there is an immutable reference
     // to the hash
-    let maybe: Option<common::Transp> = match hash.get(&pos) {
-        Some(te) => Some(te.clone()),
-        None => None,
-    };
-    let moves = match maybe {
+    let maybe: Option<common::Transp> = hash.get(&pos).copied();
+
+    let ml = match maybe {
         None => {
-            if depth == 0 {
-                Vec::with_capacity(0)
-            } else {
-                orderMoves(&pos, killers, &(pos.moves())[..])
+            let mut moves = pos.moves();
+            if depth > 0 {
+                orderMoves(&pos, killers, &mut moves);
             }
+            moves
         }
         Some(te) => {
             let hashmove = te.pvMoves[(te.pvLength - 1) as usize];
-            let mut ordered: Vec<Move> = Vec::with_capacity(te.posMoves.len());
-            ordered.push(hashmove);
-            ordered.extend(te.posMoves.iter().filter(|&&m| m != hashmove));
-            ordered
+            let mut moves = pos.moves();
+            P::reorderHashMove(&mut moves, hashmove);
+            moves
         }
     };
     if depth == 0 {
         return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
     };
-    if moves.len() == 0 {
+    if ml.len == 0 {
         if pos.inCheck(pos.turn()) {
             return Variation { score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32), ..DRAW };
         } else {
@@ -1755,7 +1757,7 @@ pub fn mtdfMax(
     let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = pos;
     let mut a = alpha;
-    for m in moves.iter().copied() {
+    for m in ml.iter().copied() {
         if best.score > beta {
             break;
         };
@@ -1784,7 +1786,7 @@ pub fn mtdfMax(
         a = max(best.score, a);
     }
     if !ext {
-        insertPV(hash, pos, best, moves, depth, a, beta, halfmoves);
+        insertPV(hash, pos, best, depth, a, beta, halfmoves);
     };
     // overwrite the evaluated score with zero if it is repetition or 50
     // moves rule

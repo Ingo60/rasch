@@ -64,6 +64,7 @@ pub const WHITE_IS_MATE: i32 = -BLACK_IS_MATE;
 pub const MAX_MOVES: usize = 256;
 
 /// Stack-basierter Puffer für Züge
+#[derive(Clone, Copy, Debug)]
 pub struct MoveList {
     pub moves: [Move; MAX_MOVES],
     pub len: usize,
@@ -72,6 +73,60 @@ pub struct MoveList {
 impl MoveList {
     pub fn as_slice(&self) -> &[Move] {
         &self.moves[..self.len]
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Move> {
+        self.as_slice().iter()
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [Move] {
+        &mut self.moves[..self.len]
+    }
+}
+
+impl Default for MoveList {
+    fn default() -> Self {
+        MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 }
+    }
+}
+
+impl std::ops::Deref for MoveList {
+    type Target = [Move];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+pub struct MoveListIter {
+    list: MoveList,
+    index: usize,
+}
+
+impl Iterator for MoveListIter {
+    type Item = Move;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.list.len {
+            let m = self.list.moves[self.index];
+            self.index += 1;
+            Some(m)
+        } else {
+            None
+        }
+    }
+}
+
+impl IntoIterator for MoveList {
+    type Item = Move;
+    type IntoIter = MoveListIter;
+    fn into_iter(self) -> Self::IntoIter {
+        MoveListIter { list: self, index: 0 }
+    }
+}
+
+impl<'a> IntoIterator for &'a MoveList {
+    type Item = &'a Move;
+    type IntoIter = std::slice::Iter<'a, Move>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
     }
 }
 
@@ -1406,17 +1461,18 @@ impl Position {
 
     /// List of possible moves in a given position.
     /// Verified to not leave the king of the moving player in check.
-    pub fn moves(&self) -> Vec<Move> {
+    pub fn moves(&self) -> MoveList {
         let mut ml = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.castlingMoves(&mut ml);
         self.rawMoves(&mut ml);
         
-        let mut result = Vec::with_capacity(ml.len);
+        let mut result = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         for &m in ml.as_slice() {
             if self.apply(m).notInCheck() { result.push(m); }
         }
         result
     }
+
 
     /// Positions qualify as "in opening"  if there are 
     /// at least 12 pawns and both sides have still castling rights
@@ -2010,6 +2066,18 @@ impl Display for Position {
 }
 
 
+
+/// Hilfsfunktion, um den besten Zug aus der TT an den Anfang der Liste zu setzen
+pub fn reorderHashMove(ml: &mut MoveList, hashmove: Move) {
+    if hashmove == NO_MOVE { return; }
+    if let Some(idx) = ml.as_slice().iter().position(|&m| m == hashmove) {
+        let m = ml.moves[idx];
+        for i in (0..idx).rev() {
+            ml.moves[i + 1] = ml.moves[i];
+        }
+        ml.moves[0] = m;
+    }
+}
 
 
 
