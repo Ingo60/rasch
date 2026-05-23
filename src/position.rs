@@ -1473,6 +1473,22 @@ impl Position {
         result
     }
 
+    /// List of possible capturing or promoting moves.
+    /// Used for Quiescence Search to reach a stable position.
+    pub fn captures(&self) -> MoveList {
+        let mut ml = MoveList::default();
+        self.rawMoves(&mut ml);
+
+        let mut result = MoveList::default();
+        for &m in ml.as_slice() {
+            let is_capture = !self.isEmpty(m.to()) || m.promote() == PAWN;
+            let is_promo = m.piece() == PAWN && m.promote() >= KNIGHT && m.promote() <= QUEEN;
+            if (is_capture || is_promo) && self.apply(m).notInCheck() {
+                result.push(m);
+            }
+        }
+        result
+    }
 
     /// Positions qualify as "in opening"  if there are 
     /// at least 12 pawns and both sides have still castling rights

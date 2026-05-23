@@ -558,6 +558,46 @@ pub fn insertPV(
     };
 }
 
+/// Quiescence Search: Continues searching capturing moves after depth 0
+/// to avoid the horizon effect.
+pub fn quiesce(
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, mut alpha: i32, beta: i32,
+) -> Variation {
+    let pos = *hist.last().unwrap();
+    let stand_pat = pos.turn().factor() * pos.eval();
+
+    // "Standing Pat" Score: Wenn die statische Bewertung schon gut genug für einen Cutoff ist
+    if stand_pat >= beta {
+        return Variation { score: stand_pat, nodes: 1, ..DRAW };
+    }
+    if alpha < stand_pat {
+        alpha = stand_pat;
+    }
+
+    let mut best = Variation { score: stand_pat, nodes: 1, ..DRAW };
+    let mut ml = pos.captures();
+    orderMoves(&pos, killers, &mut ml);
+
+    for m in ml.iter().copied() {
+        let next_pos = pos.apply(m);
+        hist.push(next_pos);
+        let pv = quiesce(hist, hash, killers, -beta, -alpha);
+        hist.pop();
+
+        let score = -pv.score;
+        best.nodes += pv.nodes;
+
+        if score >= beta {
+            return Variation { score, nodes: best.nodes, ..pv }.push(m);
+        }
+        if score > alpha {
+            alpha = score;
+            best = Variation { score, nodes: best.nodes, ..pv }.push(m);
+        }
+    }
+    best
+}
+
 const NONE: [Move; VariationMoves] = [P::NO_MOVE; VariationMoves];
 const DRAW: Variation = Variation { score: 0, nodes: 1, depth: 0, length: 0, moves: NONE };
 
@@ -573,11 +613,8 @@ pub fn negaMax(
     if depth > 2 && computing::thinkingFinished() {
         return DRAW;
     }
-    // This is the only point where we ever evaluate a position.
-    // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
-        let epv = Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
-        return epv;
+        return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
@@ -750,8 +787,7 @@ pub fn pvsSearch(
     // This is the only point where we ever evaluate a position.
     // Nevertheless, it happens often, as this is at depth 0
     if depth == 0 {
-        let epv = Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
-        return epv;
+        return quiesce(hist, hash, killers, alpha, beta);
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
