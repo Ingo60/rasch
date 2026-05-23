@@ -564,18 +564,34 @@ pub fn quiesce(
     hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, mut alpha: i32, beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap();
-    let stand_pat = pos.turn().factor() * pos.eval();
+    let in_check = pos.inCheck(pos.turn());
 
-    // "Standing Pat" Score: Wenn die statische Bewertung schon gut genug für einen Cutoff ist
-    if stand_pat >= beta {
-        return Variation { score: stand_pat, nodes: 1, ..DRAW };
-    }
-    if alpha < stand_pat {
-        alpha = stand_pat;
+    // Wenn wir im Schach stehen, ist "Standing Pat" (nichts tun) illegal.
+    // Wir setzen den Score sehr niedrig, um Ausweichzüge zu erzwingen.
+    let stand_pat = if in_check {
+        P::WHITE_IS_MATE - 1000
+    } else {
+        pos.turn().factor() * pos.eval()
+    };
+
+    if !in_check {
+        // "Standing Pat" Cutoff
+        if stand_pat >= beta {
+            return Variation { score: stand_pat, nodes: 1, ..DRAW };
+        }
+        if alpha < stand_pat {
+            alpha = stand_pat;
+        }
     }
 
     let mut best = Variation { score: stand_pat, nodes: 1, ..DRAW };
-    let mut ml = pos.captures();
+
+    // Falls im Schach: alle Züge prüfen. Sonst: Captures (und evtl. Checks)
+    let mut ml = if in_check { pos.moves() } else { pos.captures() };
+
+    // OPTIONAL: Schachgebote hinzufügen (Vorsicht: Performance-Hit!)
+    // if !in_check { for m in pos.checks() { ml.push(m); } }
+
     orderMoves(&pos, killers, &mut ml);
 
     for m in ml.iter().copied() {
@@ -614,7 +630,8 @@ pub fn negaMax(
         return DRAW;
     }
     if depth == 0 {
-        return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
+        return quiesce(hist, hash, killers, alpha, beta);
+        // return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
@@ -763,7 +780,7 @@ pub fn strategy_negamin(state: StrategyState) {
         if state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().apply(allMoves.moves[0]).eval() * state.player().factor(),
             moves: [allMoves.moves[0]; VariationMoves as usize],
             length: 1,
         }) {
@@ -1207,7 +1224,7 @@ pub fn strategy_negamax(state: StrategyState) {
         state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().turn().factor() * state.current().eval(),
             moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
@@ -1233,7 +1250,7 @@ pub fn strategy_pvs(state: StrategyState) {
         state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().turn().factor() * state.current().eval(),
             moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
@@ -1301,7 +1318,7 @@ pub fn strategy_simple(state: StrategyState) {
         state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().turn().factor() * state.current().eval(),
             moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
@@ -1624,7 +1641,7 @@ pub fn strategy_bns(state: StrategyState) {
         state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().turn().factor() * state.current().eval(),
             moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });
@@ -1880,7 +1897,7 @@ pub fn strategy_mtdf(state: StrategyState) {
         state.talkPV(Variation {
             depth: 1,
             nodes: 1,
-            score: -9999,
+            score: state.current().turn().factor() * state.current().eval(),
             moves: [allMoves[0]; VariationMoves as usize],
             length: 1,
         });

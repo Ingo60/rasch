@@ -17,8 +17,228 @@ valid. Hence, 0 means the move is possible, and -1 means it is not possible (unl
 
 */
 
+use super::basic::{Piece, Piece::*, Player, Player::*};
+use super::cpos::Mirrorable;
 use super::fieldset::*;
+use serde::{Deserialize, Serialize};
 
+/// Hilfsmodul für die Serialisierung von 64-Element-Arrays
+mod big_array {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S>(array: &[i32; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        array.as_slice().serialize(serializer)
+    }
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i32; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v: Vec<i32> = Vec::deserialize(deserializer)?;
+        let len = v.len();
+        v.try_into().map_err(|_| {
+            serde::de::Error::custom(format!("Erwartete PST-Tabelle mit 64 Elementen, fand {}", len))
+        })
+    }
+}
+
+/// Gewichte für die Evaluation
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EvalWeights {
+    pub mat_pawn: i32,
+    pub mat_knight: i32,
+    pub mat_bishop: i32,
+    pub mat_rook: i32,
+    pub mat_queen: i32,
+    pub mat_king: i32,
+    pub mobility: i32,
+    pub check: i32,
+    pub castling: i32,
+    pub covered_king_opp: i32,
+    pub covered_king_own: i32,
+    pub blocked_bishop_pawn: i32,
+    pub bad_bishop: i32,
+    pub lazy_officer: i32,
+    #[serde(with = "big_array")]
+    pub pst_pawn: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_knight: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_bishop: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_rook: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_queen: [i32; 64],
+    #[serde(with = "big_array")]
+    pub pst_king: [i32; 64],
+}
+
+impl EvalWeights {
+    /// Serialisiert die Gewichte nach JSON
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Deserialisiert die Gewichte aus JSON
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    pub fn piece_score(&self, p: Piece) -> i32 {
+        match p {
+            EMPTY => 0,
+            PAWN => self.mat_pawn,
+            KNIGHT => self.mat_knight,
+            BISHOP => self.mat_bishop,
+            ROOK => self.mat_rook,
+            QUEEN => self.mat_queen,
+            KING => self.mat_king,
+        }
+    }
+
+    /// Liefert den PST-Wert für eine Figur auf einem bestimmten Feld.
+    /// Für Schwarz wird das Feld gespiegelt, um die Tabelle symmetrisch zu nutzen.
+    pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> i32 {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        match piece {
+            PAWN => self.pst_pawn[idx],
+            KNIGHT => self.pst_knight[idx],
+            BISHOP => self.pst_bishop[idx],
+            ROOK => self.pst_rook[idx],
+            QUEEN => self.pst_queen[idx],
+            KING => self.pst_king[idx],
+            EMPTY => 0,
+        }
+    }
+}
+
+impl Default for EvalWeights {
+    fn default() -> Self {
+        let mut w = EvalWeights {
+            mat_pawn: 100,
+            mat_knight: 300,
+            mat_bishop: 305,
+            mat_rook: 550,
+            mat_queen: 875,
+            mat_king: 1000,
+            mobility: 4,
+            check: 20,
+            castling: 25,
+            covered_king_opp: 5,
+            covered_king_own: 6,
+            blocked_bishop_pawn: 21,
+            bad_bishop: 43,
+            lazy_officer: 30,
+            pst_pawn: [0; 64],
+            pst_knight: [0; 64],
+            pst_bishop: [0; 64],
+            pst_rook: [0; 64],
+            pst_queen: [0; 64],
+            pst_king: [0; 64],
+        };
+
+        // Initialisierung mit dem bisherigen "Zone"-Bonus als Standardwert
+        for f in ALLFIELDS {
+            let val = (f.zone() as i32 + 1) * 5;
+            let idx = f as usize;
+            w.pst_pawn[idx] = val;
+            w.pst_knight[idx] = val;
+            w.pst_bishop[idx] = val;
+            w.pst_rook[idx] = val;
+            w.pst_queen[idx] = val;
+            w.pst_king[idx] = val;
+        }
+        w
+    }
+}
+
+static mut current_weights: EvalWeights = EvalWeights {
+    mat_bishop: 305,
+    mat_king: 1000,
+    mat_knight: 300,
+    mat_pawn: 100,
+    mat_queen: 875,
+    mat_rook: 550,
+    mobility: 4,
+    check: 20,
+    castling: 25,
+    covered_king_opp: 5,
+    covered_king_own: 6,
+    blocked_bishop_pawn: 21,
+    bad_bishop: 43,
+    lazy_officer: 30,
+    pst_bishop: [0; 64],
+    pst_king: [0; 64],
+    pst_knight: [0; 64],
+    pst_pawn: [0; 64],
+    pst_queen: [0; 64],
+    pst_rook: [0; 64],
+};
+
+pub fn set_default_weights() {
+    unsafe {
+        current_weights = EvalWeights::default();
+    }
+}
+
+pub fn get_weights() -> EvalWeights {
+    unsafe { current_weights }
+}
+
+pub fn set_weights(weights: EvalWeights) {
+    unsafe {
+        current_weights = weights;
+    }
+}
+
+const WEIGHTS_FILE: &str = "./data/weights.json";
+
+/// deserialisiert aus ./data/weights.json, falls vorhanden, ansonsten werden die Default-Gewichte verwendet
+pub fn load_weights() {
+    match std::fs::read_to_string(WEIGHTS_FILE) {
+        Ok(json) => match EvalWeights::from_json(&json) {
+            Ok(weights) => {
+                set_weights(weights);
+                println!("# Gewichte aus {} geladen.", WEIGHTS_FILE);
+            }
+            Err(e) => {
+                println!(
+                    "# Fehler beim Parsen von {}: {}. Standardgewichte werden verwendet.",
+                    WEIGHTS_FILE, e
+                );
+                set_default_weights();
+            }
+        },
+        Err(_) => {
+            println!(
+                "# {} nicht gefunden. Standardgewichte werden verwendet.",
+                WEIGHTS_FILE
+            );
+            set_default_weights();
+        }
+    }
+}
+
+/// serialisiert die aktuellen Gewichte in ./data/weights.json
+pub fn save_weights() {
+    let weights = get_weights();
+    match weights.to_json() {
+        Ok(json) => match std::fs::write(WEIGHTS_FILE, json) {
+            Ok(_) => println!("# Gewichte in {} gespeichert.", WEIGHTS_FILE),
+            Err(e) => println!(
+                "# Fehler beim Schreiben von {}: {}. Gewichte konnten nicht gespeichert werden.",
+                WEIGHTS_FILE, e
+            ),
+        },
+        Err(e) => println!(
+            "# Fehler beim Serialisieren der Gewichte: {}. Gewichte konnten nicht gespeichert werden.",
+            e
+        ),
+    };
+}
+
+//
 //                  Geometry
 //      8        7        6       5         4        3       2        1
 //  hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
@@ -194,6 +414,8 @@ pub fn initStatic() {
         genKnight();
         genKing();
     }
+    // lade die Gewichte aus der JSON-Datei, falls vorhanden
+    load_weights();
 }
 
 unsafe fn genPawn() {

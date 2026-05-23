@@ -20,8 +20,8 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
-use serde::{Serialize, Deserialize};
 
+pub use super::mdb::EvalWeights;
 
 
 
@@ -39,7 +39,6 @@ pub use super::basic::{Player, Piece, Move, showMoves, showMovesSAN, NO_MOVE};
 pub use super::basic::Player::*;
 pub use super::basic::Piece::*;
 pub use super::cpos::{CPos, Mirrorable};
-use super::fieldset::ALLFIELDS;
 
 
 /// short form of BitSet::singleton
@@ -146,119 +145,6 @@ impl MoveCollector for MoveList {
         }
     }
 }
-
-/// Hilfsmodul für die Serialisierung von 64-Element-Arrays
-mod big_array {
-    use serde::{Serialize, Serializer, Deserialize, Deserializer};
-    pub fn serialize<S>(array: &[i32; 64], serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
-        array.as_slice().serialize(serializer)
-    }
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i32; 64], D::Error>
-    where D: Deserializer<'de> {
-        let v: Vec<i32> = Vec::deserialize(deserializer)?;
-        let len = v.len();
-        v.try_into().map_err(|_| {
-            serde::de::Error::custom(format!("Erwartete PST-Tabelle mit 64 Elementen, fand {}", len))
-        })
-    }
-}
-
-
-/// Gewichte für die Evaluation
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct EvalWeights {
-    pub mat_pawn: i32,
-    pub mat_knight: i32,
-    pub mat_bishop: i32,
-    pub mat_rook: i32,
-    pub mat_queen: i32,
-    pub mat_king: i32,
-    pub mobility: i32,
-    pub check: i32,
-    pub castling: i32,
-    pub covered_king_opp: i32,
-    pub covered_king_own: i32,
-    pub blocked_bishop_pawn: i32,
-    pub bad_bishop: i32,
-    pub lazy_officer: i32,
-    #[serde(with = "big_array")]
-    pub pst_pawn: [i32; 64],
-    #[serde(with = "big_array")]
-    pub pst_knight: [i32; 64],
-    #[serde(with = "big_array")]
-    pub pst_bishop: [i32; 64],
-    #[serde(with = "big_array")]
-    pub pst_rook: [i32; 64],
-    #[serde(with = "big_array")]
-    pub pst_queen: [i32; 64],
-    #[serde(with = "big_array")]
-    pub pst_king: [i32; 64],
-}
-
-impl EvalWeights {
-    /// Serialisiert die Gewichte nach JSON
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(self)
-    }
-
-    /// Deserialisiert die Gewichte aus JSON
-    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
-    }
-
-    pub fn piece_score(&self, p: Piece) -> i32 {
-        match p {
-            EMPTY => 0,
-            PAWN => self.mat_pawn,
-            KNIGHT => self.mat_knight,
-            BISHOP => self.mat_bishop,
-            ROOK => self.mat_rook,
-            QUEEN => self.mat_queen,
-            KING => self.mat_king,
-        }
-    }
-
-    /// Liefert den PST-Wert für eine Figur auf einem bestimmten Feld.
-    /// Für Schwarz wird das Feld gespiegelt, um die Tabelle symmetrisch zu nutzen.
-    pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> i32 {
-        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
-        match piece {
-            PAWN => self.pst_pawn[idx],
-            KNIGHT => self.pst_knight[idx],
-            BISHOP => self.pst_bishop[idx],
-            ROOK => self.pst_rook[idx],
-            QUEEN => self.pst_queen[idx],
-            KING => self.pst_king[idx],
-            EMPTY => 0,
-        }
-    }
-}
-
-impl Default for EvalWeights {
-    fn default() -> Self {
-        let mut w = EvalWeights {
-            mat_pawn: 100, mat_knight: 300, mat_bishop: 305, mat_rook: 550, mat_queen: 875, mat_king: 1000,
-            mobility: 4, check: 20, castling: 25,
-            covered_king_opp: 5, covered_king_own: 6,
-            blocked_bishop_pawn: 21, bad_bishop: 43, lazy_officer: 30,
-            pst_pawn: [0; 64], pst_knight: [0; 64], pst_bishop: [0; 64],
-            pst_rook: [0; 64], pst_queen: [0; 64], pst_king: [0; 64],
-        };
-
-        // Initialisierung mit dem bisherigen "Zone"-Bonus als Standardwert
-        for f in ALLFIELDS {
-            let val = (f.zone() as i32 + 1) * 5;
-            let idx = f as usize;
-            w.pst_pawn[idx] = val; w.pst_knight[idx] = val; w.pst_bishop[idx] = val;
-            w.pst_rook[idx] = val; w.pst_queen[idx] = val;  w.pst_king[idx] = val;
-        }
-        w
-    }
-}
-
-
-
 
 //                  Board Geometry
 //      8        7        6       5         4        3       2        1
@@ -1485,6 +1371,26 @@ impl Position {
             let is_promo = m.piece() == PAWN && m.promote() >= KNIGHT && m.promote() <= QUEEN;
             if (is_capture || is_promo) && self.apply(m).notInCheck() {
                 result.push(m);
+            }
+        }
+        result
+    }
+
+    /// List of moves that give check to the opponent but are not captures.
+    /// Useful for extending Quiescence Search in a controlled way.
+    pub fn checks(&self) -> MoveList {
+        let mut ml = MoveList::default();
+        self.rawMoves(&mut ml);
+
+        let mut result = MoveList::default();
+        let opponent = self.turn().opponent();
+        for &m in ml.as_slice() {
+            // Wir suchen nur nach stillen Zügen, die Schach geben
+            if self.isEmpty(m.to()) && m.promote() == EMPTY {
+                let next = self.apply(m);
+                if next.inCheck(opponent) && next.notInCheck() {
+                    result.push(m);
+                }
             }
         }
         result
