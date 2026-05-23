@@ -249,7 +249,7 @@ fn main() {
 fn flamegraph(gs: GameState, depth: u32) {
     let mut hist = vec![P::initialBoard()];
     let mut hash = gs.trtable.lock().unwrap();
-    let mut killers = HashSet::with_capacity(64);
+    let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
     let before = Instant::now();
     let pv = negaMax(
         &mut hist,
@@ -270,7 +270,7 @@ fn flamegraph(gs: GameState, depth: u32) {
         pv.showMovesSAN(P::initialBoard())
     );
     // hash.clear();
-    killers.clear();
+    killers = [[P::NO_MOVE; 2]; 128];
     let before = Instant::now();
     let pv = negaMax(
         &mut hist,
@@ -296,7 +296,7 @@ type TransTable<'x> = MutexGuard<'x, HashMap<Position, Transp>>;
 type SimpleTransTable<'x> = MutexGuard<'x, SimpleTranspositionHash>;
 type Positions = Vec<Position>;
 type Variations = Vec<Variation>;
-type KillerSet = HashSet<Move>;
+type KillerSet = [[Move; 2]; 128];
 
 pub fn strategy_resign(mut state: StrategyState) {
     state.sender.send(NoMore(state.sid)).unwrap();
@@ -333,30 +333,26 @@ pub fn strategy_best(mut state: StrategyState) {
 
 /// estimate a rating for a move
 #[rustfmt::skip]
-pub fn moveRating(pos: &Position, killers: &mut KillerSet, mv: Move) -> i32 {
-    let rpos = pos.apply(mv);
-    let before = pos.pieceOn(mv.from());
-    let after = rpos.pieceOn(mv.to());
-    let vt = pos.pieceOn(mv.to()).score();
-    let killer = if killers.contains(&mv)                                   { 11 } else { 0 };
-    let goodCapture = if mv.piece().score() < vt - 10                       {  9 } else { 0 };
-    let badCapturing = if vt > 0                                            {  2 } else { 0 };
-    let castling = if mv.piece() == KING && mv.promote() != EMPTY           {  3 } else { 0 };
-    let checking = if rpos.inCheck(rpos.turn())                             {  1 } else { 0 };
-    let attacked = if rpos.isAttacked(mv.to(), rpos.turn())                 { -2 } else { 0 };
-    let hanging  = if !rpos.isAttacked(mv.to(), pos.turn()) && attacked != 0 { -5 } else { 0 };
-    
-    let attacking_before = (P::pieceTargets(before, mv.player(), mv.from()) 
-                            * pos.occupiedBy(mv.player().opponent())).card() as i32;
-    
-    let attacking_after  = (P::pieceTargets(after, mv.player(), mv.to()) 
-                            * rpos.occupiedBy(mv.player().opponent())).card() as i32;
-    let attacking = attacking_after - attacking_before;
-    let pawnMove =  if rpos.inEndgame() && mv.piece() == PAWN {
-                        if mv.promote() != EMPTY                  { 10 } else { 5 }
-                    } else { 0 }; 
-    
-    goodCapture + badCapturing + castling + checking + attacking + pawnMove + killer + attacked + hanging
+pub fn moveRating(pos: &Position, killers: &KillerSet, mv: Move) -> i32 {
+    let piece = mv.piece();
+    let target_piece = pos.pieceOn(mv.to());
+    let ply = pos.getRootDistance() as usize;
+
+    // 1. MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+    // Wir bewerten Schläge basierend auf dem Wert des Ziels und der Angreifer
+    if target_piece != P::Piece::EMPTY {
+        return 10000 + (target_piece.score() * 10) - piece.score();
+    }
+
+    // 2. Killer Moves (Züge, die in anderen Zweigen zu Cutoffs geführt haben)
+    if ply < 128 && (killers[ply][0] == mv || killers[ply][1] == mv) {
+        return 5000;
+    }
+
+    // 3. Beförderungen
+    if mv.promote() != P::Piece::EMPTY { return 8000; }
+
+    0
 }
 
 /// order a bunch of moves so that the most useful one will processed
@@ -365,7 +361,7 @@ pub fn orderMoves(pos: &Position, killers: &mut KillerSet, ml: &mut P::MoveList)
     let mut ratings = [0i32; P::MAX_MOVES];
     let moves = ml.as_mut_slice();
     for (i, &mv) in moves.iter().enumerate() {
-        ratings[i] = moveRating(pos, killers, mv);
+        ratings[i] = moveRating(pos, &*killers, mv);
     }
 
     // Einfache In-Place Sortierung (Insertion Sort ist bei kleinen Listen oft schneller)
@@ -455,7 +451,11 @@ pub fn negaMaxGo(
         hist.pop();
         let score = -pv.score;
         if let Some(killer) = pv.last() {
-            killers.insert(killer);
+            let ply = current.getRootDistance() as usize;
+            if ply < 128 && killers[ply][0] != killer {
+                killers[ply][1] = killers[ply][0];
+                killers[ply][0] = killer;
+            }
         }
         if score > beta {
             // killer move
@@ -519,7 +519,11 @@ pub fn pvsGo(
 
         if score > alpha || score > best.score {
             if let Some(killer) = pv.last() {
-                killers.insert(killer);
+                let ply = current.getRootDistance() as usize;
+                if ply < 128 && killers[ply][0] != killer {
+                    killers[ply][1] = killers[ply][0];
+                    killers[ply][0] = killer;
+                }
             }
             best = Variation { nodes: best.nodes + pv.nodes, score, ..pv }.push(m);
         } else {
@@ -704,7 +708,7 @@ pub fn negaSimple(state: StrategyState, killers: &mut KillerSet, depth: u32, alp
 
 /// search with the *negamin* algorithm
 pub fn strategy_negamin(state: StrategyState) {
-    let mut killers = HashSet::with_capacity(2048);
+    let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
     let mut allMoves = state.current().moves();
     orderMoves(&state.current(), &mut killers, &mut allMoves);
     println!(
@@ -846,7 +850,7 @@ pub fn pvsSearch(
 
 pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     let mut depth = depth;
-    let mut killers = HashSet::with_capacity(4096);
+    let mut killers = [[P::NO_MOVE; 2]; 128];
 
     let myPos = state.current(); // Copy of the current position
     let all_raw_moves = myPos.moves(); // Get the MoveList
@@ -875,8 +879,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
     for i in 0..all_raw_moves.len {
         let m = all_raw_moves.moves[i];
         if !forbidden.contains(&m) {
-            filtered_moves.moves[filtered_moves.len] = m;
-            filtered_moves.len += 1;
+            filtered_moves.push(m);
         }
     }
 
@@ -961,8 +964,12 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
                 .push(m);
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
+                let ply = opos.getRootDistance() as usize - 1;
                 if pv.score < alpha || pvs.len() == 0 {
-                    killers.insert(killer);
+                    if ply < 128 && killers[ply][0] != killer {
+                        killers[ply][1] = killers[ply][0];
+                        killers[ply][0] = killer;
+                    }
                 }
             }
             if pv.score >= alpha - 5 {
@@ -984,7 +991,7 @@ pub fn iterDeep(state: StrategyState, depth: u32, search: Search) {
 
 pub fn iterPVS(state: StrategyState, depth: u32) {
     let mut depth = depth;
-    let mut killers = HashSet::with_capacity(4096);
+    let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
     let myPos = state.current(); // Copy of the current position
     let mut myMoves = myPos.moves(); // Get the MoveList
     let mut pvs: Variations = Vec::with_capacity(myMoves.len);
@@ -1109,8 +1116,12 @@ pub fn iterPVS(state: StrategyState, depth: u32) {
 
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
+                let ply = opos.getRootDistance() as usize - 1;
                 if pv.score < alpha || pvs.len() == 0 {
-                    killers.insert(killer);
+                    if ply < 128 && killers[ply][0] != killer {
+                        killers[ply][1] = killers[ply][0];
+                        killers[ply][0] = killer;
+                    }
                 }
             }
             if pvs.len() == 0 || pv.score > alpha {
@@ -1266,7 +1277,7 @@ pub fn strategy_simple(state: StrategyState) {
 
 pub fn iterSimple(state: StrategyState, depth: u32) {
     let mut depth = depth;
-    let mut killers = HashSet::with_capacity(4096);
+    let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
     let myPos = state.current(); // Copy of the current position
     let mut myMoves = myPos.moves(); // Get the MoveList
     let mut pvs: Variations = Vec::with_capacity(myMoves.len);
@@ -1359,7 +1370,11 @@ pub fn iterSimple(state: StrategyState, depth: u32) {
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
-                    killers.insert(killer);
+                    let ply = opos.getRootDistance() as usize - 1;
+                    if ply < 128 && killers[ply][0] != killer {
+                        killers[ply][1] = killers[ply][0];
+                        killers[ply][0] = killer;
+                    }
                 }
             }
             if pv.score >= alpha - 5 {
@@ -1463,7 +1478,10 @@ pub fn simpleMax(
             }
             // if we have a match, insert the answer to the proposed move as killer
             if te.pv.length > 1 {
-                killers.insert(te.pv.moves[(te.pv.length - 2) as usize]);
+                let ply = pos.getRootDistance() as usize;
+                if ply < 128 {
+                    killers[ply][0] = te.pv.moves[(te.pv.length - 2) as usize];
+                }
             }
             aux
         }
@@ -1515,7 +1533,11 @@ pub fn simpleMax(
             // farther away moves are less worth, prefer the shorter variant
             let score = -pv.score;
             if let Some(killer) = pv.last() {
-                killers.insert(killer);
+                let ply = pos.getRootDistance() as usize;
+                if ply < 128 && killers[ply][0] != killer {
+                    killers[ply][1] = killers[ply][0];
+                    killers[ply][0] = killer;
+                }
             }
             if score > beta || score > alpha || score > best.score {
                 best = Variation { nodes: best.nodes + pv.nodes, depth: pv.depth + 1, score, ..pv }.push(m);
@@ -1580,7 +1602,7 @@ pub fn strategy_bns(state: StrategyState) {
 
 pub fn iterBNS(state: StrategyState) {
     let mut depth = 4;
-    let mut killers = HashSet::with_capacity(4096);
+    let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
     let pos = state.current();
     let score0 = pos.eval() * pos.turn().factor();
     let mut beta = score0 + 50;
@@ -1658,7 +1680,11 @@ pub fn iterBNS(state: StrategyState) {
             // make sure good counter moves are treated as killers
             if let Some(killer) = pv1.last() {
                 if pv.score < alpha || pvs.len() == 0 {
-                    killers.insert(killer);
+                    let ply = opos.getRootDistance() as usize - 1;
+                    if ply < 128 && killers[ply][0] != killer {
+                        killers[ply][1] = killers[ply][0];
+                        killers[ply][0] = killer;
+                    }
                 }
             }
 
@@ -1775,7 +1801,11 @@ pub fn mtdfMax(
         let score = -pv.score;
         if let Some(killer) = pv.last() {
             if score < alpha {
-                killers.insert(killer);
+                let ply = current.getRootDistance() as usize;
+                if ply < 128 && killers[ply][0] != killer {
+                    killers[ply][1] = killers[ply][0];
+                    killers[ply][0] = killer;
+                }
             }
         }
         if score > best.score {
@@ -1823,7 +1853,7 @@ pub fn strategy_mtdf(state: StrategyState) {
         state.tellNoMore();
     } else {
         let mut depth = 4;
-        let mut killers = HashSet::with_capacity(4096);
+        let mut killers: KillerSet = [[P::NO_MOVE; 2]; 128];
         let mut hist = state.history.clone();
         let mut g = {
             let mut hash: TransTable = state.trtable.lock().unwrap();
