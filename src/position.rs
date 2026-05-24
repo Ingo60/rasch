@@ -1411,6 +1411,31 @@ impl Position {
             || self.occupied().card() < 11
     }
 
+    /// Berechnet die Wahrscheinlichkeit, dass es sich nicht um ein Endspiel handelt (1.0 = kein Endspiel, 0.0 = Endspiel).
+    /// Die Berechnung basiert auf dem Material des aktiven Spielers ohne Bauern relativ zu
+    /// einer vollen Offiziersbesetzung (1 Dame, 2 Türme, 2 Läufer, 2 Springer).
+    pub fn no_endgame_probability(&self) -> f64 {
+        let player = self.turn();
+        let occ = self.occupiedBy(player);
+
+        // Aktuelles Material des Spielers (ohne Bauern und König)
+        let current_QRBN = (self.queens() * occ).card() as f64 * mdb::get_mat_queen()
+            + (self.rooks() * occ).card() as f64 * mdb::get_mat_rook()
+            + (self.bishops() * occ).card() as f64 * mdb::get_mat_bishop()
+            + (self.knights() * occ).card() as f64 * mdb::get_mat_knight();
+
+        // Maximalwert für eine Standard-Offiziersbesetzung
+        let max_QRBN = mdb::get_mat_queen()
+            + 2.0 * (mdb::get_mat_rook() + mdb::get_mat_bishop() + mdb::get_mat_knight());
+
+        // 1.0 entspricht vollem Middlegame-Material, gegen 0.0 wird es ein reines Bauernendspiel.
+        // Theoretisch sind Werte > 1.0 möglich, wenn der Spieler mehr Material als die Standard-Offiziersbesetzung hat.
+        // Dann ist aber die korrekte Bewertung der Königsstellung nicht mehr spielentscheidend. 
+        // Auch würde eine Begrenzung auf 1.0 ja gar nicht verhindern, 
+        // dass der Stand fälschlich als Mittelspiel eingeordnet wird.
+        current_QRBN / max_QRBN
+    }
+
     /// Compensate for the immobility penalty caused by pieces near the king
     /// Own pieces adjacent to the king are preferred
     pub fn coveredKing(&self, player: Player) -> i32 {
@@ -1458,26 +1483,33 @@ impl Position {
     /// Compute penalty for lazy officers.
     /// In the opening, KNIGHTs and BISHOPs should be moved.
     /// An extra penalty hits for 3 or 4 lazy officers and a moved queen.
+    /// The penalty applies only when there are castling rights left, so that after castling or movement of the king
+    /// officers can stand on their original position.
     pub fn penaltyLazyOfficers(&self, player: Player) -> i32 {
         let mine = self.occupiedBy(player);
+        let castlingRights = match player {
+            WHITE => self.flags * WHITE_CASTLING_RIGHTS,
+            BLACK => self.flags * BLACK_CASTLING_RIGHTS,
+        };
+        if castlingRights.null() { return 0 }
         // let pawns = self.pawns() * mine;
-        let rooks = self.rooks() * mine;
+        // let rooks = self.rooks() * mine;
         let bishops = self.bishops() * mine;
         let knights = self.knights() * mine;
         let lazyOfficers = match player {
             WHITE => {
-                let lazyLeftKnight  = rooks.member(A1) && knights.member(B1);
-                let lazyRightKnight = rooks.member(H1) && knights.member(G1);
-                let lazyLeftBishop  = rooks.member(A1) && bishops.member(C1);
-                let lazyRightBishop  = rooks.member(H1) && bishops.member(F1);
+                let lazyLeftKnight  = knights.member(B1);
+                let lazyRightKnight = knights.member(G1);
+                let lazyLeftBishop  = bishops.member(C1);
+                let lazyRightBishop = bishops.member(F1);
                 lazyLeftBishop as i32 
                     + lazyLeftKnight as i32 + lazyRightBishop as i32 + lazyRightKnight as i32
             },
             BLACK => {
-                let lazyLeftKnight  = rooks.member(A8) && knights.member(B8);
-                let lazyRightKnight = rooks.member(H8) && knights.member(G8);
-                let lazyLeftBishop  = rooks.member(A8) && bishops.member(C8);
-                let lazyRightBishop  = rooks.member(H8) && bishops.member(F8);
+                let lazyLeftKnight  = knights.member(B8);
+                let lazyRightKnight = knights.member(G8);
+                let lazyLeftBishop  = bishops.member(C8);
+                let lazyRightBishop = bishops.member(F8);
                 lazyLeftBishop as i32 
                     + lazyLeftKnight as i32 + lazyRightBishop as i32 + lazyRightKnight as i32
             }
@@ -1486,7 +1518,7 @@ impl Position {
             WHITE => !mine.member(D1) || self.pieceOn(D1) != QUEEN,
             BLACK => !mine.member(D8) || self.pieceOn(D8) != QUEEN,
         };
-        if busyQueen && lazyOfficers > 2 { 150 } else { lazyOfficers * 30 }
+        (busyQueen as i32 + lazyOfficers) * 30
     }
 
     /// Sum scores for material
@@ -1728,27 +1760,28 @@ impl Position {
     }
 
     /// Alternative Evaluation mit variablen Gewichten
-    pub fn eval_weighted(&self, weights: &EvalWeights) -> i32 {
+    pub fn eval_weighted(&self) -> i32 {
         let mut pMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.rawMoves(&mut pMoves);
-        self.eval_have_moves_weighted(pMoves.as_slice(), weights)
+        self.eval_have_moves_weighted(pMoves.as_slice())
     }
 
     /// Version von eval_have_moves, die Gewichte berücksichtigt
-    pub fn eval_have_moves_weighted(&self, pMoves: &[Move], weights: &EvalWeights) -> i32 {
-        let matWhite = self.scoreMaterial_weighted(WHITE, weights);
-        let matBlack = self.scoreMaterial_weighted(BLACK, weights);
+    pub fn eval_have_moves_weighted(&self, pMoves: &[Move]) -> i32 {
+        let matWhite = self.scoreMaterial_weighted(WHITE);
+        let matBlack = self.scoreMaterial_weighted(BLACK);
         let matDelta = matWhite - matBlack;
-        let divisor = min(matWhite, matBlack).max(1000);
-        let matRelation = percent((max(matWhite, matBlack)*100) / divisor, matDelta);
+        let divisor = matWhite.min(matBlack).max(1000.0);
+        let matRelation = (matWhite.max(matBlack) / divisor) * matDelta;
         
         let check = self.inCheck(self.turn());
-        let checkBonus = if check { weights.check } else { 0 };
-        let playerMoves = pMoves.len() as i32;
+        let checkBonus = if check { mdb::get_check() } else { 0.0 };
+        let mobility = mdb::get_mobility();
+        let playerMoves = pMoves.len() as f64;
         
         let mut oMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.applyNull().rawMoves(&mut oMoves);
-        let opponentMoves = oMoves.len as i32;
+        let opponentMoves = oMoves.len as f64;
         
         let mut attacksByWhite = [EMPTY; 64];
         let mut attacksByBlack = [EMPTY; 64];
@@ -1763,7 +1796,7 @@ impl Position {
                 if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was { attacksByBlack[wo] = was; }
             }
         }
-        for m in oMoves.as_slice() {
+        for m in &oMoves {
             let wo = m.to() as usize;
             let was = m.piece();
             if was == PAWN && self.isEmpty(m.to()) { continue; }
@@ -1774,26 +1807,38 @@ impl Position {
             }
         } 
         
-        matRelation
-        - self.penalizeHanging_weighted(WHITE, &attacksByBlack, &attacksByWhite, weights) 
-        + self.penalizeHanging_weighted(BLACK, &attacksByWhite, &attacksByBlack, weights)
-        + self.turn().opponent().forP(checkBonus + weights.mobility * opponentMoves)
-        + self.turn().forP(weights.mobility * playerMoves)
-        + self.scoreCastling_weighted(WHITE, weights) - self.scoreCastling_weighted(BLACK, weights)
-        + self.coveredKing_weighted(WHITE, weights)   - self.coveredKing_weighted(BLACK, weights)
-        - self.penaltyBlockedBishopBlockingPawns_weighted(WHITE, weights) + self.penaltyBlockedBishopBlockingPawns_weighted(BLACK, weights)
-        - self.penaltyBadBishops_weighted(WHITE, weights) + self.penaltyBadBishops_weighted(BLACK, weights)
-        - self.penaltyLazyOfficers_weighted(WHITE, weights) + self.penaltyLazyOfficers_weighted(BLACK, weights)
+        let score = matRelation
+        - self.penalizeHanging_weighted(WHITE, &attacksByBlack, &attacksByWhite) 
+        + self.penalizeHanging_weighted(BLACK, &attacksByWhite, &attacksByBlack)
+        + (self.turn().opponent().factor() as f64) * (checkBonus + mobility * opponentMoves)
+        + (self.turn().factor() as f64) * (mobility * playerMoves)
+        + self.scoreCastling_weighted(WHITE) - self.scoreCastling_weighted(BLACK)
+        + self.coveredKing_weighted(WHITE)   - self.coveredKing_weighted(BLACK)
+        - self.penaltyBlockedBishopBlockingPawns_weighted(WHITE) + self.penaltyBlockedBishopBlockingPawns_weighted(BLACK)
+        - self.penaltyBadBishops_weighted(WHITE) + self.penaltyBadBishops_weighted(BLACK)
+        - self.penaltyLazyOfficers_weighted(WHITE) + self.penaltyLazyOfficers_weighted(BLACK);
+
+        score as i32
     }
 
-    pub fn scoreMaterial_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    pub fn scoreMaterial_weighted(&self, player: Player) -> f64 {
+        // Wir ermitteln die Phase (Mittelspiel-Gewichtung) einmalig für die Interpolation
+        let mg_weight = self.no_endgame_probability().min(1.0).max(0.0);
         let mut bits = self.occupiedBy(player).bits;
-        let mut sum  = 0;
+        let mut sum: f64 = 0.0;
         while bits != 0 {
             let from = Field::from(bits.trailing_zeros() as u8);
             bits ^= 1 << from as u64;
             let piece = self.pieceOn(from);
-            sum += weights.piece_score(piece) + weights.pst_value(piece, player, from);
+
+            // Für den König nutzen wir die neue interpolierte PST-Berechnung
+            let pst = if piece == KING {
+                mdb::get_pst_value_king(player, from, mg_weight)
+            } else {
+                mdb::get_pst_value(piece, player, from)
+            };
+
+            sum += mdb::get_piece_score(piece) + pst;
             match piece {
                 ROOK | QUEEN | KING if self.inEndgame() => {
                     let file = from.file();
@@ -1801,7 +1846,7 @@ impl Position {
                     let pto = Field::fromFR(file, prank);
                     let pawns = mdb::canRook(from, pto) * self.pawns() * self.occupiedBy(player);
                     if pawns.some() && (mdb::canRook(from, pawns.bitIndex())*self.occupiedBy(player.opponent())).null() {
-                        sum += 50;
+                        sum += 50.0;
                     }
                 }
                 PAWN => {
@@ -1809,8 +1854,8 @@ impl Position {
                     let prank = if player == WHITE { 8 } else { 1 };
                     let pto = Field::fromFR(file, prank);
                     let togo = mdb::canRook(from, pto) + bit(pto);
-                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 3 } else { 1 };
-                    sum += freeFactor * ((1 << (7 - togo.card())) - 2);
+                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 3.0 } else { 1.0 };
+                    sum += freeFactor * ((1 << (7 - togo.card())) - 2) as f64;
                 }
                 _other => (),
             }
@@ -1818,52 +1863,56 @@ impl Position {
         sum
     }
 
-    fn coveredKing_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    fn coveredKing_weighted(&self, player: Player) -> f64 {
         let kingIndex = fld(self.kings() * self.occupiedBy(player));
         let targets   = mdb::kingTargets(kingIndex);
-        (self.occupiedBy(player.opponent()) * targets).card() as i32 * weights.covered_king_opp
-        + (self.occupiedBy(player) * targets).card() as i32 * weights.covered_king_own
+        (self.occupiedBy(player.opponent()) * targets).card() as f64 * mdb::get_covered_king_opp()
+        + (self.occupiedBy(player) * targets).card() as f64 * mdb::get_covered_king_own()
     }
 
-    fn penaltyBlockedBishopBlockingPawns_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    fn penaltyBlockedBishopBlockingPawns_weighted(&self, player: Player) -> f64 {
         let pawns = self.pawns() * match player { WHITE => WHITE_BISHOP_BLOCKING_PAWNS, BLACK => BLACK_BISHOP_BLOCKING_PAWNS };
         let myPawns = match player { WHITE => pawns * self.whites, BLACK => pawns - self.whites };
         let before = match player { WHITE => BitSet { bits: myPawns.bits << 8 }, BLACK => BitSet { bits: myPawns.bits >> 8 } };
-        (before * self.occupied()).card() as i32 * weights.blocked_bishop_pawn
+        (before * self.occupied()).card() as f64 * mdb::get_blocked_bishop_pawn()
     }
 
-    fn penaltyBadBishops_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    fn penaltyBadBishops_weighted(&self, player: Player) -> f64 {
         let bishops = self.bishops() * self.occupiedBy(player);
-        let mut count = 0;
+        let mut count = 0.0;
         for from in bishops {
-            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) { count += weights.bad_bishop; }
+            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) { count += mdb::get_bad_bishop(); }
         };
         count
     }
 
-    fn penaltyLazyOfficers_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    fn penaltyLazyOfficers_weighted(&self, player: Player) -> f64 {
         let mine = self.occupiedBy(player);
-        let lazyOfficers = match player {
+        let lazyOfficers = (match player {
             WHITE => (self.rooks()*mine).member(A1) as i32 + (self.knights()*mine).member(B1) as i32 + (self.bishops()*mine).member(C1) as i32 + (self.bishops()*mine).member(F1) as i32 + (self.knights()*mine).member(G1) as i32 + (self.rooks()*mine).member(H1) as i32,
             BLACK => (self.rooks()*mine).member(A8) as i32 + (self.knights()*mine).member(B8) as i32 + (self.bishops()*mine).member(C8) as i32 + (self.bishops()*mine).member(F8) as i32 + (self.knights()*mine).member(G8) as i32 + (self.rooks()*mine).member(H8) as i32,
-        }.min(4); // max 4 Officers
-        lazyOfficers * weights.lazy_officer
+        }).min(4) as f64; // max 4 Officers
+        lazyOfficers as f64 * mdb::get_lazy_officer()
     }
 
-    fn penalizeHanging_weighted(&self, player: Player, byOther: &[Piece;64], bySelf: &[Piece;64], weights: &EvalWeights) -> i32 {
-        let mut score = 0;
+    fn penalizeHanging_weighted(&self, player: Player, byOther: &[Piece;64], bySelf: &[Piece;64]) -> f64 {
+        let mut score = 0.0;
         for f in self.occupiedBy(player) {
-            let p = hangingPenalty_weighted(self.pieceOn(f), byOther[f as usize], bySelf[f as usize] != EMPTY, weights);
-            let val = if player == self.turn() { percent(33, p) } else { p };
-            if val > 0 { score = if score > 0 { percent(110, max(score, val)) } else { val }; }
+            let p = hangingPenalty_weighted(self.pieceOn(f), byOther[f as usize], bySelf[f as usize] != EMPTY);
+            let val = if player == self.turn() { p * 0.33 } else { p };
+            if val > 0.0 {
+                let adjusted = if score > 0.0 { f64::max(score, val) * 1.1 } else { val };
+                score = adjusted;
+            }
         }
         score
     }
 
-    fn scoreCastling_weighted(&self, player: Player, weights: &EvalWeights) -> i32 {
+    fn scoreCastling_weighted(&self, player: Player) -> f64 {
         let hasCastled = (self.flags * if player == WHITE { WHITE_HAS_CASTLED_BITS } else { BLACK_HAS_CASTLED_BITS }).some();
-        if hasCastled { weights.castling }
-        else { (self.flags * if player == WHITE { WHITE_CASTLING_RIGHTS } else { BLACK_CASTLING_RIGHTS }).card() as i32 * weights.castling - (3 * weights.castling) }
+        let castling = mdb::get_castling();
+        if hasCastled { castling }
+        else { (self.flags * if player == WHITE { WHITE_CASTLING_RIGHTS } else { BLACK_CASTLING_RIGHTS }).card() as f64 * castling - (3.0 * castling) }
     }
 
     /// compresses this position
@@ -1893,17 +1942,17 @@ impl Position {
 }
 
 /// Gewichtete Version der hangingPenalty
-pub fn hangingPenalty_weighted(hang: Piece, att: Piece, defended: bool, weights: &EvalWeights) -> i32 {
-    let scoreh = weights.piece_score(hang);
-    let scorea = weights.piece_score(att);
+pub fn hangingPenalty_weighted(hang: Piece, att: Piece, defended: bool) -> f64 {
+    let scoreh = mdb::get_piece_score(hang);
+    let scorea = mdb::get_piece_score(att);
     match att {
-        EMPTY => if defended { percent(10, scoreh) } else { 0 },
-        KING if defended => 0,
-        _hking if hang == KING => 0,
+        EMPTY => if defended { scoreh * 0.1 } else { 0.0 },
+        KING if defended => 0.0,
+        _hking if hang == KING => 0.0,
         _otherwise => match defended {
-            false => percent(70, scoreh), 
-            true if scoreh > scorea => percent(70, scoreh - scorea),
-            _other => 0  
+            false => scoreh * 0.7, 
+            true if scoreh > scorea => (scoreh - scorea) * 0.7,
+            _other => 0.0  
         }
     }
 }

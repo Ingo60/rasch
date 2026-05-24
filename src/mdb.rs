@@ -25,17 +25,17 @@ use serde::{Deserialize, Serialize};
 /// Hilfsmodul für die Serialisierung von 64-Element-Arrays
 mod big_array {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    pub fn serialize<S>(array: &[i32; 64], serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(array: &[f64; 64], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         array.as_slice().serialize(serializer)
     }
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i32; 64], D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[f64; 64], D::Error>
     where
         D: Deserializer<'de>,
     {
-        let v: Vec<i32> = Vec::deserialize(deserializer)?;
+        let v: Vec<f64> = Vec::deserialize(deserializer)?;
         let len = v.len();
         v.try_into().map_err(|_| {
             serde::de::Error::custom(format!("Erwartete PST-Tabelle mit 64 Elementen, fand {}", len))
@@ -43,35 +43,64 @@ mod big_array {
     }
 }
 
+/// Hilfsmodul für die Serialisierung von 49-Element-Arrays (Piece x Piece Kombinationen)
+mod array49 {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S>(array: &[f64; 49], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        array.as_slice().serialize(serializer)
+    }
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[f64; 49], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v: Vec<f64> = Vec::deserialize(deserializer)?;
+        let len = v.len();
+        v.try_into().map_err(|_| {
+            serde::de::Error::custom(format!("Erwartete Piece-Tabelle mit 49 Elementen, fand {}", len))
+        })
+    }
+}
+
 /// Gewichte für die Evaluation
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct EvalWeights {
-    pub mat_pawn: i32,
-    pub mat_knight: i32,
-    pub mat_bishop: i32,
-    pub mat_rook: i32,
-    pub mat_queen: i32,
-    pub mat_king: i32,
-    pub mobility: i32,
-    pub check: i32,
-    pub castling: i32,
-    pub covered_king_opp: i32,
-    pub covered_king_own: i32,
-    pub blocked_bishop_pawn: i32,
-    pub bad_bishop: i32,
-    pub lazy_officer: i32,
+    pub mat_pawn: f64,
+    pub mat_knight: f64,
+    pub mat_bishop: f64,
+    pub mat_rook: f64,
+    pub mat_queen: f64,
+    pub mat_king: f64,
+    pub mobility: f64,
+    pub check: f64,
+    pub castling: f64,
+    pub covered_king_opp: f64,
+    pub covered_king_own: f64,
+    pub blocked_bishop_pawn: f64,
+    pub bad_bishop: f64,
+    pub lazy_officer: f64,
     #[serde(with = "big_array")]
-    pub pst_pawn: [i32; 64],
+    pub pst_pawn: [f64; 64],
     #[serde(with = "big_array")]
-    pub pst_knight: [i32; 64],
+    pub pst_knight: [f64; 64],
     #[serde(with = "big_array")]
-    pub pst_bishop: [i32; 64],
+    pub pst_bishop: [f64; 64],
     #[serde(with = "big_array")]
-    pub pst_rook: [i32; 64],
+    pub pst_rook: [f64; 64],
     #[serde(with = "big_array")]
-    pub pst_queen: [i32; 64],
+    pub pst_queen: [f64; 64],
     #[serde(with = "big_array")]
-    pub pst_king: [i32; 64],
+    pub pst_king_mg: [f64; 64],
+    #[serde(with = "big_array")]
+    pub pst_king_eg: [f64; 64],
+    /// Gewichte für Schläge (Angreifer x Opfer). Index: attacker * 7 + victim.
+    #[serde(with = "array49")]
+    pub attack_weights: [f64; 49],
+    /// Gewichte für Verteidigung (Verteidiger x Opfer). Index: defender * 7 + victim.
+    #[serde(with = "array49")]
+    pub defend_weights: [f64; 49],
 }
 
 impl EvalWeights {
@@ -85,9 +114,9 @@ impl EvalWeights {
         serde_json::from_str(json)
     }
 
-    pub fn piece_score(&self, p: Piece) -> i32 {
+    pub fn piece_score(&self, p: Piece) -> f64 {
         match p {
-            EMPTY => 0,
+            EMPTY => 0.0,
             PAWN => self.mat_pawn,
             KNIGHT => self.mat_knight,
             BISHOP => self.mat_bishop,
@@ -97,9 +126,17 @@ impl EvalWeights {
         }
     }
 
+    pub fn attack_weight(&self, attacker: Piece, victim: Piece) -> f64 {
+        self.attack_weights[attacker as usize * 7 + victim as usize]
+    }
+
+    pub fn defend_weight(&self, defender: Piece, victim: Piece) -> f64 {
+        self.defend_weights[defender as usize * 7 + victim as usize]
+    }
+
     /// Liefert den PST-Wert für eine Figur auf einem bestimmten Feld.
     /// Für Schwarz wird das Feld gespiegelt, um die Tabelle symmetrisch zu nutzen.
-    pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> i32 {
+    pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> f64 {
         let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
         match piece {
             PAWN => self.pst_pawn[idx],
@@ -107,73 +144,115 @@ impl EvalWeights {
             BISHOP => self.pst_bishop[idx],
             ROOK => self.pst_rook[idx],
             QUEEN => self.pst_queen[idx],
-            KING => self.pst_king[idx],
-            EMPTY => 0,
+            KING => self.pst_king_mg[idx],
+            EMPTY => 0.0,
         }
+    }
+
+    /// Berechnet den PST-Wert für den König durch Interpolation zwischen Mittel- und Endspiel.
+    /// mg_weight = 1.0 (reines Mittelspiel), mg_weight = 0.0 (reines Endspiel).
+    pub fn king_pst_value(&self, player: Player, field: Field, mg_weight: f64) -> f64 {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        let mg_val = self.pst_king_mg[idx];
+        let eg_val = self.pst_king_eg[idx];
+        mg_weight * mg_val + (1.0 - mg_weight) * eg_val
     }
 }
 
 impl Default for EvalWeights {
     fn default() -> Self {
         let mut w = EvalWeights {
-            mat_pawn: 100,
-            mat_knight: 300,
-            mat_bishop: 305,
-            mat_rook: 550,
-            mat_queen: 875,
-            mat_king: 1000,
-            mobility: 4,
-            check: 20,
-            castling: 25,
-            covered_king_opp: 5,
-            covered_king_own: 6,
-            blocked_bishop_pawn: 21,
-            bad_bishop: 43,
-            lazy_officer: 30,
-            pst_pawn: [0; 64],
-            pst_knight: [0; 64],
-            pst_bishop: [0; 64],
-            pst_rook: [0; 64],
-            pst_queen: [0; 64],
-            pst_king: [0; 64],
+            mat_pawn: 100.0,
+            mat_knight: 300.0,
+            mat_bishop: 305.0,
+            mat_rook: 550.0,
+            mat_queen: 875.0,
+            mat_king: 1000.0,
+            mobility: 4.0,
+            check: 20.0,
+            castling: 25.0,
+            covered_king_opp: 5.0,
+            covered_king_own: 6.0,
+            blocked_bishop_pawn: 21.0,
+            bad_bishop: 43.0,
+            lazy_officer: 30.0,
+            pst_pawn: [0.0; 64],
+            pst_knight: [0.0; 64],
+            pst_bishop: [0.0; 64],
+            pst_rook: [0.0; 64],
+            pst_queen: [0.0; 64],
+            pst_king_mg: [0.0; 64],
+            pst_king_eg: [0.0; 64],
+            attack_weights: [0.0; 49],
+            defend_weights: [0.0; 49],
         };
 
         // Initialisierung mit dem bisherigen "Zone"-Bonus als Standardwert
         for f in ALLFIELDS {
-            let val = (f.zone() as i32 + 1) * 5;
+            let val = (f.zone() as i32 + 1) as f64 * 5.0;
             let idx = f as usize;
             w.pst_pawn[idx] = val;
             w.pst_knight[idx] = val;
             w.pst_bishop[idx] = val;
             w.pst_rook[idx] = val;
             w.pst_queen[idx] = val;
-            w.pst_king[idx] = val;
+            w.pst_king_mg[idx] = val;
+            w.pst_king_eg[idx] = val;
         }
+
+        // Initialisierung der Angriffs- und Verteidigungsgewichte (Opfer / Angreifer)
+        for attacker in 0..7 {
+            for victim in 0..7 {
+                let a_piece = Piece::from(attacker as u32);
+                let v_piece = Piece::from(victim as u32);
+                let score_a = w.piece_score(a_piece);
+                let score_v = w.piece_score(v_piece);
+
+                // Basisgewicht ist das Verhältnis von Opferwert zu Angreiferwert.
+                // Ein Bauer, der eine Dame angreift, hat ein hohes Gewicht (875/100 = 8.75).
+                let weight = if a_piece == EMPTY {
+                    0.0
+                } else if v_piece == EMPTY {
+                    5.0 // Kleiner Bonus (5 Centipawns) für die Kontrolle leerer Felder
+                } else {
+                    // Verhältniswert: Je wertvoller das Opfer relativ zum Angreifer, desto höher das Gewicht.
+                    score_v / score_a
+                };
+
+                let idx = attacker * 7 + victim;
+                w.attack_weights[idx] = weight;
+                w.defend_weights[idx] = weight;
+            }
+        }
+
         w
     }
 }
 
-static mut current_weights: EvalWeights = EvalWeights {
-    mat_bishop: 305,
-    mat_king: 1000,
-    mat_knight: 300,
-    mat_pawn: 100,
-    mat_queen: 875,
-    mat_rook: 550,
-    mobility: 4,
-    check: 20,
-    castling: 25,
-    covered_king_opp: 5,
-    covered_king_own: 6,
-    blocked_bishop_pawn: 21,
-    bad_bishop: 43,
-    lazy_officer: 30,
-    pst_bishop: [0; 64],
-    pst_king: [0; 64],
-    pst_knight: [0; 64],
-    pst_pawn: [0; 64],
-    pst_queen: [0; 64],
-    pst_rook: [0; 64],
+pub static mut current_weights: EvalWeights = EvalWeights {
+    mat_bishop: 305.0,
+    mat_king: 1000.0,
+    mat_knight: 300.0,
+    mat_pawn: 100.0,
+    mat_queen: 875.0,
+    mat_rook: 550.0,
+    mobility: 4.0,
+    check: 20.0,
+    castling: 25.0,
+    covered_king_opp: 5.0,
+    covered_king_own: 6.0,
+    blocked_bishop_pawn: 21.0,
+    bad_bishop: 43.0,
+    lazy_officer: 30.0,
+    pst_bishop: [0.0; 64],
+    pst_king_mg: [0.0; 64],
+    pst_king_eg: [0.0; 64],
+    pst_knight: [0.0; 64],
+    pst_pawn: [0.0; 64],
+    pst_queen: [0.0; 64],
+    pst_rook: [0.0; 64],
+    attack_weights: [0.0; 49],
+    defend_weights: [0.0; 49],
 };
 
 pub fn set_default_weights() {
@@ -182,6 +261,72 @@ pub fn set_default_weights() {
     }
 }
 
+pub fn get_mat_pawn() -> f64 {
+    unsafe { current_weights.mat_pawn }
+}
+pub fn get_mat_knight() -> f64 {
+    unsafe { current_weights.mat_knight }
+}
+pub fn get_mat_bishop() -> f64 {
+    unsafe { current_weights.mat_bishop }
+}
+pub fn get_mat_rook() -> f64 {
+    unsafe { current_weights.mat_rook }
+}
+pub fn get_mat_queen() -> f64 {
+    unsafe { current_weights.mat_queen }
+}
+pub fn get_mat_king() -> f64 {
+    unsafe { current_weights.mat_king }
+}
+pub fn get_piece_score(p: Piece) -> f64 {
+    unsafe { current_weights.piece_score(p) }
+}
+pub fn get_mobility() -> f64 {
+    unsafe { current_weights.mobility }
+}
+pub fn get_check() -> f64 {
+    unsafe { current_weights.check }
+}
+pub fn get_castling() -> f64 {
+    unsafe { current_weights.castling }
+}
+pub fn get_covered_king_opp() -> f64 {
+    unsafe { current_weights.covered_king_opp }
+}
+pub fn get_covered_king_own() -> f64 {
+    unsafe { current_weights.covered_king_own }
+}
+pub fn get_blocked_bishop_pawn() -> f64 {
+    unsafe { current_weights.blocked_bishop_pawn }
+}
+pub fn get_bad_bishop() -> f64 {
+    unsafe { current_weights.bad_bishop }
+}
+pub fn get_lazy_officer() -> f64 {
+    unsafe { current_weights.lazy_officer }
+}
+
+pub fn get_pst_value(piece: Piece, player: Player, field: Field) -> f64 {
+    unsafe { current_weights.pst_value(piece, player, field) }
+}
+
+/// Liefert den interpolierten PST-Wert für den König basierend auf der Endspielwahrscheinlichkeit.
+pub fn get_pst_value_king(player: Player, field: Field, mg_weight: f64) -> f64 {
+    unsafe { current_weights.king_pst_value(player, field, mg_weight) }
+}
+
+/// Liefert das Gewicht für einen Angriff (ungleichfarbig) basierend auf Angreifer und Opfer.
+pub fn get_attack_weight(attacker: Piece, victim: Piece) -> f64 {
+    unsafe { current_weights.attack_weight(attacker, victim) }
+}
+
+/// Liefert das Gewicht für eine Verteidigungsbeziehung (gleichfarbig) zwischen zwei Figuren.
+pub fn get_defend_weight(defender: Piece, victim: Piece) -> f64 {
+    unsafe { current_weights.defend_weight(defender, victim) }
+}
+
+/// Gibt eine Kopie des gesamten aktuellen Gewichtssatzes zurück.
 pub fn get_weights() -> EvalWeights {
     unsafe { current_weights }
 }
