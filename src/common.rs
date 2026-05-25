@@ -940,8 +940,8 @@ impl GameState {
                 let repetition = !mate
                     && !stalemate
                     && !moves50
-                    && self.history.iter().filter(|&p| *p == pos).count() >= 3;
-                let finished = mate || stalemate || moves50;
+                    && self.history.iter().filter(|&p| *p == pos).count() >= 2;
+                let finished = mate || stalemate || moves50 || repetition;
                 if stalemate {
                     println!("1/2-1/2 {{Stalemate}}");
                 }
@@ -959,6 +959,24 @@ impl GameState {
                 }
                 io::stdout().flush().unwrap_or_default();
                 self.history.push(pos.clearRootPlyCounter());
+
+                // Die PV der erreichten Stellung in der Transposition-Tabelle speichern.
+                // Dies stellt sicher, dass bei einem Ponder-Hit oder dem nächsten Engine-Zug
+                // die bereits berechnete Fortsetzung sofort als Hash-Move zur Verfügung steht.
+                if pv.length > 1 {
+                    let next_pv = pv.pop();
+                    if let Ok(mut hash) = self.trtable.lock() {
+                        let tr = Transp {
+                            halfmove: u32::MAX, // Permanent speichern (vor GC schützen)
+                            depth: next_pv.depth,
+                            score: (pv.score * pos.turn().factor()) << 2, // Score relativ zum neuen Spieler
+                            pvLength: next_pv.length,
+                            pvMoves: next_pv.moves,
+                        };
+                        hash.insert(pos, tr);
+                    }
+                }
+
                 if finished {
                     FORCED
                 } else {
