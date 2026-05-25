@@ -960,23 +960,6 @@ impl GameState {
                 io::stdout().flush().unwrap_or_default();
                 self.history.push(pos.clearRootPlyCounter());
 
-                // Die PV der erreichten Stellung in der Transposition-Tabelle speichern.
-                // Dies stellt sicher, dass bei einem Ponder-Hit oder dem nächsten Engine-Zug
-                // die bereits berechnete Fortsetzung sofort als Hash-Move zur Verfügung steht.
-                if pv.length > 1 {
-                    let next_pv = pv.pop();
-                    if let Ok(mut hash) = self.trtable.lock() {
-                        let tr = Transp {
-                            halfmove: u32::MAX, // Permanent speichern (vor GC schützen)
-                            depth: next_pv.depth,
-                            score: (pv.score * pos.turn().factor()) << 2, // Score relativ zum neuen Spieler
-                            pvLength: next_pv.length,
-                            pvMoves: next_pv.moves,
-                        };
-                        hash.insert(pos, tr);
-                    }
-                }
-
                 if finished {
                     FORCED
                 } else {
@@ -997,6 +980,50 @@ impl GameState {
                     self.running = 0;
                     if self.ttCleanup {
                         self.ttGarbage();
+                    }
+                    // Die PV der erreichten Stellung in der Transposition-Tabelle speichern.
+                    // Dies stellt sicher, dass bei einem Ponder-Hit oder dem nächsten Engine-Zug
+                    // die bereits berechnete Fortsetzung sofort als Hash-Move zur Verfügung steht.
+                    match self.best {
+                        None => println!("# No PV to store in transposition table."),
+                        Some(ref pv)
+                            if pv.length > 1
+                                && self.history.len() > 1
+                                && self.current().turn() == self.player.opponent() =>
+                        {
+                            println!(
+                                "# Storing PV of length {} with score {} in transposition table.",
+                                pv.length, pv.score
+                            );
+                            let hispos = self.history.pop().unwrap();
+                            let mypos = self.history.pop().unwrap();
+                            // Assertions hold only iof this is not after PONDERING.
+                            assert!(mypos.turn() == self.player);
+                            assert!(hispos.turn() == self.player.opponent());
+                            self.history.push(mypos);
+                            self.history.push(hispos);
+
+                            if let Ok(mut hash) = self.trtable.lock() {
+                                let tr = Transp {
+                                    halfmove: u32::MAX, // Permanent speichern (vor GC schützen)
+                                    depth: pv.depth,
+                                    score: (pv.score * mypos.turn().factor()) << 2,
+                                    pvLength: pv.length,
+                                    pvMoves: pv.moves,
+                                };
+                                hash.insert(mypos, tr);
+                                let next_pv = pv.pop();
+                                let tr2 = Transp {
+                                    halfmove: u32::MAX,
+                                    depth: pv.depth - 1,
+                                    score: (next_pv.score * hispos.turn().factor()) << 2,
+                                    pvLength: next_pv.length,
+                                    pvMoves: next_pv.moves,
+                                };
+                                hash.insert(hispos, tr2);
+                            }
+                        }
+                        _ => (),
                     }
                     io::stdout().flush().unwrap_or_default();
                     self.state
@@ -1078,7 +1105,7 @@ impl GameState {
                         self.history.push(self.current().apply(mv).clearRootPlyCounter());
                         match self.state {
                             PLAYING | FORCED => {
-                                println!("# no pondering today?");
+                                // println!("# no pondering today?");
                                 self.state
                             }
                             THINKING(_, Some(expected)) => {
@@ -1088,17 +1115,13 @@ impl GameState {
                                     if self.running == 0 {
                                         println!("# pondering already complete");
                                         self.sendMove()
-                                    } else if self.myTime.as_millis() < 4500 && self.best.is_some() {
+                                    } else if self.myTime.as_millis() < 2500 && self.best.is_some() {
                                         println!("# It's about time, take whatever we pondered so far!");
                                         self.sendMove()
                                     } else {
                                         // continue regular thinking
-                                        // make it appear as if we just consumed 1/2 of our time
-                                        THINKING(
-                                            Instant::now()
-                                                .sub(Duration::from_millis(self.timePerMove() as u64 / 2)),
-                                            None,
-                                        )
+                                        // make it appear as if we just consumed 1000ms of our time
+                                        THINKING(Instant::now().sub(Duration::from_millis(1000)), None)
                                     }
                                 } else {
                                     PLAYING

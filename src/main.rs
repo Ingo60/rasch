@@ -630,8 +630,8 @@ pub fn negaMax(
         return DRAW;
     }
     if depth == 0 {
-        return quiesce(hist, hash, killers, alpha, beta);
-        // return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
+        // return quiesce(hist, hash, killers, alpha, beta);
+        return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
