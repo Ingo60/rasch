@@ -21,6 +21,8 @@ use std::hash::Hasher;
 use std::vec::Vec;
 use std::cmp::{min, max};
 
+use crate::fieldset::ALLFIELDS;
+
 pub use super::mdb::EvalWeights;
 
 
@@ -58,6 +60,10 @@ pub fn percent(p: i32, v: i32) -> i32 { (p*v) / 100 }
 pub const BLACK_IS_MATE: i32 = 32768;
 /// score when WHITE is mate
 pub const WHITE_IS_MATE: i32 = -BLACK_IS_MATE;
+
+/// Maximaler heuristischer Bewertungswert (Deckelung, damit Heuristik nicht in Matt-Bereich läuft)
+pub const MAX_EVAL: i32 = 20000;
+pub const MIN_EVAL: i32 = -MAX_EVAL;
 
 /// Maximale Anzahl an Zügen pro Position
 pub const MAX_MOVES: usize = 256;
@@ -1279,6 +1285,35 @@ impl Position {
         };
     }
 
+    /// generate the defending moves, those moves cannot actually be played but give information about defense
+    fn genDefenses(&self, collector: &mut impl MoveCollector) {
+        let player = self.turn();
+        for from in self.occupiedByActive() {
+            let piece = self.pieceOn(from);
+            assert!(piece != EMPTY);
+            let validTargets = pieceTargets(piece, player, from);
+            
+            for to in validTargets * self.occupiedBy(player) { // check targets that ours
+                let mv = Move::new(player, piece, EMPTY, from, to);
+                let capturing = match piece {
+                    PAWN => match player {
+                        WHITE => mdb::canWhitePawn(from, to).null(),
+                        BLACK => mdb::canBlackPawn(from, to).null()
+                    },
+                    BISHOP => self.areEmpty(mdb::canBishop(from, to)),
+                    ROOK   => self.areEmpty(mdb::canRook(from, to)),
+                    QUEEN  => self.areEmpty(mdb::canBishop(from, to)) || self.areEmpty(mdb::canRook(from, to)),
+                    KNIGHT | KING => true,
+                    _other => false,
+                };
+                if capturing {
+                    collector.push(mv);
+                }
+                
+            }
+        } 
+    }
+
     /// Given a position and a field, generate the possible moves for
     /// the piece standing there.
     /// 
@@ -1747,7 +1782,7 @@ impl Position {
             }
         } 
         
-        matRelation // + self.bonusOwned(&attacksByWhite, &attacksByBlack)
+        let raw_score = matRelation // + self.bonusOwned(&attacksByWhite, &attacksByBlack)
         - self.penalizeHanging(WHITE, &attacksByBlack, &attacksByWhite) 
         + self.penalizeHanging(BLACK, &attacksByWhite, &attacksByBlack)
         + self.turn().opponent().forP(checkBonus + 4*opponentMoves)
@@ -1756,74 +1791,316 @@ impl Position {
         + self.coveredKing(WHITE)   - self.coveredKing(BLACK)
         - self.penaltyBlockedBishopBlockingPawns(WHITE) + self.penaltyBlockedBishopBlockingPawns(BLACK)
         - self.penaltyBadBishops(WHITE) + self.penaltyBadBishops(BLACK)
-        - self.penaltyLazyOfficers(WHITE) + self.penaltyLazyOfficers(BLACK)
+        - self.penaltyLazyOfficers(WHITE) + self.penaltyLazyOfficers(BLACK);
+        raw_score.clamp(MIN_EVAL, MAX_EVAL)
     }
 
     /// Alternative Evaluation mit variablen Gewichten
     pub fn eval_weighted(&self) -> i32 {
         let mut pMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.rawMoves(&mut pMoves);
-        self.eval_have_moves_weighted(pMoves.as_slice())
+        self.eval_have_moves_weighted(pMoves)
+    }
+
+    const LEARN_RATE : f64 = 0.0001;
+
+    /// Learning from differences between successive own positions
+    pub fn learn_difference(&self, next_pos: &Position, error: f64) {
+        
+        // make sure we compare two positions where it is our move
+        assert!(self.turn() == next_pos.turn());
+        
+        // let pessimistic = error >= 0.0; 
+        
+        
+        // We just increase factors when it was too pessimistic, that is, when error > 0
+        // This way, we add more in eval_weighted for WHITE but also subtract more for BLACK 
+        let delta = error * Self::LEARN_RATE;
+        
+        // middle game probability
+        let mg_weight = self.no_endgame_probability();
+
+        // Update PST values for those squares that appear occupied only in one of the two positions
+        // Hopefully this will reinforce/discourage squares involved in changes between positions.
+        let player = self.turn();
+        let opponent = player.opponent();
+
+        for f in ALLFIELDS {
+            let piece = self.pieceOn(f);
+            let next_piece = next_pos.pieceOn(f);
+            
+            if next_piece == EMPTY { continue; }  
+                
+            let the_piece = next_piece;
+            let owner = if next_pos.occupiedBy(player).member(f) { player } else { opponent };
+            
+            if self.occupiedBy(owner).member(f) && piece == next_piece { continue; }; // no change for this piece, so we skip it
+            
+                
+            match the_piece {
+                PAWN => mdb::upd_pst_pawn(owner, f, delta),
+                KNIGHT => mdb::upd_pst_knight(owner, f, delta),
+                BISHOP => mdb::upd_pst_bishop(owner, f, delta),
+                ROOK => mdb::upd_pst_rook(owner, f, delta),
+                QUEEN => mdb::upd_pst_queen(owner, f, delta),
+                KING => mdb::upd_pst_value_king(owner, f, mg_weight, delta),
+                _other => (),
+            }    
+        }
+
+        // look for moves that don't exist anymore and update attack/defend rights
+        let mut myMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.rawMoves(&mut myMoves);
+        self.genDefenses(&mut myMoves);
+        let mut nextMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        next_pos.rawMoves(&mut nextMoves);
+        next_pos.genDefenses(&mut nextMoves);
+        for m in myMoves.as_slice() {
+            if !nextMoves.as_slice().contains(m) {
+                // this move doesn't exist anymore, so we check if it was an attack or a defense
+                let victim = self.pieceOn(m.to());
+                if victim == EMPTY { continue; }
+                let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+                if m.player() != victim_owner {
+                    mdb::upd_attack_weight(m.piece(), victim, delta); 
+                } else {
+                    mdb::upd_defend_weight(m.piece(), victim, delta); 
+                }
+            }
+        }
+        // same for opponent
+        let mut hisMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.applyNull().rawMoves(&mut hisMoves);
+        self.applyNull().genDefenses(&mut hisMoves);
+        let mut hisNextMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        next_pos.applyNull().rawMoves(&mut hisNextMoves);
+        next_pos.applyNull().genDefenses(&mut hisNextMoves);
+        for m in hisMoves.as_slice() {
+            if !hisNextMoves.as_slice().contains(m) {
+                // this move doesn't exist anymore, so we check if it was an attack or a defense
+                let victim = self.pieceOn(m.to());
+                if victim == EMPTY { continue; }
+                let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+                if m.player() != victim_owner {
+                    mdb::upd_attack_weight(m.piece(), victim, -delta); 
+                } else {
+                    mdb::upd_defend_weight(m.piece(), victim, -delta);  
+                }
+            }
+        }
+        self.learn_from_error(error);
+
+    }
+
+    /// Checks what factors have contributed to this position's score and updates the weights accordingly.
+    pub fn learn_from_error(&self, error: f64) {
+        let delta = error * Self::LEARN_RATE;
+        
+        // no we check if hanging pieces were involved.
+        let mut all_hanging  = BitSet::empty();
+        let mut all_defended = BitSet::empty();
+        let mut pMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        self.rawMoves(&mut pMoves);
+        self.genDefenses(&mut pMoves);
+        for m in pMoves {
+            // let was = m.piece();
+            // if was == PAWN && self.isEmpty(m.to()) { continue; }
+            let victim = self.pieceOn(m.to());
+            if victim == EMPTY { continue; }
+            let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+            if m.player() != victim_owner {
+                all_hanging = all_hanging + BitSet::singleton(m.to());
+                // mdb::upd_attack_weight(was, victim, delta); 
+            } else {
+                all_defended = all_defended + BitSet::singleton(m.to());
+                // mdb::upd_defend_weight(was, victim, delta); 
+            }
+        }
+
+        let mut oMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
+        let opos = self.applyNull();
+        opos.rawMoves(&mut oMoves);
+        opos.genDefenses(&mut oMoves);
+        for m in oMoves {
+            // let was = m.piece();
+            // if was == PAWN && self.isEmpty(m.to()) { continue; }
+            let victim = self.pieceOn(m.to());
+            if victim == EMPTY { continue; }
+            let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+            if m.player() != victim_owner  {
+                all_hanging = all_hanging + BitSet::singleton(m.to());
+                // mdb::upd_attack_weight(was, victim, -delta);
+            } else {
+                all_defended = all_defended + BitSet::singleton(m.to());
+                // mdb::upd_defend_weight(was, victim, delta); 
+            }
+        }
+        
+        // hanging pieces were involved
+        if (all_hanging - all_defended).some() {
+            mdb::upd_hanging_penalty(-delta);
+        }
+
+        // now check if castling rights have influenced the score
+        let my_castling_rights = self.scoreCastling_weighted(self.turn());
+        let opp_castling_rights = self.scoreCastling_weighted(self.turn().opponent());
+        if my_castling_rights != opp_castling_rights  {
+            mdb::upd_castling(delta);
+        }
+        
+        
+        // now the covered king bonus
+        let my_covered_king_by_opponent = self.coveredKingByOpponent_weighted(self.turn());
+        let opp_covered_king_by_opponent = self.coveredKingByOpponent_weighted(self.turn().opponent());
+        if my_covered_king_by_opponent != opp_covered_king_by_opponent  {
+            mdb::upd_covered_king_opp(delta);
+        }
+        
+
+        let my_covered_king_by_own = self.coveredKingByOwn_weighted(self.turn());
+        let opp_covered_king_by_own = self.coveredKingByOwn_weighted(self.turn().opponent());   
+        if my_covered_king_by_own != opp_covered_king_by_own {
+            mdb::upd_covered_king_own(delta);
+        }
+        
+
+        // now the blocked bishop penalty
+        let my_blocked_bishop_pawns = self.blockedBishopBlockingPawns_weighted(self.turn());
+        let opp_blocked_bishop_pawns = self.blockedBishopBlockingPawns_weighted(self.turn().opponent());
+        if my_blocked_bishop_pawns > 0.0  {
+            mdb::upd_blocked_bishop_pawn(delta);
+        }
+        if opp_blocked_bishop_pawns > 0.0 {
+            mdb::upd_blocked_bishop_pawn(delta);
+        }
+        
+
+        // now the bad bishop penalty
+        let my_bad_officers = self.badOfficer_weighted(self.turn());
+        let opp_bad_officers = self.badOfficer_weighted(self.turn().opponent());
+        if my_bad_officers > 0.0  {
+             mdb::upd_bad_bishop(delta);
+        }
+        if opp_bad_officers > 0.0 {
+             mdb::upd_bad_bishop(delta);
+        }
+        
+        // now the lazy officer penalty
+        let my_lazy_officers = self.lazyOfficers_weighted(self.turn());
+        let opp_lazy_officers = self.lazyOfficers_weighted(self.turn().opponent());
+        if my_lazy_officers > 0.0 {
+            mdb::upd_lazy_officer(delta);
+        }
+        if opp_lazy_officers > 0.0 {
+            mdb::upd_lazy_officer(delta);
+        }
+
     }
 
     /// Version von eval_have_moves, die Gewichte berücksichtigt
-    pub fn eval_have_moves_weighted(&self, pMoves: &[Move]) -> i32 {
-        let matWhite = self.scoreMaterial_weighted(WHITE);
-        let matBlack = self.scoreMaterial_weighted(BLACK);
-        let matDelta = matWhite - matBlack;
-        let divisor = matWhite.min(matBlack).max(1000.0);
-        let matRelation = (matWhite.max(matBlack) / divisor) * matDelta;
+    pub fn eval_have_moves_weighted(&self, mut pMoves: MoveList) -> i32 {
+        // Wir ermitteln die Phase (Mittelspiel-Gewichtung) einmalig für die Interpolation
+        let mg_weight = self.no_endgame_probability().min(1.0).max(0.0);
+        let matWhite = self.scoreMaterial_weighted(mg_weight, WHITE);
+        let matBlack = self.scoreMaterial_weighted(mg_weight, BLACK);
+        let matRelation = wbRelation(matWhite, matBlack);
         
         let check = self.inCheck(self.turn());
         let checkBonus = if check { mdb::get_check() } else { 0.0 };
-        let mobility = mdb::get_mobility();
+        let mobility = mdb::get_mobility();  // 60
         let playerMoves = pMoves.len() as f64;
+        self.genDefenses(&mut pMoves);
         
         let mut oMoves = MoveList { moves: [NO_MOVE; MAX_MOVES], len: 0 };
         self.applyNull().rawMoves(&mut oMoves);
         let opponentMoves = oMoves.len as f64;
+        self.applyNull().genDefenses(&mut oMoves);
+        let mobilityWhite = if self.turn() == WHITE { playerMoves } else { opponentMoves };
+        let mobilityBlack = if self.turn() == BLACK { playerMoves } else { opponentMoves };
+        let mobilityRelation = mobility * wbRelation(mobilityWhite, mobilityBlack); 
         
-        let mut attacksByWhite = [EMPTY; 64];
-        let mut attacksByBlack = [EMPTY; 64];
         
+        let mut my_attack_defend : f64 = 0.0; 
+        let mut all_hanging  = BitSet::empty();
+        let mut all_defended = BitSet::empty();
         for m in pMoves {
-            let wo = m.to() as usize;
+            // let wo = m.to() as usize;
             let was = m.piece();
-            if was == PAWN && self.isEmpty(m.to()) { continue; }
-            if m.player() == WHITE {
-                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was { attacksByWhite[wo] = was; }
-            } else {
-                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was { attacksByBlack[wo] = was; }
-            }
+            if  was == PAWN && self.isEmpty(m.to()) { continue; }
+            let victim = self.pieceOn(m.to());
+            let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+            my_attack_defend += if m.player() != victim_owner && victim != EMPTY{
+                    all_hanging = all_hanging + BitSet::singleton(m.to());
+                    mdb::get_attack_weight(was, victim)
+                } else {
+                    all_defended = all_defended + BitSet::singleton(m.to());
+                    mdb::get_defend_weight(was, victim)
+                }
         }
+        let mut his_attack_defend : f64 = 0.0; // TODO: compute attack and defend weights for each move and add them up
         for m in &oMoves {
-            let wo = m.to() as usize;
+            // let wo = m.to() as usize;
             let was = m.piece();
             if was == PAWN && self.isEmpty(m.to()) { continue; }
-            if m.player() == WHITE {
-                if attacksByWhite[wo] == EMPTY || attacksByWhite[wo] > was { attacksByWhite[wo] = was; }
-            } else {
-                if attacksByBlack[wo] == EMPTY || attacksByBlack[wo] > was { attacksByBlack[wo] = was; }
-            }
-        } 
-        
-        let score = matRelation
-        - self.penalizeHanging_weighted(WHITE, &attacksByBlack, &attacksByWhite) 
-        + self.penalizeHanging_weighted(BLACK, &attacksByWhite, &attacksByBlack)
-        + (self.turn().opponent().factor() as f64) * (checkBonus + mobility * opponentMoves)
-        + (self.turn().factor() as f64) * (mobility * playerMoves)
-        + self.scoreCastling_weighted(WHITE) - self.scoreCastling_weighted(BLACK)
-        + self.coveredKing_weighted(WHITE)   - self.coveredKing_weighted(BLACK)
-        - self.penaltyBlockedBishopBlockingPawns_weighted(WHITE) + self.penaltyBlockedBishopBlockingPawns_weighted(BLACK)
-        - self.penaltyBadBishops_weighted(WHITE) + self.penaltyBadBishops_weighted(BLACK)
-        - self.penaltyLazyOfficers_weighted(WHITE) + self.penaltyLazyOfficers_weighted(BLACK);
+            let victim = self.pieceOn(m.to());
+            let victim_owner = if self.occupiedByBlack().member(m.to()) { BLACK } else { WHITE };
+            his_attack_defend += if m.player() != victim_owner && victim != EMPTY {
+                    all_hanging = all_hanging + BitSet::singleton(m.to());
+                    mdb::get_attack_weight(was, victim)
+                } else {
+                    all_defended = all_defended + BitSet::singleton(m.to());
+                    mdb::get_defend_weight(was, victim)
+                };
+        }
 
-        score as i32
+        let mut hanging_score = 0.0;
+        // Penalty für jedes hängende Teil
+        for fld in all_hanging - all_defended {
+            let victim = self.pieceOn(fld);
+            match self.playerOn(fld) {
+                None => continue,  // wtf???
+                Some(WHITE) => {
+                    let pst = if victim == KING {
+                        mdb::get_pst_value_king(WHITE, fld, mg_weight)
+                    } else {
+                        mdb::get_pst_value(victim, WHITE, fld)
+                    };
+                    let score = mdb::get_piece_score(victim) + pst;
+                    hanging_score -= mdb::get_hanging_penalty() * score;  
+                },
+                Some(BLACK) => {
+                    let pst = if victim == KING {
+                        mdb::get_pst_value_king(BLACK, fld, mg_weight)
+                    } else {
+                        mdb::get_pst_value(victim, BLACK, fld)
+                    };
+                    let score = mdb::get_piece_score(victim) + pst;
+                    hanging_score += mdb::get_hanging_penalty() * score;
+                    
+                }
+            } 
+        }
+        let adRelation = if self.turn() == WHITE    { wbRelation(my_attack_defend, his_attack_defend) } 
+                                                    else { wbRelation(his_attack_defend, my_attack_defend) };
+        
+        let score = matRelation + mobilityRelation + adRelation
+        + hanging_score
+        + (self.turn().opponent().factor() as f64) * checkBonus
+        + mdb::get_castling() * (self.scoreCastling_weighted(WHITE) - self.scoreCastling_weighted(BLACK)) as f64
+        + mdb::get_covered_king_own() * (self.coveredKingByOwn_weighted(WHITE) - self.coveredKingByOwn_weighted(BLACK)) as f64
+        + mdb::get_covered_king_opp() * (self.coveredKingByOpponent_weighted(WHITE) - self.coveredKingByOpponent_weighted(BLACK)) as f64
+        // penalties
+        - mdb::get_blocked_bishop_pawn() * self.blockedBishopBlockingPawns_weighted(WHITE) 
+        + mdb::get_blocked_bishop_pawn() * self.blockedBishopBlockingPawns_weighted(BLACK)
+        - mdb::get_bad_bishop() * self.badOfficer_weighted(WHITE)
+        + mdb::get_bad_bishop() * self.badOfficer_weighted(BLACK)
+        - mdb::get_lazy_officer() * self.lazyOfficers_weighted(WHITE)
+        + mdb::get_lazy_officer() * self.lazyOfficers_weighted(BLACK);
+    
+        (score.round() as i32).clamp(MIN_EVAL, MAX_EVAL)
     }
 
-    pub fn scoreMaterial_weighted(&self, player: Player) -> f64 {
-        // Wir ermitteln die Phase (Mittelspiel-Gewichtung) einmalig für die Interpolation
-        let mg_weight = self.no_endgame_probability().min(1.0).max(0.0);
+    pub fn scoreMaterial_weighted(&self, eg_prob: f64, player: Player) -> f64 {
         let mut bits = self.occupiedBy(player).bits;
         let mut sum: f64 = 0.0;
         while bits != 0 {
@@ -1833,86 +2110,92 @@ impl Position {
 
             // Für den König nutzen wir die neue interpolierte PST-Berechnung
             let pst = if piece == KING {
-                mdb::get_pst_value_king(player, from, mg_weight)
+                mdb::get_pst_value_king(player, from, eg_prob)
             } else {
                 mdb::get_pst_value(piece, player, from)
             };
 
             sum += mdb::get_piece_score(piece) + pst;
-            match piece {
-                ROOK | QUEEN | KING if self.inEndgame() => {
-                    let file = from.file();
-                    let prank = if player == WHITE { 8 } else { 1 };
-                    let pto = Field::fromFR(file, prank);
-                    let pawns = mdb::canRook(from, pto) * self.pawns() * self.occupiedBy(player);
-                    if pawns.some() && (mdb::canRook(from, pawns.bitIndex())*self.occupiedBy(player.opponent())).null() {
-                        sum += 50.0;
-                    }
-                }
-                PAWN => {
-                    let file = from.file();
-                    let prank = if player == WHITE { 8 } else { 1 };
-                    let pto = Field::fromFR(file, prank);
-                    let togo = mdb::canRook(from, pto) + bit(pto);
-                    let freeFactor = if (togo * self.occupiedBy(player.opponent())).null() { 3.0 } else { 1.0 };
-                    sum += freeFactor * ((1 << (7 - togo.card())) - 2) as f64;
-                }
-                _other => (),
-            }
         }
         sum
     }
 
-    fn coveredKing_weighted(&self, player: Player) -> f64 {
+    fn coveredKingByOpponent_weighted(&self, player: Player) -> i32 {
         let kingIndex = fld(self.kings() * self.occupiedBy(player));
         let targets   = mdb::kingTargets(kingIndex);
-        (self.occupiedBy(player.opponent()) * targets).card() as f64 * mdb::get_covered_king_opp()
-        + (self.occupiedBy(player) * targets).card() as f64 * mdb::get_covered_king_own()
+        (self.occupiedBy(player.opponent()) * targets).card() as i32
     }
 
-    fn penaltyBlockedBishopBlockingPawns_weighted(&self, player: Player) -> f64 {
+    fn coveredKingByOwn_weighted(&self, player: Player) -> i32 {
+        let kingIndex = fld(self.kings() * self.occupiedBy(player));
+        let targets   = mdb::kingTargets(kingIndex);
+        (self.occupiedBy(player) * targets).card() as i32 
+    }
+
+    fn blockedBishopBlockingPawns_weighted(&self, player: Player) -> f64 {
         let pawns = self.pawns() * match player { WHITE => WHITE_BISHOP_BLOCKING_PAWNS, BLACK => BLACK_BISHOP_BLOCKING_PAWNS };
         let myPawns = match player { WHITE => pawns * self.whites, BLACK => pawns - self.whites };
         let before = match player { WHITE => BitSet { bits: myPawns.bits << 8 }, BLACK => BitSet { bits: myPawns.bits >> 8 } };
-        (before * self.occupied()).card() as f64 * mdb::get_blocked_bishop_pawn()
+        (before * self.occupied()).card() as f64 
     }
 
-    fn penaltyBadBishops_weighted(&self, player: Player) -> f64 {
+    fn badOfficer_weighted(&self, player: Player) -> f64 {
         let bishops = self.bishops() * self.occupiedBy(player);
+        let knights = self.knights() * self.occupiedBy(player);
         let mut count = 0.0;
         for from in bishops {
-            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) { count += mdb::get_bad_bishop(); }
+            if (mdb::kingTargets(from) * mdb::bishopTargets(from)).subset(self.occupiedBy(player)) { count += 1.0; }
+        };
+        for from in knights {
+            if mdb::knightTargets(from).subset(self.occupiedBy(player)) { count += 1.0; }
         };
         count
     }
 
-    fn penaltyLazyOfficers_weighted(&self, player: Player) -> f64 {
+    fn lazyOfficers_weighted(&self, player: Player) -> f64 {
         let mine = self.occupiedBy(player);
-        let lazyOfficers = (match player {
-            WHITE => (self.rooks()*mine).member(A1) as i32 + (self.knights()*mine).member(B1) as i32 + (self.bishops()*mine).member(C1) as i32 + (self.bishops()*mine).member(F1) as i32 + (self.knights()*mine).member(G1) as i32 + (self.rooks()*mine).member(H1) as i32,
-            BLACK => (self.rooks()*mine).member(A8) as i32 + (self.knights()*mine).member(B8) as i32 + (self.bishops()*mine).member(C8) as i32 + (self.bishops()*mine).member(F8) as i32 + (self.knights()*mine).member(G8) as i32 + (self.rooks()*mine).member(H8) as i32,
-        }).min(4) as f64; // max 4 Officers
-        lazyOfficers as f64 * mdb::get_lazy_officer()
-    }
-
-    fn penalizeHanging_weighted(&self, player: Player, byOther: &[Piece;64], bySelf: &[Piece;64]) -> f64 {
-        let mut score = 0.0;
-        for f in self.occupiedBy(player) {
-            let p = hangingPenalty_weighted(self.pieceOn(f), byOther[f as usize], bySelf[f as usize] != EMPTY);
-            let val = if player == self.turn() { p * 0.33 } else { p };
-            if val > 0.0 {
-                let adjusted = if score > 0.0 { f64::max(score, val) * 1.1 } else { val };
-                score = adjusted;
+        let castlingRights = match player {
+            WHITE => self.flags * WHITE_CASTLING_RIGHTS,
+            BLACK => self.flags * BLACK_CASTLING_RIGHTS,
+        };
+        if castlingRights.null() { return 0.0 }
+        // let pawns = self.pawns() * mine;
+        // let rooks = self.rooks() * mine;
+        let bishops = self.bishops() * mine;
+        let knights = self.knights() * mine;
+        let lazyOfficers = match player {
+            WHITE => {
+                let lazyLeftKnight  = knights.member(B1) as i32;
+                let lazyRightKnight = knights.member(G1) as i32;
+                let lazyLeftBishop  = bishops.member(C1) as i32;
+                let lazyRightBishop = bishops.member(F1) as i32;
+                (lazyLeftBishop  + lazyLeftKnight + lazyRightBishop + lazyRightKnight) as f64
+            },
+            BLACK => {
+                let lazyLeftKnight  = knights.member(B8) as i32;
+                let lazyRightKnight = knights.member(G8) as i32;
+                let lazyLeftBishop  = bishops.member(C8) as i32;
+                let lazyRightBishop = bishops.member(F8) as i32;
+                (lazyLeftBishop + lazyLeftKnight + lazyRightBishop + lazyRightKnight) as f64
             }
-        }
-        score
+        };
+        let busyQueen = match player {
+            WHITE => !mine.member(D1) || self.pieceOn(D1) != QUEEN,
+            BLACK => !mine.member(D8) || self.pieceOn(D8) != QUEEN,
+        };
+        if busyQueen && lazyOfficers > 0.0 { 1.0 + lazyOfficers } else { lazyOfficers }
     }
 
-    fn scoreCastling_weighted(&self, player: Player) -> f64 {
+
+    
+    fn scoreCastling_weighted(&self, player: Player) -> i32 {
         let hasCastled = (self.flags * if player == WHITE { WHITE_HAS_CASTLED_BITS } else { BLACK_HAS_CASTLED_BITS }).some();
-        let castling = mdb::get_castling();
-        if hasCastled { castling }
-        else { (self.flags * if player == WHITE { WHITE_CASTLING_RIGHTS } else { BLACK_CASTLING_RIGHTS }).card() as f64 * castling - (3.0 * castling) }
+        if hasCastled {    
+            3
+        } else {
+            // 0, 1 or 2 castling rights left, the more the better
+            (self.flags * if player == WHITE { WHITE_CASTLING_RIGHTS } else { BLACK_CASTLING_RIGHTS }).card() as i32 
+        }
     }
 
     /// compresses this position
@@ -1941,19 +2224,33 @@ impl Position {
     }
 }
 
+/// Relation zweier nicht negativen Werte, für Weiß bzw. Schwarz.
+/// ```rust
+/// let relation = wbRelation(200.0, 100.0); // relation = 66.67
+/// let relation2 = wbRelation(100.0, 200.0); // relation2 = -66.67
+/// let relation3 = wbRelation(600.0, 500.0); // relation3 = 54.55
+/// let relation4 = wbRelation(500.0, 600.0); // relation4 = -54.55
+/// let relation5 = wbRelation(0.0, 0.0);       // relation5 = 0.0
+/// let relation6 = wbRelation(100.0, 0.0);     // relation6 = 100.0
+/// let relation7 = wbRelation(0.0, 100.0);     //
+/// ```
+pub fn wbRelation(valWhite: f64, valBlack: f64) -> f64 {
+    let delta = valWhite - valBlack;
+    let divisor = valWhite.max(valBlack).max(1.0);
+    let divident = valWhite.min(valBlack).max(1.0);
+    delta * divident / divisor
+}
+
 /// Gewichtete Version der hangingPenalty
 pub fn hangingPenalty_weighted(hang: Piece, att: Piece, defended: bool) -> f64 {
     let scoreh = mdb::get_piece_score(hang);
     let scorea = mdb::get_piece_score(att);
+    let penalty_factor = mdb::get_hanging_penalty();
     match att {
-        EMPTY => if defended { scoreh * 0.1 } else { 0.0 },
+        EMPTY => if defended { scoreh * penalty_factor * 0.1 } else { 0.0 },
         KING if defended => 0.0,
         _hking if hang == KING => 0.0,
-        _otherwise => match defended {
-            false => scoreh * 0.7, 
-            true if scoreh > scorea => (scoreh - scorea) * 0.7,
-            _other => 0.0  
-        }
+        _otherwise => if defended && scoreh > scorea { (scoreh - scorea) * penalty_factor } else if !defended { scoreh * penalty_factor } else { 0.0 }
     }
 }
 
@@ -2102,5 +2399,15 @@ mod tests {
         .rehash();
     assert!(p.validEndgame());
     assert_eq!(p, p.compressed().uncompressed(p.turn()).rehash());
+    }
+
+    #[test]
+    fn test_eval_bounded() {
+        crate::mdb::initStatic();
+        // 6 Queens vs bare King
+        let p = crate::fen::decodeFEN("8/8/8/8/4k3/8/QQQQQQ2/K7 w - - 0 1").unwrap();
+        let eval_score = p.eval();
+        assert!(eval_score <= MAX_EVAL, "eval score {} must not exceed MAX_EVAL {}", eval_score, MAX_EVAL);
+        assert!(eval_score >= MIN_EVAL);
     }
 }

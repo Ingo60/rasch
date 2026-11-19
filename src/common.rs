@@ -3,6 +3,8 @@
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
 #![allow(non_upper_case_globals)] // as well as this
 
+use crate::mdb;
+
 use super::computing;
 use super::endgamedb as E;
 use super::fen;
@@ -327,6 +329,8 @@ impl StrategyState {
 pub struct GameState {
     /// The name of the strategy
     pub name: String,
+    /// If this is going to run a learning strategy.
+    pub learning: bool,
     /// the internal state
     pub state: State,
     /// The colour we are playing
@@ -405,6 +409,7 @@ impl GameState {
         thread::spawn(move || reader(rdrSender, rdrRcv));
         GameState {
             name,
+            learning: false,
             state: FORCED,
             player: WHITE,
             best: None,
@@ -528,6 +533,73 @@ impl GameState {
                 );
             }
             Err(_) => println!("# Can't lock the transposition table right now for cleanup."),
+        }
+    }
+
+    /// Learn from last two positions where it was our turn.
+    pub fn learn(&mut self, pv: &Variation) {
+        if self.learning && self.history.len() > 1 && self.current().turn() == self.player.opponent() {
+            // put the last two in the trtable
+            let last_pos = self.history[self.history.len() - 1];
+            let my_pos = self.history[self.history.len() - 2];
+
+            println!(
+                "# (learning) Storing PV #{} of length {} with score {} in transposition table.",
+                self.history.len() - 2,
+                pv.length,
+                pv.score
+            );
+
+            // Assertions hold only if this is not after PONDERING.
+            assert!(my_pos.turn() == self.player);
+            assert!(last_pos.turn() == self.player.opponent());
+
+            if let Ok(mut hash) = self.trtable.lock() {
+                let tr1 = Transp {
+                    halfmove: u32::MAX, // Permanent speichern (vor GC schützen)
+                    depth: pv.depth,
+                    score: pv.score << 2,
+                    pvLength: pv.length,
+                    pvMoves: pv.moves,
+                };
+                hash.insert(my_pos, tr1);
+
+                // Falls wir mindestens 4 history Einträge haben, suchen wir die vorletzte Position, bei der wir am Zug waren,
+                // in der Hashtabelle.
+                if self.history.len() > 3 {
+                    let prev_my_pos = self.history[self.history.len() - 4];
+                    if let Some(tr) = hash.get(&prev_my_pos) {
+                        println!(
+                            "# (learning) Previous position #{} with score {} and PV {}",
+                            self.history.len() - 4,
+                            tr.score >> 2,
+                            Variation {
+                                score: 0,
+                                nodes: 0,
+                                depth: 0,
+                                length: tr.pvLength,
+                                moves: tr.pvMoves,
+                            }
+                            .showMoves()
+                        );
+
+                        // negative capped at ¼ pawn
+                        // otherwise, if we're going to loose, we have errors that dominate everything
+                        let err = ((tr1.score >> 2) - (tr.score >> 2)).min(999).max(-25);
+                        println!(
+                            "# (learning) Current score: {} - Previous Score {} = Error {}",
+                            tr1.score >> 2,
+                            tr.score >> 2,
+                            err
+                        );
+                        // we learn only if the difference matters or if the score is positive
+                        if err > 0 || err.abs() as u32 > self.oracleDiff {
+                            prev_my_pos.learn_difference(&my_pos, err as f64);
+                            // prev_my_pos.learn_from_error(err as f64)
+                        };
+                    }
+                }
+            }
         }
     }
 
@@ -680,7 +752,7 @@ impl GameState {
                 // than 3/4 of the time.
                 let timeOK = usedMillis <= (75 * self.timePerMove()) / 100;
                 // stop strategy when we have a mate
-                let mateIn1 = var.length == 1 && var.score == P::BLACK_IS_MATE;
+                let mateIn1 = var.length == 1 && var.score >= P::BLACK_IS_MATE - 1;
                 // should we go on?
                 let goOn = pondering || timeOK && !mateIn1;
                 self.nodes += var.nodes;
@@ -840,10 +912,7 @@ impl GameState {
     }
 
     /// This is the main loop of the protocol handler
-    pub fn mainLoop(&mut self, strategy: Strategy)
-    // where
-    //    S: 'static + Strategy + Clone + Send,
-    {
+    pub fn mainLoop(&mut self, strategy: Strategy) {
         while self.state != TERMINATED {
             let newstate = match self.state {
                 TERMINATED => TERMINATED,
@@ -981,49 +1050,28 @@ impl GameState {
                     if self.ttCleanup {
                         self.ttGarbage();
                     }
-                    // Die PV der erreichten Stellung in der Transposition-Tabelle speichern.
-                    // Dies stellt sicher, dass bei einem Ponder-Hit oder dem nächsten Engine-Zug
-                    // die bereits berechnete Fortsetzung sofort als Hash-Move zur Verfügung steht.
-                    match self.best {
-                        None => println!("# No PV to store in transposition table."),
-                        Some(ref pv)
-                            if pv.length > 1
-                                && self.history.len() > 1
-                                && self.current().turn() == self.player.opponent() =>
-                        {
-                            println!(
-                                "# Storing PV of length {} with score {} in transposition table.",
-                                pv.length, pv.score
-                            );
-                            let hispos = self.history.pop().unwrap();
-                            let mypos = self.history.pop().unwrap();
-                            // Assertions hold only iof this is not after PONDERING.
-                            assert!(mypos.turn() == self.player);
-                            assert!(hispos.turn() == self.player.opponent());
-                            self.history.push(mypos);
-                            self.history.push(hispos);
-
-                            if let Ok(mut hash) = self.trtable.lock() {
-                                let tr = Transp {
-                                    halfmove: u32::MAX, // Permanent speichern (vor GC schützen)
-                                    depth: pv.depth,
-                                    score: (pv.score * mypos.turn().factor()) << 2,
-                                    pvLength: pv.length,
-                                    pvMoves: pv.moves,
-                                };
-                                hash.insert(mypos, tr);
-                                let next_pv = pv.pop();
-                                let tr2 = Transp {
-                                    halfmove: u32::MAX,
-                                    depth: pv.depth - 1,
-                                    score: (next_pv.score * hispos.turn().factor()) << 2,
-                                    pvLength: next_pv.length,
-                                    pvMoves: next_pv.moves,
-                                };
-                                hash.insert(hispos, tr2);
+                    // Wenn der Gegner dran ist, dann haben wir gerade gezogen, außer es ist Spielbeginn und wir haben schwarz,
+                    // dann wäre die Länge der Historie 1.
+                    // Die letzte Stellung in der Historie ist diejenige, die sich durch den Zug ergeben hat.
+                    // Die vorletzte war die, auf deren Basis wir den Zug berechnet haben und auf die sich die PV in self.best bezieht.
+                    // Wir werden diese beiden Stellungen in die Transpositionstabelle aufnehmen.
+                    // Sollte es 2 Positionen vorher eine Stellung geben, in der wir am Zug waren, werden wir diese und die vorletzte Stellung verwenden.
+                    // um den Fehler der Bewertung abzuschätzen. Da jede Stellung, außer denen, die sich durch
+                    // automatische Züge (Eröffnungsbuch, Endspieltabelle) ergeben, von uns berechnet wurde, sollten diese Stellungen
+                    // samt zugehöriger Bewertung in der Transpositionstabelle stehen.
+                    if self.learning {
+                        match self.best {
+                            None => println!("# No PV to store in transposition table."),
+                            Some(pv)
+                                if pv.length > 1
+                                    && self.history.len() > 1
+                                    && self.current().turn() == self.player.opponent() =>
+                            {
+                                self.learn(&pv);
                             }
+
+                            _ => (),
                         }
-                        _ => (),
                     }
                     io::stdout().flush().unwrap_or_default();
                     self.state
@@ -1144,7 +1192,20 @@ impl GameState {
                     FORCED
                 }
             },
-            Some("result") => FORCED,
+            Some("result") => {
+                if self.learning {
+                    mdb::save_weights();
+                    // clear the hash so that new values can be used
+                    if !self.ttIsLocked() {
+                        if let Ok(mut hash) = self.trtable.lock() {
+                            hash.clear();
+                        }
+                    } else {
+                        println!("# Can't lock the transposition table right now for cleanup.");
+                    }
+                }
+                FORCED
+            }
             Some("undo") => {
                 if self.history.len() > 1 {
                     self.history.pop();

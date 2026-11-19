@@ -53,6 +53,7 @@ fn main() {
     } else if argv[1].starts_with("negamin") {
         gs.mainLoop(strategy_negamin)
     } else if argv[1].starts_with("negamax") {
+        gs.learning = true;
         gs.mainLoop(strategy_negamax)
     } else if argv[1].starts_with("pvs") {
         gs.mainLoop(strategy_pvs)
@@ -431,23 +432,18 @@ pub fn exactScore(n: i32) -> i32 {
 
 /// Helper functin for negaMax
 pub fn negaMaxGo(
-    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha0: i32,
-    beta: i32, moves: &P::MoveList,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, depth: u32, alpha0: i32, beta: i32,
+    moves: &P::MoveList,
 ) -> Variation {
     let mut best = Variation { nodes: 0, length: 0, moves: NONE, depth, score: -999_999_999 };
     let current = *hist.last().unwrap();
     let mut alpha = alpha0;
     for m in moves.as_slice().iter().copied() {
         let pos = current.apply(m);
-        let capture = !ext
-            && depth == 1
-            && (m.promote() != EMPTY
-                || current.inCheck(current.turn())
-                || !current.isEmpty(m.to())
-                || pos.inCheck(pos.turn()));
-        let d = if capture { depth } else { depth - 1 };
+
+        let d = { depth - 1 };
         hist.push(pos);
-        let pv = negaMax(hist, hash, killers, capture, d, -beta, -alpha);
+        let pv = negaMax(hist, hash, killers, false, d, -beta, -alpha);
         hist.pop();
         let score = -pv.score;
         if let Some(killer) = pv.last() {
@@ -566,10 +562,9 @@ pub fn quiesce(
     let pos = *hist.last().unwrap();
     let in_check = pos.inCheck(pos.turn());
 
-    // Wenn wir im Schach stehen, ist "Standing Pat" (nichts tun) illegal.
-    // Wir setzen den Score sehr niedrig, um Ausweichzüge zu erzwingen.
+    let mate_score = P::WHITE_IS_MATE + pos.getRootDistance() as i32;
     let stand_pat = if in_check {
-        P::WHITE_IS_MATE - 1000
+        mate_score
     } else {
         pos.turn().factor() * pos.eval()
     };
@@ -584,7 +579,7 @@ pub fn quiesce(
         }
     }
 
-    let mut best = Variation { score: stand_pat, nodes: 1, ..DRAW };
+    let mut best = Variation { score: if in_check { mate_score } else { stand_pat }, nodes: 1, ..DRAW };
 
     // Falls im Schach: alle Züge prüfen. Sonst: Captures (und evtl. Checks)
     let mut ml = if in_check { pos.moves() } else { pos.captures() };
@@ -621,7 +616,7 @@ pub type Search = fn(&mut Positions, hash: &mut TransTable, &mut KillerSet, bool
 
 /// Move searching with NegaMax
 pub fn negaMax(
-    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, ext: bool, depth: u32, alpha: i32,
+    hist: &mut Positions, hash: &mut TransTable, killers: &mut KillerSet, _ext: bool, depth: u32, alpha: i32,
     beta: i32,
 ) -> Variation {
     let pos = *hist.last().unwrap(); // the history must not be empty
@@ -630,8 +625,7 @@ pub fn negaMax(
         return DRAW;
     }
     if depth == 0 {
-        // return quiesce(hist, hash, killers, alpha, beta);
-        return Variation { score: pos.turn().factor() * pos.eval(), ..DRAW };
+        return quiesce(hist, hash, killers, alpha, beta);
     }
     // the follwoing is needed because else there is an immutable reference
     // to the hash
@@ -652,8 +646,8 @@ pub fn negaMax(
                     let mut ml = pos.moves();
                     P::reorderHashMove(&mut ml, hashmove);
 
-                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha2, beta, &ml);
-                    if depth >= te.depth && !ext {
+                    let pv = negaMaxGo(hist, hash, killers, depth, alpha2, beta, &ml);
+                    if depth >= te.depth {
                         insertPV(hash, pos, pv, depth, alpha2, beta, halfmoves);
                     };
                     pv
@@ -669,8 +663,8 @@ pub fn negaMax(
                     let mut ml = pos.moves();
                     P::reorderHashMove(&mut ml, hashmove);
 
-                    let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta2, &ml);
-                    if depth >= te.depth && !ext {
+                    let pv = negaMaxGo(hist, hash, killers, depth, alpha, beta2, &ml);
+                    if depth >= te.depth {
                         insertPV(hash, pos, pv, depth, alpha, beta2, halfmoves);
                     };
                     pv
@@ -682,10 +676,9 @@ pub fn negaMax(
                 let mut ml = pos.moves();
                 P::reorderHashMove(&mut ml, hashmove);
 
-                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
-                if !ext {
-                    insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
-                };
+                let pv = negaMaxGo(hist, hash, killers, depth, alpha, beta, &ml);
+                insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
+
                 pv
             }
         },
@@ -697,7 +690,7 @@ pub fn negaMax(
             if ml.len == 0 {
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
-                        score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
+                        score: P::WHITE_IS_MATE + pos.getRootDistance() as i32,
                         ..DRAW
                     };
                     mate
@@ -705,10 +698,9 @@ pub fn negaMax(
                     DRAW
                 }
             } else {
-                let pv = negaMaxGo(hist, hash, killers, ext, depth, alpha, beta, &ml);
-                if !ext {
-                    insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
-                };
+                let pv = negaMaxGo(hist, hash, killers, depth, alpha, beta, &ml);
+                insertPV(hash, pos, pv, depth, alpha, beta, halfmoves);
+
                 pv
             }
         }
@@ -876,7 +868,7 @@ pub fn pvsSearch(
             if ml.len == 0 {
                 if pos.inCheck(pos.turn()) {
                     let mate = Variation {
-                        score: P::WHITE_IS_MATE + (pos.getRootDistance() as i32 >> 1) * 3,
+                        score: P::WHITE_IS_MATE + pos.getRootDistance() as i32,
                         ..DRAW
                     };
                     mate
@@ -1966,5 +1958,40 @@ pub fn strategy_mtdf(state: StrategyState) {
             }
             depth += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quiesce_mate_distance() {
+        mdb::initStatic();
+        // Position where White can mate in 1: 7k/5Q2/6K1/8/8/8/8/8 w - - 0 1
+        // Move Qf7-g7# or Qf7-f8# is mate in 1.
+        let pos = decodeFEN("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1").unwrap();
+        let mut hist = vec![pos];
+        let table = std::sync::Mutex::new(HashMap::new());
+        let mut hash = table.lock().unwrap();
+        let mut killers = [[P::NO_MOVE; 2]; 128];
+        let pv = negaMax(&mut hist, &mut hash, &mut killers, false, 1, P::WHITE_IS_MATE, P::BLACK_IS_MATE);
+        assert_eq!(pv.score, P::BLACK_IS_MATE - 1, "Mate in 1 ply must score BLACK_IS_MATE - 1 (found score: {})", pv.score);
+    }
+
+    #[test]
+    fn test_mate_in_1_preferred_over_delayed_mate() {
+        mdb::initStatic();
+        // White: Ka1, Queens on f5 and c7. Black: Kh8.
+        // White to move. Move Qf5-f7 is mate in 1.
+        // Other moves like Ka1-b1 delay mate.
+        let pos = decodeFEN("7k/2Q5/8/5Q2/8/8/8/K7 w - - 0 1").unwrap();
+        let mut hist = vec![pos];
+        let table = std::sync::Mutex::new(HashMap::new());
+        let mut hash = table.lock().unwrap();
+        let mut killers = [[P::NO_MOVE; 2]; 128];
+        let pv = negaMax(&mut hist, &mut hash, &mut killers, false, 2, P::WHITE_IS_MATE, P::BLACK_IS_MATE);
+        assert_eq!(pv.score, P::BLACK_IS_MATE - 1, "Must find mate in 1, score should be BLACK_IS_MATE - 1");
+        assert_eq!(pv.length, 1);
     }
 }

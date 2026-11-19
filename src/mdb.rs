@@ -1,5 +1,6 @@
 #![allow(non_snake_case)] // sorry, need this because this is a rewrite of existing Java code
 #![allow(non_upper_case_globals)] // as well as this
+#![allow(static_mut_refs)] // and this
 
 /*!
 # Move Data Base
@@ -16,6 +17,8 @@ For Bishop/Rook, we return a bitmap of the fields that need to be free for the m
 valid. Hence, 0 means the move is possible, and -1 means it is not possible (unless the board was completly empty).
 
 */
+
+use std::io::Write;
 
 use super::basic::{Piece, Piece::*, Player, Player::*};
 use super::cpos::Mirrorable;
@@ -81,8 +84,11 @@ pub struct EvalWeights {
     pub blocked_bishop_pawn: f64,
     pub bad_bishop: f64,
     pub lazy_officer: f64,
+    pub hanging_penalty: f64,
     #[serde(with = "big_array")]
-    pub pst_pawn: [f64; 64],
+    pub pst_pawn_white: [f64; 64],
+    #[serde(with = "big_array")]
+    pub pst_pawn_black: [f64; 64],
     #[serde(with = "big_array")]
     pub pst_knight: [f64; 64],
     #[serde(with = "big_array")]
@@ -139,7 +145,13 @@ impl EvalWeights {
     pub fn pst_value(&self, piece: Piece, player: Player, field: Field) -> f64 {
         let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
         match piece {
-            PAWN => self.pst_pawn[idx],
+            PAWN => {
+                if player == WHITE {
+                    self.pst_pawn_white[idx]
+                } else {
+                    self.pst_pawn_black[idx]
+                }
+            }
             KNIGHT => self.pst_knight[idx],
             BISHOP => self.pst_bishop[idx],
             ROOK => self.pst_rook[idx],
@@ -176,7 +188,9 @@ impl Default for EvalWeights {
             blocked_bishop_pawn: 21.0,
             bad_bishop: 43.0,
             lazy_officer: 30.0,
-            pst_pawn: [0.0; 64],
+            hanging_penalty: 0.7,
+            pst_pawn_white: [0.0; 64],
+            pst_pawn_black: [0.0; 64],
             pst_knight: [0.0; 64],
             pst_bishop: [0.0; 64],
             pst_rook: [0.0; 64],
@@ -191,7 +205,8 @@ impl Default for EvalWeights {
         for f in ALLFIELDS {
             let val = (f.zone() as i32 + 1) as f64 * 5.0;
             let idx = f as usize;
-            w.pst_pawn[idx] = val;
+            w.pst_pawn_white[idx] = val;
+            w.pst_pawn_black[idx] = val;
             w.pst_knight[idx] = val;
             w.pst_bishop[idx] = val;
             w.pst_rook[idx] = val;
@@ -242,13 +257,15 @@ pub static mut current_weights: EvalWeights = EvalWeights {
     covered_king_opp: 5.0,
     covered_king_own: 6.0,
     blocked_bishop_pawn: 21.0,
+    hanging_penalty: 0.0, // Initialwert für statische Variable
     bad_bishop: 43.0,
     lazy_officer: 30.0,
     pst_bishop: [0.0; 64],
     pst_king_mg: [0.0; 64],
     pst_king_eg: [0.0; 64],
     pst_knight: [0.0; 64],
-    pst_pawn: [0.0; 64],
+    pst_pawn_white: [0.0; 64],
+    pst_pawn_black: [0.0; 64],
     pst_queen: [0.0; 64],
     pst_rook: [0.0; 64],
     attack_weights: [0.0; 49],
@@ -306,6 +323,9 @@ pub fn get_bad_bishop() -> f64 {
 pub fn get_lazy_officer() -> f64 {
     unsafe { current_weights.lazy_officer }
 }
+pub fn get_hanging_penalty() -> f64 {
+    unsafe { current_weights.hanging_penalty }
+}
 
 pub fn get_pst_value(piece: Piece, player: Player, field: Field) -> f64 {
     unsafe { current_weights.pst_value(piece, player, field) }
@@ -331,10 +351,279 @@ pub fn get_weights() -> EvalWeights {
     unsafe { current_weights }
 }
 
-pub fn set_weights(weights: EvalWeights) {
+// Update-Funktionen
+
+pub fn upd_mat_pawn(delta: f64) {
     unsafe {
-        current_weights = weights;
+        let old_val = current_weights.mat_pawn;
+        current_weights.mat_pawn += delta;
+        println!(
+            "# (learning) mat_pawn: {} -> {}",
+            old_val, current_weights.mat_pawn
+        );
     }
+}
+pub fn upd_mat_knight(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mat_knight;
+        current_weights.mat_knight += delta;
+        println!(
+            "# (learning) mat_knight: {} -> {}",
+            old_val, current_weights.mat_knight
+        );
+    }
+}
+pub fn upd_mat_bishop(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mat_bishop;
+        current_weights.mat_bishop += delta;
+        println!(
+            "# (learning) mat_bishop: {} -> {}",
+            old_val, current_weights.mat_bishop
+        );
+    }
+}
+pub fn upd_mat_rook(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mat_rook;
+        current_weights.mat_rook += delta;
+        println!(
+            "# (learning) mat_rook: {} -> {}",
+            old_val, current_weights.mat_rook
+        );
+    }
+}
+pub fn upd_mat_queen(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mat_queen;
+        current_weights.mat_queen += delta;
+        println!(
+            "# (learning) mat_queen: {} -> {}",
+            old_val, current_weights.mat_queen
+        );
+    }
+}
+pub fn upd_mat_king(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mat_king;
+        current_weights.mat_king += delta;
+        println!(
+            "# (learning) mat_king: {} -> {}",
+            old_val, current_weights.mat_king
+        );
+    }
+}
+pub fn upd_mobility(delta: f64) {
+    unsafe {
+        let old_val = current_weights.mobility;
+        current_weights.mobility += delta;
+        println!(
+            "# (learning) mobility: {} -> {}",
+            old_val, current_weights.mobility
+        );
+    }
+}
+pub fn upd_check(delta: f64) {
+    unsafe {
+        let old_val = current_weights.check;
+        current_weights.check += delta;
+        println!("# (learning) check: {} -> {}", old_val, current_weights.check);
+    }
+}
+pub fn upd_castling(delta: f64) {
+    unsafe {
+        let old_val = current_weights.castling;
+        current_weights.castling += delta;
+        println!(
+            "# (learning) castling: {} -> {}",
+            old_val, current_weights.castling
+        );
+    }
+}
+pub fn upd_covered_king_opp(delta: f64) {
+    unsafe {
+        let old_val = current_weights.covered_king_opp;
+        current_weights.covered_king_opp += delta;
+        println!(
+            "# (learning) covered_king_opp: {} -> {}",
+            old_val, current_weights.covered_king_opp
+        );
+    }
+}
+pub fn upd_covered_king_own(delta: f64) {
+    unsafe {
+        let old_val = current_weights.covered_king_own;
+        current_weights.covered_king_own += delta;
+        println!(
+            "# (learning) covered_king_own: {} -> {}",
+            old_val, current_weights.covered_king_own
+        );
+    }
+}
+pub fn upd_blocked_bishop_pawn(delta: f64) {
+    unsafe {
+        let old_val = current_weights.blocked_bishop_pawn;
+        current_weights.blocked_bishop_pawn += delta;
+        println!(
+            "# (learning) blocked_bishop_pawn: {} -> {}",
+            old_val, current_weights.blocked_bishop_pawn
+        );
+    }
+}
+pub fn upd_bad_bishop(delta: f64) {
+    unsafe {
+        let old_val = current_weights.bad_bishop;
+        current_weights.bad_bishop += delta;
+        println!(
+            "# (learning) bad_bishop: {} -> {}",
+            old_val, current_weights.bad_bishop
+        );
+    }
+}
+pub fn upd_lazy_officer(delta: f64) {
+    unsafe {
+        let old_val = current_weights.lazy_officer;
+        current_weights.lazy_officer += delta;
+        println!(
+            "# (learning) lazy_officer: {} -> {}",
+            old_val, current_weights.lazy_officer
+        );
+    }
+}
+pub fn upd_hanging_penalty(delta: f64) {
+    unsafe {
+        let old_val = current_weights.hanging_penalty;
+        current_weights.hanging_penalty += delta;
+        println!(
+            "# (learning) hanging_penalty: {} -> {}",
+            old_val, current_weights.hanging_penalty
+        );
+    }
+}
+
+pub fn upd_pst_pawn(player: Player, field: Field, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        if player == WHITE {
+            let old_val = current_weights.pst_pawn_white[idx];
+            current_weights.pst_pawn_white[idx] += delta;
+            println!(
+                "# (learning) pst_pawn_white[{}] ({}): {} -> {}",
+                idx, field, old_val, current_weights.pst_pawn_white[idx]
+            );
+        } else {
+            let old_val = current_weights.pst_pawn_black[idx];
+            current_weights.pst_pawn_black[idx] += delta;
+            println!(
+                "# (learning) pst_pawn_black[{}] ({}): {} -> {}",
+                idx, field, old_val, current_weights.pst_pawn_black[idx]
+            );
+        }
+    }
+}
+pub fn upd_pst_knight(player: Player, field: Field, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        let old_val = current_weights.pst_knight[idx];
+        current_weights.pst_knight[idx] += delta;
+        println!(
+            "# (learning) pst_knight[{}] ({}): {} -> {}",
+            idx, field, old_val, current_weights.pst_knight[idx]
+        );
+    }
+}
+pub fn upd_pst_bishop(player: Player, field: Field, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        let old_val = current_weights.pst_bishop[idx];
+        current_weights.pst_bishop[idx] += delta;
+        println!(
+            "# (learning) pst_bishop[{}] ({}): {} -> {}",
+            idx, field, old_val, current_weights.pst_bishop[idx]
+        );
+    }
+}
+pub fn upd_pst_rook(player: Player, field: Field, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        let old_val = current_weights.pst_rook[idx];
+        current_weights.pst_rook[idx] += delta;
+        println!(
+            "# (learning) pst_rook[{}] ({}): {} -> {}",
+            idx, field, old_val, current_weights.pst_rook[idx]
+        );
+    }
+}
+pub fn upd_pst_queen(player: Player, field: Field, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+        let old_val = current_weights.pst_queen[idx];
+        current_weights.pst_queen[idx] += delta;
+        println!(
+            "# (learning) pst_queen[{}] ({}): {} -> {}",
+            idx, field, old_val, current_weights.pst_queen[idx]
+        );
+    }
+}
+
+pub fn upd_pst_value_king(player: Player, field: Field, mg_weight: f64, delta: f64) {
+    unsafe {
+        let idx = if player == WHITE { field as usize } else { field.mirror_h() as usize };
+
+        let delta_mg = delta * mg_weight;
+        let old_mg_val = current_weights.pst_king_mg[idx];
+        current_weights.pst_king_mg[idx] += delta_mg;
+        println!(
+            "# (learning) pst_king_mg[{}] ({}): {} -> {} (delta: {})",
+            idx, field, old_mg_val, current_weights.pst_king_mg[idx], delta_mg
+        );
+
+        let delta_eg = delta * (1.0 - mg_weight);
+        let old_eg_val = current_weights.pst_king_eg[idx];
+        current_weights.pst_king_eg[idx] += delta_eg;
+        println!(
+            "# (learning) pst_king_eg[{}] ({}): {} -> {} (delta: {})",
+            idx, field, old_eg_val, current_weights.pst_king_eg[idx], delta_eg
+        );
+    }
+}
+
+pub fn upd_attack_weight(attacker: Piece, victim: Piece, delta: f64) {
+    unsafe {
+        let idx = attacker as usize * 7 + victim as usize;
+        let old_val = current_weights.attack_weights[idx];
+        current_weights.attack_weights[idx] += delta;
+        println!(
+            "# (learning) attack_weights[{}][{}] ({} vs {}): {} -> {}",
+            attacker as usize,
+            victim as usize,
+            attacker,
+            victim,
+            old_val,
+            current_weights.attack_weights[idx]
+        );
+    }
+}
+
+pub fn upd_defend_weight(defender: Piece, victim: Piece, delta: f64) {
+    unsafe {
+        let idx = defender as usize * 7 + victim as usize;
+        let old_val = current_weights.defend_weights[idx];
+        current_weights.defend_weights[idx] += delta;
+        println!(
+            "# (learning) defend_weights[{}][{}] ({} vs {}): {} -> {}",
+            defender as usize,
+            victim as usize,
+            defender,
+            victim,
+            old_val,
+            current_weights.defend_weights[idx]
+        );
+    }
+}
+
+pub fn set_weights(weights: EvalWeights) {
+    unsafe { current_weights = weights }
 }
 
 const WEIGHTS_FILE: &str = "./data/weights.json";
@@ -342,19 +631,27 @@ const WEIGHTS_FILE: &str = "./data/weights.json";
 /// deserialisiert aus ./data/weights.json, falls vorhanden, ansonsten werden die Default-Gewichte verwendet
 pub fn load_weights() {
     match std::fs::read_to_string(WEIGHTS_FILE) {
-        Ok(json) => match EvalWeights::from_json(&json) {
-            Ok(weights) => {
-                set_weights(weights);
-                println!("# Gewichte aus {} geladen.", WEIGHTS_FILE);
+        Ok(json) => {
+            match EvalWeights::from_json(&json) {
+                Ok(weights) => {
+                    set_weights(weights);
+                    println!("# Gewichte aus {} geladen.", WEIGHTS_FILE);
+                }
+                Err(e) => {
+                    // Nachricht auf stderr ausgeben, damit sie auch bei Umleitung von stdout sichtbar bleibt
+                    eprintln!(
+                        "# Fehler beim Parsen von {}: {}. Programm wird beendet.",
+                        WEIGHTS_FILE, e
+                    );
+                    eprintln!("Korrigiere die Datei oder lösche sie, damit Standardgewichte verwendet werden können.");
+                    // flush the io buffers
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+                    // abort, so as not to overwrite weights with standard values accidentally
+                    std::process::abort();
+                }
             }
-            Err(e) => {
-                println!(
-                    "# Fehler beim Parsen von {}: {}. Standardgewichte werden verwendet.",
-                    WEIGHTS_FILE, e
-                );
-                set_default_weights();
-            }
-        },
+        }
         Err(_) => {
             println!(
                 "# {} nicht gefunden. Standardgewichte werden verwendet.",
